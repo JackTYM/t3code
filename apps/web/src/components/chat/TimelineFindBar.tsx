@@ -60,6 +60,33 @@ function highlightMatchesInRow(row: Element, query: string) {
   registry.set(FIND_HIGHLIGHT_NAME, new Highlight(...ranges));
 }
 
+/**
+ * Keeps the painted ranges attached to the row they describe.
+ *
+ * Ranges are live, so they go blank the moment their text nodes are replaced —
+ * and the virtualizer re-commits rows right after a long jump settles, which
+ * is exactly when find is used. Streaming into the destination row does the
+ * same thing. Repainting from a viewport observer covers both, including the
+ * case where the row element itself is swapped, and costs one walk of one row
+ * per frame in which the timeline actually changed.
+ */
+function observeFindTarget(viewport: HTMLElement, rowId: string, query: string): MutationObserver {
+  const selector = `[data-timeline-row-id="${CSS.escape(rowId)}"]`;
+  let frame: number | null = null;
+  const observer = new MutationObserver(() => {
+    if (frame !== null) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      const row = viewport.querySelector(selector);
+      if (row === null) return;
+      row.classList.add(FIND_TARGET_CLASS);
+      highlightMatchesInRow(row, query);
+    });
+  });
+  observer.observe(viewport, { childList: true, subtree: true, characterData: true });
+  return observer;
+}
+
 export interface TimelineFindBarProps {
   readonly rows: ReadonlyArray<MessagesTimelineRow>;
   readonly listRef: React.RefObject<LegendListRef | null>;
@@ -91,6 +118,7 @@ export function TimelineFindBar({
     readonly position: number;
   }>({ query: "", matches: [], position: 0 });
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const observerRef = useRef<MutationObserver | null>(null);
   // Where the reader was when this query started, so a new query lands forward
   // of their position rather than jumping to the top of the thread.
   const anchorRowIndexRef = useRef(0);
@@ -109,11 +137,15 @@ export function TimelineFindBar({
           // The row only exists in the DOM once the virtualizer has placed it.
           requestAnimationFrame(() => {
             clearFindTarget(viewport);
-            if (rowId === undefined) return;
-            const row = viewport?.querySelector(`[data-timeline-row-id="${CSS.escape(rowId)}"]`);
-            if (row === null || row === undefined) return;
-            row.classList.add(FIND_TARGET_CLASS);
-            highlightMatchesInRow(row, query);
+            observerRef.current?.disconnect();
+            observerRef.current = null;
+            if (rowId === undefined || viewport === null) return;
+            const row = viewport.querySelector(`[data-timeline-row-id="${CSS.escape(rowId)}"]`);
+            if (row !== null) {
+              row.classList.add(FIND_TARGET_CLASS);
+              highlightMatchesInRow(row, query);
+            }
+            observerRef.current = observeFindTarget(viewport, rowId, query);
           });
         });
     },
@@ -125,7 +157,14 @@ export function TimelineFindBar({
   }, []);
 
   // Drop the flash when the bar unmounts; closing must leave the scroll alone.
-  useEffect(() => () => clearFindTarget(viewport), [viewport]);
+  useEffect(
+    () => () => {
+      observerRef.current?.disconnect();
+      observerRef.current = null;
+      clearFindTarget(viewport);
+    },
+    [viewport],
+  );
 
   const runQuery = useCallback(
     (query: string) => {
@@ -134,6 +173,8 @@ export function TimelineFindBar({
       setFind({ query, matches, position });
       const rowIndex = matches[position];
       if (rowIndex === undefined) {
+        observerRef.current?.disconnect();
+        observerRef.current = null;
         clearFindTarget(viewport);
         return;
       }
