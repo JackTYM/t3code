@@ -4,6 +4,7 @@ import {
   ChatAttachment,
   OrchestrationMessageContext,
   CheckpointRef,
+  EventId,
   IsoDateTime,
   MessageId,
   NonNegativeInt,
@@ -193,6 +194,9 @@ const EventReplayStatsRowSchema = Schema.Struct({
 const ProjectionThreadSearchRequest = Schema.Struct({
   pattern: Schema.String,
   limit: Schema.Int,
+  /** Non-null scopes to one thread and stops deduplicating to one row per thread. */
+  threadId: Schema.NullOr(ThreadId),
+  includeActivities: Schema.Boolean,
 });
 const ProjectionThreadSearchRow = Schema.Struct({
   threadId: ThreadId,
@@ -200,6 +204,11 @@ const ProjectionThreadSearchRow = Schema.Struct({
   source: OrchestrationThreadSearchSource,
   matchText: Schema.String,
   messageCreatedAt: Schema.NullOr(IsoDateTime),
+  messageId: Schema.NullOr(MessageId),
+  activityId: Schema.NullOr(EventId),
+  turnId: Schema.NullOr(TurnId),
+  threadMatchCount: Schema.Int,
+  totalMatchCount: Schema.Int,
 });
 const WorkspaceRootLookupInput = Schema.Struct({
   workspaceRoot: Schema.String,
@@ -1042,12 +1051,45 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  /**
+   * One scan serving two questions.
+   *
+   * Unscoped, this answers "which conversation was that": rows collapse to the
+   * best match per thread so one chatty thread cannot eat the whole limit, and
+   * assistant text is restricted to the turn-final message so a thread is not
+   * represented by a superseded draft of the same answer.
+   *
+   * Scoped to a `threadId`, it answers "where else does this appear in what I
+   * am reading": every match is its own row and the message restrictions are
+   * lifted, because the in-thread find bar has to agree with what the timeline
+   * actually renders -- which includes non-final and still-streaming assistant
+   * messages. Applying the unscoped ranking rules here would make find claim a
+   * phrase is absent while the reader is looking at it.
+   *
+   * Activities are matched on `summary` and the two payload fields the UI
+   * renders (`detail`, `title`). Not on raw `payload_json`: it is by far the
+   * largest column and is mostly structural JSON and tool inputs, so matching
+   * it whole returns hits on key names and encoded blobs.
+   *
+   * `LIKE` over a full scan, deliberately, and measured rather than assumed.
+   * On a real installation (25 threads, months of use: 2,744 messages / 1.8 MB
+   * of text, 11,339 activities / 21.2 MB of payload) the worst case -- a term
+   * that matches nothing, so nothing short-circuits -- is 16 ms unscoped with
+   * activities, and 5-8 ms scoped to the busiest thread. FTS5 would buy nothing
+   * here and would cost a virtual table resynced on every streaming message
+   * write plus a rebuild path for `thread.reverted`. Revisit if an installation
+   * reaches roughly 50 MB of searchable text or a query exceeds ~200 ms.
+   *
+   * The `1 = 0` on the activity arm is load-bearing for cost, not just
+   * correctness: SQLite folds the constant and skips that scan entirely, so
+   * callers that do not ask for activities still measure 1.9 ms.
+   */
   const searchActiveThreadRows = SqlSchema.findAll({
     Request: ProjectionThreadSearchRequest,
     Result: ProjectionThreadSearchRow,
-    execute: ({ pattern, limit }) =>
+    execute: ({ pattern, limit, threadId, includeActivities }) =>
       sql`
-        WITH ranked AS (
+        WITH matches AS (
           SELECT
             threads.thread_id AS thread_id,
             threads.project_id AS project_id,
@@ -1056,22 +1098,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ELSE 'assistant'
             END AS source,
             messages.text AS match_text,
-            messages.created_at AS message_created_at,
+            messages.created_at AS match_created_at,
+            messages.message_id AS message_id,
+            NULL AS activity_id,
+            messages.turn_id AS turn_id,
             CASE messages.role
               WHEN 'user' THEN 0
               ELSE 1
             END AS match_rank,
-            threads.updated_at AS thread_updated_at,
-            ROW_NUMBER() OVER (
-              PARTITION BY threads.thread_id
-              ORDER BY
-                CASE messages.role
-                  WHEN 'user' THEN 0
-                  ELSE 1
-                END ASC,
-                messages.created_at DESC,
-                messages.message_id ASC
-            ) AS thread_match_rank
+            threads.updated_at AS thread_updated_at
           FROM projection_thread_messages AS messages
           INNER JOIN projection_threads AS threads
             ON threads.thread_id = messages.thread_id
@@ -1080,32 +1115,105 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           WHERE threads.deleted_at IS NULL
             AND threads.archived_at IS NULL
             AND projects.deleted_at IS NULL
-            AND messages.is_streaming = 0
-            AND (
-              messages.role = 'user'
-              OR (
-                messages.role = 'assistant'
-                AND messages.message_id IN (
-                  SELECT turns.assistant_message_id
-                  FROM projection_turns AS turns
-                  WHERE turns.assistant_message_id IS NOT NULL
-                )
-              )
-            )
+            AND ${threadId === null ? sql`1 = 1` : sql`threads.thread_id = ${threadId}`}
+            AND ${
+              threadId === null
+                ? sql`(
+                    messages.is_streaming = 0
+                    AND (
+                      messages.role = 'user'
+                      OR (
+                        messages.role = 'assistant'
+                        AND messages.message_id IN (
+                          SELECT turns.assistant_message_id
+                          FROM projection_turns AS turns
+                          WHERE turns.assistant_message_id IS NOT NULL
+                        )
+                      )
+                    )
+                  )`
+                : sql`1 = 1`
+            }
             AND messages.text LIKE ${pattern} ESCAPE '!'
+
+          UNION ALL
+
+          SELECT
+            threads.thread_id AS thread_id,
+            threads.project_id AS project_id,
+            'activity' AS source,
+            COALESCE(
+              CASE
+                WHEN activities.summary LIKE ${pattern} ESCAPE '!'
+                THEN activities.summary
+              END,
+              CASE
+                WHEN json_extract(activities.payload_json, '$.detail') LIKE ${pattern} ESCAPE '!'
+                THEN json_extract(activities.payload_json, '$.detail')
+              END,
+              CASE
+                WHEN json_extract(activities.payload_json, '$.title') LIKE ${pattern} ESCAPE '!'
+                THEN json_extract(activities.payload_json, '$.title')
+              END,
+              activities.summary
+            ) AS match_text,
+            activities.created_at AS match_created_at,
+            NULL AS message_id,
+            activities.activity_id AS activity_id,
+            activities.turn_id AS turn_id,
+            2 AS match_rank,
+            threads.updated_at AS thread_updated_at
+          FROM projection_thread_activities AS activities
+          INNER JOIN projection_threads AS threads
+            ON threads.thread_id = activities.thread_id
+          INNER JOIN projection_projects AS projects
+            ON projects.project_id = threads.project_id
+          WHERE ${includeActivities ? sql`1 = 1` : sql`1 = 0`}
+            AND threads.deleted_at IS NULL
+            AND threads.archived_at IS NULL
+            AND projects.deleted_at IS NULL
+            AND ${threadId === null ? sql`1 = 1` : sql`threads.thread_id = ${threadId}`}
+            AND activities.kind <> ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
+            AND (
+              activities.summary LIKE ${pattern} ESCAPE '!'
+              OR json_extract(activities.payload_json, '$.detail') LIKE ${pattern} ESCAPE '!'
+              OR json_extract(activities.payload_json, '$.title') LIKE ${pattern} ESCAPE '!'
+            )
+        ),
+        counted AS (
+          SELECT
+            matches.*,
+            COUNT(*) OVER (PARTITION BY thread_id) AS thread_match_count,
+            COUNT(*) OVER () AS total_match_count,
+            ROW_NUMBER() OVER (
+              PARTITION BY thread_id
+              ORDER BY
+                match_rank ASC,
+                match_created_at DESC,
+                message_id ASC,
+                activity_id ASC
+            ) AS thread_match_rank
+          FROM matches
         )
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
           source,
           match_text AS "matchText",
-          message_created_at AS "messageCreatedAt"
-        FROM ranked
-        WHERE thread_match_rank = 1
+          match_created_at AS "messageCreatedAt",
+          message_id AS "messageId",
+          activity_id AS "activityId",
+          turn_id AS "turnId",
+          thread_match_count AS "threadMatchCount",
+          total_match_count AS "totalMatchCount"
+        FROM counted
+        WHERE ${threadId === null ? sql`thread_match_rank = 1` : sql`1 = 1`}
         ORDER BY
-          match_rank ASC,
-          thread_updated_at DESC,
-          thread_id ASC
+          ${
+            threadId === null
+              ? sql`match_rank ASC, thread_updated_at DESC, thread_id ASC`
+              : sql`match_created_at ASC, message_id ASC, activity_id ASC`
+          }
         LIMIT ${limit}
       `,
   });
@@ -3102,6 +3210,8 @@ pending_approval_requests AS (
     const rows = yield* searchActiveThreadRows({
       pattern: `%${escapedQuery}%`,
       limit: input.limit ?? 50,
+      threadId: input.threadId ?? null,
+      includeActivities: input.includeActivityMatches === true,
     }).pipe(
       Effect.mapError(
         toPersistenceSqlOrDecodeError(
@@ -3117,7 +3227,14 @@ pending_approval_requests AS (
         source: row.source,
         snippet: buildSearchSnippet(row.matchText, input.query),
         messageCreatedAt: row.messageCreatedAt,
+        messageId: row.messageId,
+        activityId: row.activityId,
+        turnId: row.turnId,
+        threadMatchCount: row.threadMatchCount,
       })),
+      // Every row carries the same window-function total, so an empty result
+      // legitimately means zero rather than an unknown count.
+      totalMatchCount: rows[0]?.totalMatchCount ?? 0,
     };
   });
 

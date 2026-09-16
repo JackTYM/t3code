@@ -2259,14 +2259,36 @@ export type OrchestrationGetFullThreadDiffInput = typeof OrchestrationGetFullThr
 export const OrchestrationGetFullThreadDiffResult = ThreadTurnDiff;
 export type OrchestrationGetFullThreadDiffResult = typeof OrchestrationGetFullThreadDiffResult.Type;
 
-export const OrchestrationThreadSearchSource = Schema.Literals(["user", "assistant"]);
+/**
+ * Which stored row a match came from.
+ *
+ * `activity` only ever reaches a client that asked for it through
+ * `includeActivityMatches`. The literal set is closed, so emitting it to a
+ * client built before activity search shipped would fail its decode and take
+ * the whole response with it.
+ */
+export const OrchestrationThreadSearchSource = Schema.Literals(["user", "assistant", "activity"]);
 export type OrchestrationThreadSearchSource = typeof OrchestrationThreadSearchSource.Type;
 
 // The server's SQLite client is synchronous and single-connection. Bound both
 // scan input and response size so a search cannot monopolize that connection.
 export const OrchestrationSearchThreadsInput = Schema.Struct({
   query: TrimmedString.check(Schema.isMinLength(2), Schema.isMaxLength(200)),
-  limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
+  limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }))),
+  /**
+   * Scope the search to one thread. This also changes what a row means: scoped,
+   * every match is its own row, because the in-thread find bar steps through
+   * them. Unscoped, rows are deduplicated to the best match per thread, because
+   * that surface answers "which conversation was that" and one chatty thread
+   * must not consume the whole limit.
+   */
+  threadId: Schema.optionalKey(ThreadId),
+  /**
+   * Search activity rows (tool calls, narration) as well as messages. Opt-in
+   * rather than default: it is what keeps `source: "activity"` away from
+   * clients that predate it. See `OrchestrationThreadSearchSource`.
+   */
+  includeActivityMatches: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationSearchThreadsInput = typeof OrchestrationSearchThreadsInput.Type;
 
@@ -2275,12 +2297,30 @@ export const OrchestrationThreadSearchMatch = Schema.Struct({
   projectId: ProjectId,
   source: OrchestrationThreadSearchSource,
   snippet: Schema.String.check(Schema.isMaxLength(240)),
+  /** When the matched row was created, whichever kind of row it is. */
   messageCreatedAt: Schema.NullOr(IsoDateTime),
+  /**
+   * Navigation anchors. A match outside the loaded window is absent from client
+   * state, so a client needs the identity of the row to page toward and the
+   * turn to expand before it can scroll anywhere. Exactly one of `messageId`
+   * and `activityId` is set. Absent entirely on servers from before full
+   * history search, which can only tell a client which thread matched.
+   */
+  messageId: Schema.optionalKey(Schema.NullOr(MessageId)),
+  activityId: Schema.optionalKey(Schema.NullOr(EventId)),
+  turnId: Schema.optionalKey(Schema.NullOr(TurnId)),
+  /** Total matches in this thread, not just the ones in `matches`. */
+  threadMatchCount: Schema.optionalKey(NonNegativeInt),
 });
 export type OrchestrationThreadSearchMatch = typeof OrchestrationThreadSearchMatch.Type;
 
 export const OrchestrationSearchThreadsResult = Schema.Struct({
   matches: Schema.Array(OrchestrationThreadSearchMatch),
+  /**
+   * Matches found, which exceeds `matches.length` once `limit` truncates. Lets
+   * the find bar report a real total instead of Phase 1's loaded-window count.
+   */
+  totalMatchCount: Schema.optionalKey(NonNegativeInt),
 });
 export type OrchestrationSearchThreadsResult = typeof OrchestrationSearchThreadsResult.Type;
 
