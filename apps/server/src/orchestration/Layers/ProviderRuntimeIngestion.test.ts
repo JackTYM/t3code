@@ -411,6 +411,10 @@ describe("ProviderRuntimeIngestion", () => {
             .getThreadShellById(asThreadId("thread-1"))
             .pipe(Effect.map(Option.getOrThrow)),
         ),
+      readAgentTranscript: (taskId: string) =>
+        testRuntime.runPromise(
+          snapshotQuery.listAgentTranscript({ threadId: asThreadId("thread-1"), taskId }),
+        ),
       emit: provider.emit,
       advanceClock: (ms: number) => {
         clockOffsetMs += ms;
@@ -4179,6 +4183,61 @@ describe("ProviderRuntimeIngestion", () => {
     expect(activity?.summary).toBe("Compacted context 899K → 0 tokens");
     expect(activity?.tone).toBe("info");
     expect(activity?.payload).toMatchObject({ requestId: "message-compact" });
+  });
+
+  it("keeps subagent transcript rows out of the default thread projection", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "task.transcript",
+      eventId: asEventId("evt-task-transcript"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-task-1"),
+      payload: {
+        taskId: "task-agent-1",
+        blocks: [{ type: "text", text: "Narration the parent must never show." }],
+      },
+    });
+
+    // A normal task row emitted after it gives the projection something to
+    // settle on, so the assertion below is about exclusion and not timing.
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-task-started-after-transcript"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-task-1"),
+      payload: { taskId: "task-agent-1", taskType: "local_agent" },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "evt-task-started-after-transcript",
+      ),
+    );
+
+    expect(
+      thread.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "agent.transcript",
+      ),
+    ).toBe(false);
+
+    // Excluded from thread detail, but not lost: the scoped read keyed on the
+    // owning task is how the agent view gets it.
+    const transcript = await harness.readAgentTranscript("task-agent-1");
+    expect(transcript).toHaveLength(1);
+    expect(transcript[0]?.payload).toMatchObject({
+      taskId: "task-agent-1",
+      blocks: [{ type: "text", text: "Narration the parent must never show." }],
+    });
+
+    // Scoped to its own task: another agent's view must not see this one.
+    expect(await harness.readAgentTranscript("task-agent-other")).toHaveLength(0);
   });
 
   it("projects Codex task lifecycle chunks into thread activities", async () => {

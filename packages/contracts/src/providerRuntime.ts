@@ -15,7 +15,7 @@ import {
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 import { ProviderUsageLimitsUpdate } from "./providerUsageLimits.ts";
-import { ProviderApprovalOption } from "./orchestration.ts";
+import { AgentTranscriptBlock, ProviderApprovalOption } from "./orchestration.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -733,12 +733,6 @@ const TaskCompletedPayload = Schema.Struct({
 });
 export type TaskCompletedPayload = typeof TaskCompletedPayload.Type;
 
-export const TaskTranscriptBlock = Schema.Struct({
-  type: Schema.Literals(["text", "thinking"]),
-  text: TrimmedNonEmptyStringSchema,
-});
-export type TaskTranscriptBlock = typeof TaskTranscriptBlock.Type;
-
 /**
  * One subagent assistant message, re-homed onto the owning task instead of the
  * parent transcript. Emitted per completed message (never per streamed delta):
@@ -749,7 +743,7 @@ export type TaskTranscriptBlock = typeof TaskTranscriptBlock.Type;
  */
 const TaskTranscriptPayload = Schema.Struct({
   taskId: RuntimeTaskId,
-  blocks: Schema.Array(TaskTranscriptBlock),
+  blocks: Schema.Array(AgentTranscriptBlock),
 });
 export type TaskTranscriptPayload = typeof TaskTranscriptPayload.Type;
 

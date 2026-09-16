@@ -35,6 +35,7 @@ import {
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getWorkflowScript: "orchestration.getWorkflowScript",
+  getAgentTranscript: "orchestration.getAgentTranscript",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
@@ -1922,6 +1923,21 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
  */
 export const AGENT_TRANSCRIPT_ACTIVITY_KIND = "agent.transcript";
 
+/** One content block of a subagent's own message. */
+export const AgentTranscriptBlock = Schema.Struct({
+  type: Schema.Literals(["text", "thinking"]),
+  text: TrimmedNonEmptyString,
+});
+export type AgentTranscriptBlock = typeof AgentTranscriptBlock.Type;
+
+/** One subagent assistant message, in the order the agent produced it. */
+export const AgentTranscriptEntry = Schema.Struct({
+  activityId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+  blocks: Schema.Array(AgentTranscriptBlock),
+});
+export type AgentTranscriptEntry = typeof AgentTranscriptEntry.Type;
+
 /**
  * Which client connection dispatched the command that produced an event.
  * Stamped by the orchestration engine on client-dispatched commands; absent on
@@ -2253,6 +2269,24 @@ export const OrchestrationSearchThreadsResult = Schema.Struct({
 });
 export type OrchestrationSearchThreadsResult = typeof OrchestrationSearchThreadsResult.Type;
 
+/**
+ * Scoped read of one subagent's narration. Keyed on the owning task so a
+ * client fetches only the agent whose view it opened; these rows never travel
+ * with thread detail.
+ */
+export const OrchestrationGetAgentTranscriptInput = Schema.Struct({
+  threadId: ThreadId,
+  taskId: TrimmedNonEmptyString,
+});
+export type OrchestrationGetAgentTranscriptInput = typeof OrchestrationGetAgentTranscriptInput.Type;
+
+export const OrchestrationGetAgentTranscriptResult = Schema.Struct({
+  taskId: TrimmedNonEmptyString,
+  entries: Schema.Array(AgentTranscriptEntry),
+});
+export type OrchestrationGetAgentTranscriptResult =
+  typeof OrchestrationGetAgentTranscriptResult.Type;
+
 export const OrchestrationGetWorkflowScriptInput = Schema.Struct({
   threadId: ThreadId,
   /** Absolute path from the workflow's runHandles.scriptPath. The server
@@ -2305,6 +2339,10 @@ export const OrchestrationRpcSchemas = {
   dispatchCommand: {
     input: ClientOrchestrationCommand,
     output: DispatchResult,
+  },
+  getAgentTranscript: {
+    input: OrchestrationGetAgentTranscriptInput,
+    output: OrchestrationGetAgentTranscriptResult,
   },
   getWorkflowScript: {
     input: OrchestrationGetWorkflowScriptInput,
@@ -2363,6 +2401,14 @@ export class OrchestrationGetTurnDiffError extends Schema.TaggedError<Orchestrat
 
 export class OrchestrationGetFullThreadDiffError extends Schema.TaggedError<OrchestrationGetFullThreadDiffError>()(
   "OrchestrationGetFullThreadDiffError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export class OrchestrationGetAgentTranscriptError extends Schema.TaggedError<OrchestrationGetAgentTranscriptError>()(
+  "OrchestrationGetAgentTranscriptError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),

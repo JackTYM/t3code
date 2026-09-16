@@ -43,6 +43,7 @@ import {
   type OrchestrationShellStreamItem,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
+  OrchestrationGetAgentTranscriptError,
   OrchestrationSearchThreadsError,
   OrchestrationGetTurnDiffError,
   AGENT_TRANSCRIPT_ACTIVITY_KIND,
@@ -1907,6 +1908,41 @@ const makeWsRpcLayer = (
                     }),
               ),
             ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getAgentTranscript]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getAgentTranscript,
+            projectionSnapshotQuery
+              .listAgentTranscript({ threadId: input.threadId, taskId: input.taskId })
+              .pipe(
+                Effect.map((activities) => ({
+                  taskId: input.taskId,
+                  entries: activities.flatMap((activity) => {
+                    const payload = activity.payload;
+                    const blocks =
+                      payload !== null && typeof payload === "object"
+                        ? (payload as { blocks?: unknown }).blocks
+                        : undefined;
+                    return Array.isArray(blocks) && blocks.length > 0
+                      ? [
+                          {
+                            activityId: activity.id,
+                            createdAt: activity.createdAt,
+                            blocks,
+                          },
+                        ]
+                      : [];
+                  }),
+                })),
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetAgentTranscriptError({
+                      message: "Failed to load agent transcript",
+                      cause,
+                    }),
+                ),
+              ),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.getWorkflowScript]: (input) =>

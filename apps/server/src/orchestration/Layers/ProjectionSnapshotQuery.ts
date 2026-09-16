@@ -808,6 +808,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sequence,
           created_at AS "createdAt"
         FROM projection_thread_activities
+        WHERE kind <> ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
         ORDER BY
           thread_id ASC,
           sequence ASC,
@@ -1729,6 +1730,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             'thread.turn-diff-completed',
             'thread.reverted',
             'thread.session-set'
+          )
+          -- Agent-transcript rows are activity-appended events the thread
+          -- subscription deliberately does not deliver. Counting one here
+          -- would publish a watermark the client can never reach, parking the
+          -- page forever — the exact failure this filter's parity guards.
+          AND NOT (
+            event_type = 'thread.activity-appended'
+            AND json_extract(payload_json, '$.activity.kind') =
+              ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
           )
       `,
   });
