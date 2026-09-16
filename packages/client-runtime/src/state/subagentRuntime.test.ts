@@ -461,7 +461,7 @@ describe("deriveAgentPanelModel", () => {
     expect(model.liveCount).toBe(0);
   });
 
-  it("keeps direct spawns in first-seen order as their activity changes", () => {
+  it("keeps live direct spawns pinned in stable spawn order as their activity changes", () => {
     const directRoster = fold([
       activity("task.started", { taskId: "direct-a", title: "First" }, "2026-08-01T11:00:00.000Z"),
       activity("task.started", { taskId: "direct-b", title: "Second" }, "2026-08-01T11:00:01.000Z"),
@@ -477,7 +477,7 @@ describe("deriveAgentPanelModel", () => {
     ).toEqual(["direct-a", "direct-b"]);
   });
 
-  it("keeps first-seen order after the roster retention ranking runs", () => {
+  it("keeps live agents in stable spawn order after the roster retention ranking runs", () => {
     const starts = Array.from({ length: 101 }, (_, index) =>
       activity(
         "task.started",
@@ -500,8 +500,107 @@ describe("deriveAgentPanelModel", () => {
       (agent) => agent.id,
     );
     expect(ids).toHaveLength(100);
-    expect(ids.slice(0, 3)).toEqual(["capped-0", "capped-2", "capped-3"]);
-    expect(ids.at(-1)).toBe("capped-100");
+    // Every agent is live, so all 100 survivors share the live tier's stable
+    // spawn order and activity on capped-0 does not lift it.
+    expect(ids.slice(0, 3)).toEqual(["capped-0", "capped-1", "capped-2"]);
+    expect(ids.at(-1)).toBe("capped-99");
+  });
+
+  it("pins live agents above settled ones that spawned earlier", () => {
+    const mixed = fold([
+      activity("task.started", { taskId: "done", title: "Done" }, "2026-08-01T13:00:00.000Z"),
+      activity("task.started", { taskId: "idle", title: "Idle" }, "2026-08-01T13:00:01.000Z"),
+      activity("task.started", { taskId: "live", title: "Live" }, "2026-08-01T13:00:02.000Z"),
+      activity("task.updated", { taskId: "idle", status: "idle" }, "2026-08-01T13:04:00.000Z"),
+      activity(
+        "task.completed",
+        { taskId: "done", status: "completed" },
+        "2026-08-01T13:05:00.000Z",
+      ),
+    ]);
+
+    // Live first even though it spawned last and settled last, then idle
+    // (resumable), then terminal.
+    expect(deriveAgentPanelModel({ agents: mixed }).directAgents.map((agent) => agent.id)).toEqual([
+      "live",
+      "idle",
+      "done",
+    ]);
+  });
+
+  it("orders settled agents by when they ended, not when they started", () => {
+    const settled = fold([
+      activity("task.started", { taskId: "first-start" }, "2026-08-01T14:00:00.000Z"),
+      activity("task.started", { taskId: "second-start" }, "2026-08-01T14:00:10.000Z"),
+      activity("task.started", { taskId: "third-start" }, "2026-08-01T14:00:20.000Z"),
+      activity(
+        "task.completed",
+        { taskId: "second-start", status: "completed" },
+        "2026-08-01T14:01:00.000Z",
+      ),
+      activity(
+        "task.completed",
+        { taskId: "third-start", status: "completed" },
+        "2026-08-01T14:02:00.000Z",
+      ),
+      activity(
+        "task.completed",
+        { taskId: "first-start", status: "completed" },
+        "2026-08-01T14:03:00.000Z",
+      ),
+    ]);
+
+    // Neither spawn order nor its reverse: first-start began before
+    // third-start but finished after it, so it sorts above.
+    expect(
+      deriveAgentPanelModel({ agents: settled }).directAgents.map((agent) => agent.id),
+    ).toEqual(["first-start", "third-start", "second-start"]);
+  });
+
+  it("falls back to updatedAt for agents that never got a completedAt", () => {
+    // Idle is nonterminal, so applyStatus never stamps completedAt: the last
+    // time the agent did anything is the only end time there is.
+    const idles = fold([
+      activity("task.started", { taskId: "idle-old" }, "2026-08-01T15:00:00.000Z"),
+      activity("task.started", { taskId: "idle-new" }, "2026-08-01T15:00:01.000Z"),
+      activity("task.updated", { taskId: "idle-old", status: "idle" }, "2026-08-01T15:00:02.000Z"),
+      activity("task.updated", { taskId: "idle-new", status: "idle" }, "2026-08-01T15:00:05.000Z"),
+    ]);
+
+    const ids = deriveAgentPanelModel({ agents: idles }).directAgents.map((agent) => agent.id);
+    expect(ids).toEqual(["idle-new", "idle-old"]);
+    expect(idles.every((agent) => agent.completedAt === null)).toBe(true);
+  });
+
+  it("orders settled agents the same way either side of the roster cap", () => {
+    // Higher index = spawned later and ended later.
+    const clock = (hour: number, index: number) =>
+      `2026-08-01T${hour}:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(
+        index % 60,
+      ).padStart(2, "0")}.000Z`;
+    const rows = (count: number) =>
+      Array.from({ length: count }, (_, index) => [
+        activity("task.started", { taskId: `settled-${index}` }, clock(16, index)),
+        activity(
+          "task.completed",
+          { taskId: `settled-${index}`, status: "completed" },
+          clock(17, index),
+        ),
+      ]).flat();
+
+    const overCap = deriveAgentPanelModel({ agents: fold(rows(101)) }).directAgents.map(
+      (agent) => agent.id,
+    );
+    const underCap = deriveAgentPanelModel({ agents: fold(rows(5)) }).directAgents.map(
+      (agent) => agent.id,
+    );
+
+    // Newest-ended first on both sides of the cap. The cap drops only the
+    // agent that ended longest ago; it does not re-rank the survivors.
+    expect(underCap).toEqual(["settled-4", "settled-3", "settled-2", "settled-1", "settled-0"]);
+    expect(overCap).toHaveLength(100);
+    expect(overCap.slice(0, 3)).toEqual(["settled-100", "settled-99", "settled-98"]);
+    expect(overCap.at(-1)).toBe("settled-1");
   });
 
   it("a phase with only pending members never reads as running", () => {

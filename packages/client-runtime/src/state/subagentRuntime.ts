@@ -120,6 +120,49 @@ const RECENT_ACTIVITY_LIMIT = 6;
 const SUMMARY_CHAR_LIMIT = 180;
 const ROSTER_LIMIT = 100;
 
+type AgentOrderKeys = Pick<
+  RuntimeSubagent,
+  "id" | "status" | "firstSeenAt" | "updatedAt" | "completedAt"
+>;
+
+/**
+ * The panel's single ordering rule. Used both to choose which agents survive
+ * ROSTER_LIMIT and to order every top-level list the panel renders, so the
+ * order does not change character at 100 agents.
+ *
+ * Live agents pin to the top in a stable ascending first-seen order: those are
+ * the rows the user is watching, and they must not jump while they update.
+ * Idle (resumable) sits below them, and settled agents sort newest-ended
+ * first, so the work that just finished is nearest the top — an agent that
+ * started earlier but finished later outranks one that started later and
+ * finished sooner. completedAt is first-write-wins on the terminal transition
+ * and cleared on reactivation, so a resumed agent legitimately re-sorts.
+ */
+function compareAgentOrder(a: AgentOrderKeys, b: AgentOrderKeys): number {
+  const tierA = agentOrderTier(a.status);
+  const tierB = agentOrderTier(b.status);
+  if (tierA !== tierB) {
+    return tierA - tierB;
+  }
+  if (tierA === 0) {
+    return a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id);
+  }
+  return (
+    agentEndedAt(b).localeCompare(agentEndedAt(a)) ||
+    b.firstSeenAt.localeCompare(a.firstSeenAt) ||
+    a.id.localeCompare(b.id)
+  );
+}
+
+function agentOrderTier(status: RuntimeSubagentStatus): number {
+  return isActiveSubagentStatus(status) ? 0 : status === "idle" ? 1 : 2;
+}
+
+/** Idle agents never get a completedAt; updatedAt is when they last did work. */
+function agentEndedAt(agent: AgentOrderKeys): string {
+  return agent.completedAt ?? agent.updatedAt;
+}
+
 /**
  * True when this activity's payload does NOT belong on the Agents surface.
  * Classification happens exactly once, server-side at ingestion
@@ -680,13 +723,10 @@ export function foldSubagentActivities(
 
   let roster = Array.from(agents.values());
   if (roster.length > ROSTER_LIMIT) {
-    // Prefer live, then waiting/idle, then newest settled.
-    const rank = (agent: MutableAgent): number =>
-      isActiveSubagentStatus(agent.status) ? 0 : agent.status === "idle" ? 1 : 2;
-    roster = roster
-      .slice()
-      .sort((a, b) => rank(a) - rank(b) || b.updatedAt.localeCompare(a.updatedAt))
-      .slice(0, ROSTER_LIMIT);
+    // Keep whichever agents the panel would have shown first, by the same rule
+    // it renders with (compareAgentOrder), so the cap drops the least
+    // interesting rows instead of re-ranking the visible ones.
+    roster = roster.slice().sort(compareAgentOrder).slice(0, ROSTER_LIMIT);
   }
 
   return roster.map((agent) => ({ ...agent }));
@@ -756,7 +796,7 @@ export function deriveAgentPanelModel({
   const workflows = source
     .filter((agent) => agent.kind === "workflow")
     .slice()
-    .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id));
+    .sort(compareAgentOrder);
   const workflowIds = new Set(workflows.map((workflow) => workflow.id));
   const members = new Map<string, RuntimeSubagent[]>();
   const direct: RuntimeSubagent[] = [];
@@ -858,11 +898,9 @@ export function deriveAgentPanelModel({
 
   return {
     workflows: workflowGroups,
-    // Updates and the >100-agent retention ranking must never reshuffle rows
-    // that remain visible.
-    directAgents: direct
-      .slice()
-      .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id)),
+    // Live rows stay put while they update; settled rows sort by when they
+    // ended. See compareAgentOrder.
+    directAgents: direct.slice().sort(compareAgentOrder),
     runningCount,
     waitingCount,
     idleCount,
