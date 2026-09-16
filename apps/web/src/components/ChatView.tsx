@@ -451,6 +451,7 @@ import {
   peekRememberedThreadTimeline,
   rememberReadyThreadTimeline,
   resolveThreadSwitchTimeline,
+  shouldPinThreadSwitchToEnd,
   timelineHasEphemeralPreviewUrls,
   observeProactivePanelUserChoice,
   resolveProactiveTurnDiffAction,
@@ -5318,21 +5319,40 @@ export default function ChatView(props: ChatViewProps) {
       void legendListRef.current?.scrollToEnd?.({ animated });
     });
   }, []);
-  const displayedTimelineKeyRef = useRef(displayedTimeline.displayThreadKey);
+  // The thread whose end has already been pinned, written only when a pin
+  // actually ran. Latching the key on its own spent the pin on the commits
+  // where the destination has resolved but its rows have not.
+  const pinnedTimelineThreadKeyRef = useRef(displayedTimeline.displayThreadKey);
+  const displayedTimelineEntryCount = displayedTimeline.entries.length;
   useLayoutEffect(() => {
     const displayKey = displayedTimeline.displayThreadKey;
-    if (displayKey === null || displayKey !== activeThreadKey) {
-      displayedTimelineKeyRef.current = displayKey;
+    if (
+      !shouldPinThreadSwitchToEnd({
+        activeThreadKey,
+        displayThreadKey: displayKey,
+        entryCount: displayedTimelineEntryCount,
+        pinnedThreadKey: pinnedTimelineThreadKeyRef.current,
+      })
+    ) {
       return;
     }
-    if (displayedTimelineKeyRef.current === displayKey) {
+    pinnedTimelineThreadKeyRef.current = displayKey;
+    // A citation deep link owns where its thread lands, which is why it also
+    // turns off the list's own initialScrollAtEnd. Count the thread as placed
+    // rather than racing the citation to the end.
+    if (citationRequest !== null) {
       return;
     }
-    displayedTimelineKeyRef.current = displayKey;
     // Keep the list mounted across jumps; pin the newly displayed thread to
     // its end the way a remount used to via initialScrollAtEnd.
     scrollToEnd();
-  }, [activeThreadKey, displayedTimeline.displayThreadKey, scrollToEnd]);
+  }, [
+    activeThreadKey,
+    citationRequest,
+    displayedTimeline.displayThreadKey,
+    displayedTimelineEntryCount,
+    scrollToEnd,
+  ]);
   useLayoutEffect(() => {
     if (timelineScrollModeRef.current !== "anchoring-new-turn") {
       return;
