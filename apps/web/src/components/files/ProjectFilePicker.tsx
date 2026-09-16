@@ -3,8 +3,8 @@ import { useMemo, useState, type ReactNode } from "react";
 
 import { useActiveProjectTarget, type ActiveProjectTarget } from "~/hooks/useActiveProjectTarget";
 import { useTheme } from "~/hooks/useTheme";
-import { useRightPanelStore } from "~/rightPanelStore";
 import { primaryServerKeybindingsAtom } from "~/state/server";
+import { useOpenFile } from "~/useOpenFile";
 
 import { PierreEntryIcon } from "../chat/PierreEntryIcon";
 import { CommandPaletteContent } from "../CommandPaletteContent";
@@ -80,6 +80,7 @@ function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveP
   );
   const { resolvedTheme } = useTheme();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const openFile = useOpenFile({ threadRef: target.threadRef, cwd: target.cwd });
   const matches = useMemo(
     () => getProjectFilePickerMatches(result.entries, result.matchedQuery),
     [result.entries, result.matchedQuery],
@@ -107,10 +108,10 @@ function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveP
         ),
         icon: <PierreEntryIcon pathValue={match.path} kind="file" theme={resolvedTheme} />,
         run: async () => {
-          useRightPanelStore.getState().openFile(target.threadRef, match.path);
+          openFile({ workspacePath: match.path });
         },
       })),
-    [hasMatchedQuery, matches, resolvedTheme, target.threadRef],
+    [hasMatchedQuery, matches, openFile, resolvedTheme],
   );
 
   const emptyStateMessage = getEmptyStateMessage(query, result.error, result.isPending);

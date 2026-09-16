@@ -1,6 +1,6 @@
 import { ArrowUpIcon, ClockIcon } from "lucide-react";
 import { ReadOnlySourcePreview } from "../files/AttachmentFilePreview";
-import { useRightPanelStore } from "~/rightPanelStore";
+import { useOpenFile } from "~/useOpenFile";
 import {
   getQuestionAnswerPreview,
   getQuestionAnswerText,
@@ -262,6 +262,8 @@ interface TimelineRowSharedState {
   routeThreadKey: string;
   threadRef: ScopedThreadRef | null;
   markdownCwd: string | undefined;
+  /** Opens a mentioned workspace file where the "Open files in" setting says. */
+  onOpenMentionFile: (path: string, event: { metaKey: boolean; ctrlKey: boolean }) => void;
   resolvedTheme: "light" | "dark";
   workspaceRoot: string | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
@@ -539,6 +541,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, []);
   const citationThreadRef = useMemo(() => parseScopedThreadKey(routeThreadKey), [routeThreadKey]);
   const openPullRequest = useOpenPrLink(citationThreadRef ?? undefined);
+  const openFile = useOpenFile({ threadRef: citationThreadRef, cwd: markdownCwd });
+  const onOpenMentionFile = useCallback(
+    (path: string, event: { metaKey: boolean; ctrlKey: boolean }) => {
+      openFile({ workspacePath: path, event });
+    },
+    [openFile],
+  );
   const expandCitedTurn = useCallback((turnId: TurnId) => {
     setExpandedTurnIds((current) =>
       current.has(turnId) ? current : new Set([...current, turnId]),
@@ -920,6 +929,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       // Keep Markdown callbacks memoized during unrelated activity updates.
       threadRef: citationThreadRef,
       markdownCwd,
+      onOpenMentionFile,
       resolvedTheme,
       workspaceRoot,
       skills,
@@ -953,6 +963,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       routeThreadKey,
       citationThreadRef,
       markdownCwd,
+      onOpenMentionFile,
       resolvedTheme,
       workspaceRoot,
       skills,
@@ -2810,9 +2821,8 @@ function UserMessageMentionChip(props: {
               "cursor-pointer focus-visible:outline-2",
             )}
             data-markdown-copy={props.copyMarkdown}
-            onClick={() => {
-              if (ctx.threadRef)
-                useRightPanelStore.getState().openFile(ctx.threadRef, props.record.path);
+            onClick={(event) => {
+              ctx.onOpenMentionFile(props.record.path, event);
             }}
           >
             <PierreEntryIcon

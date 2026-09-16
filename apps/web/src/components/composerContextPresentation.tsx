@@ -68,7 +68,8 @@ export interface ComposerContextActions {
   expandImage: (imageId: string) => void;
   expandVideo: (fileId: string) => void;
   openFile: (fileId: string) => void;
-  openMention: (path: string) => void;
+  /** Opens a mentioned workspace file where the "Open files in" setting says. */
+  openMention: (path: string, event?: { metaKey: boolean; ctrlKey: boolean }) => void;
   openPullRequest: (event: MouseEvent<HTMLElement>, url: string) => void;
 }
 

@@ -1,7 +1,6 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { isWindowsAbsolutePath, normalizeProjectPathForComparison } from "@t3tools/shared/path";
 
-import { useRightPanelStore } from "./rightPanelStore";
 import { resolvePathLinkTarget } from "./terminal-links";
 
 interface OpenDiffFilePrimaryActionInput {
@@ -9,8 +8,13 @@ interface OpenDiffFilePrimaryActionInput {
   readonly filePath: string;
   readonly activeCwd: string | undefined;
   readonly repositoryRoot?: string | undefined;
+  /** Honours the "Open files in" setting; see `useOpenFile`. */
+  readonly openFile: (request: { workspacePath: string; event?: DiffFileClick }) => void;
   readonly openInEditor: (targetPath: string) => void;
+  readonly event?: DiffFileClick | undefined;
 }
+
+type DiffFileClick = { readonly metaKey: boolean; readonly ctrlKey: boolean };
 
 function normalizedRelativePathSegments(filePath: string): ReadonlyArray<string> | null {
   if (filePath.startsWith("/") || isWindowsAbsolutePath(filePath) || /^[a-zA-Z]:/.test(filePath)) {
@@ -82,7 +86,9 @@ export function openDiffFilePrimaryAction({
   filePath,
   activeCwd,
   repositoryRoot,
+  openFile,
   openInEditor,
+  event,
 }: OpenDiffFilePrimaryActionInput): void {
   const workspaceFilePath = resolveDiffPathForWorkspace({
     filePath,
@@ -92,9 +98,11 @@ export function openDiffFilePrimaryAction({
   if (!workspaceFilePath) return;
 
   if (threadRef) {
-    useRightPanelStore.getState().openFile(threadRef, workspaceFilePath);
+    openFile({ workspacePath: workspaceFilePath, ...(event ? { event } : {}) });
     return;
   }
 
+  // Without a thread there is no panel to open into, so this stays an editor
+  // open whatever the setting says.
   openInEditor(activeCwd ? resolvePathLinkTarget(workspaceFilePath, activeCwd) : workspaceFilePath);
 }

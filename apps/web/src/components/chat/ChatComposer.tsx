@@ -1,6 +1,6 @@
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { runtimeModeConfig, runtimeModeOptions } from "./runtimeModeConfig";
-import { useRightPanelStore } from "~/rightPanelStore";
+import { useOpenFile } from "~/useOpenFile";
 import { AttachmentFilePreview } from "../files/AttachmentFilePreview";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { filterComposerPullRequestMatches } from "@t3tools/shared/composerPullRequestMatches";
@@ -1600,6 +1600,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const nonPersistedComposerImageIds = attachmentDraft.nonPersistedImageIds;
   const uploadsByImageId = useAttachmentUploadStore((state) => state.uploadsByImageId);
   const openPrLink = useOpenPrLink(routeThreadRef);
+  const openMentionFile = useOpenFile({ threadRef: routeThreadRef, cwd: gitCwd ?? undefined });
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
   const previewFile = composerFiles.find((file) => file.id === previewFileId);
   const composerContextActions = useMemo(
@@ -1609,7 +1610,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         if (preview) onExpandImage(preview);
       },
       openFile: setPreviewFileId,
-      openMention: (path: string) => useRightPanelStore.getState().openFile(routeThreadRef, path),
+      openMention: (path: string, event?: { metaKey: boolean; ctrlKey: boolean }) => {
+        openMentionFile({ workspacePath: path, ...(event ? { event } : {}) });
+      },
       expandVideo: (fileId: string) => {
         const file = composerFiles.find((candidate) => candidate.id === fileId);
         if (!file || !isVideoAttachment(file)) return;
@@ -1634,7 +1637,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         openPrLink(event, url);
       },
     }),
-    [composerFiles, composerImages, environmentId, onExpandImage, openPrLink, routeThreadRef],
+    [composerFiles, composerImages, environmentId, onExpandImage, openMentionFile, openPrLink],
   );
   const composerContextRecords = useMemo(
     () =>

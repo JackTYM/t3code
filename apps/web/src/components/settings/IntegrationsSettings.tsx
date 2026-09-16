@@ -22,6 +22,8 @@ import {
   DEFAULT_BROWSER_LINK_TARGET,
   DEFAULT_BROWSER_RECORDING_FRAME_RATE,
   DEFAULT_BROWSER_VIEWPORT,
+  DEFAULT_FILE_OPEN_TARGET,
+  type FileOpenTarget,
   DEFAULT_PREVIEW_APPEARANCE,
   DEFAULT_PREVIEW_ZOOM_FACTOR,
   FILL_PREVIEW_VIEWPORT,
@@ -563,6 +565,83 @@ function BrowserLinkTargetSetting({ disabled }: { readonly disabled: boolean }) 
         </Select>
       }
     />
+  );
+}
+
+const FILE_OPEN_TARGET_LABELS: Readonly<Record<FileOpenTarget, string>> = {
+  panel: "T3 Code",
+  editor: "Your editor",
+  "file-manager": "Your file manager",
+};
+
+function FileOpenTargetSetting({ disabled }: { readonly disabled: boolean }) {
+  const fileOpenTarget = useClientSettings((settings) => settings.fileOpenTarget);
+  const updateSettings = useUpdatePrimarySettings();
+
+  return (
+    <SettingsRow
+      {...searchableSetting("file-open-target")}
+      description="Where files clicked in a thread, a diff, or search results open. Hold ⌘ or Ctrl while clicking to use the other destination — your editor when files open in T3 Code, and T3 Code when they open outside it."
+      resetAction={
+        !disabled && fileOpenTarget !== DEFAULT_FILE_OPEN_TARGET ? (
+          <SettingResetButton
+            label="file target"
+            onClick={() => updateSettings({ fileOpenTarget: DEFAULT_FILE_OPEN_TARGET })}
+          />
+        ) : null
+      }
+      control={
+        <Select
+          disabled={disabled}
+          value={fileOpenTarget}
+          onValueChange={(value) => {
+            if (value === "panel" || value === "editor" || value === "file-manager") {
+              updateSettings({ fileOpenTarget: value });
+            }
+          }}
+        >
+          <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Open files in">
+            <SelectValue>{FILE_OPEN_TARGET_LABELS[fileOpenTarget]}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {(Object.keys(FILE_OPEN_TARGET_LABELS) as ReadonlyArray<FileOpenTarget>).map(
+              (target) => (
+                <SelectItem hideIndicator key={target} value={target}>
+                  {FILE_OPEN_TARGET_LABELS[target]}
+                </SelectItem>
+              ),
+            )}
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+/**
+ * Editors and the file manager are launched by the server, so the choice is
+ * only real when a connected server advertises some. Remote-only and mobile
+ * clients see the control explained rather than three options that all end up
+ * back in the panel.
+ */
+function FileIntegrationSettings() {
+  const { connectedEnvironments } = useSettingsScope();
+  const hasExternalTargets = connectedEnvironments.some(
+    (environment) => (environment.serverConfig?.availableEditors.length ?? 0) > 0,
+  );
+
+  return (
+    <SettingsSection id="files" title="Files">
+      <SettingsUnavailableGroup
+        message={
+          hasExternalTargets
+            ? undefined
+            : "No connected environment offers an editor or file manager, so files open in T3 Code."
+        }
+      >
+        <FileOpenTargetSetting disabled={!hasExternalTargets} />
+      </SettingsUnavailableGroup>
+    </SettingsSection>
   );
 }
 
@@ -1345,6 +1424,7 @@ export function IntegrationsSettingsPanel() {
           previewDefaults
         )}
       </SettingsSection>
+      <FileIntegrationSettings />
       <DeviceIntegrationSettings />
     </SettingsPageContainer>
   );

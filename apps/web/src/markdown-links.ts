@@ -12,7 +12,7 @@ import {
 } from "@t3tools/client-runtime/markdown-links";
 
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
-import { isTerminalLinkActivation, resolvePathLinkTarget } from "./terminal-links";
+import { resolvePathLinkTarget } from "./terminal-links";
 
 export { normalizeMarkdownLinkDestination };
 
@@ -36,13 +36,6 @@ export function extractMarkdownLinkHrefs(markdown: string): string[] {
     if (href) hrefs.push(href);
   }
   return hrefs;
-}
-
-export function shouldOpenMarkdownFileLinkInEditor(
-  event: Pick<MouseEvent, "metaKey" | "ctrlKey">,
-  platform?: string,
-): boolean {
-  return isTerminalLinkActivation(event, platform);
 }
 
 export function shouldOpenMarkdownFileLinkInBrowserByDefault(path: string): boolean {

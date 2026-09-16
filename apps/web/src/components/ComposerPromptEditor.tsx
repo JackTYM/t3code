@@ -157,7 +157,7 @@ function ComposerMentionDecorator(props: { path: string }) {
   const chip = (
     <button
       type="button"
-      onClick={() => actions.openMention(props.path)}
+      onClick={(event) => actions.openMention(props.path, event)}
       aria-label={`Preview ${props.path}`}
       className={`${FILE_TAG_CHIP_CLASS_NAME} cursor-pointer focus-visible:outline-2`}
       contentEditable={false}
@@ -301,7 +301,11 @@ function ComposerSkillDecorator(props: {
             "No description is available for this skill."}
         </p>
         {skill?.path ? (
-          <Button variant="outline" size="sm" onClick={() => actions.openMention(skill.path)}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={(event) => actions.openMention(skill.path, event)}
+          >
             View instructions
           </Button>
         ) : null}
