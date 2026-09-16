@@ -25,85 +25,68 @@ describe("resolveProviderInteractionMode", () => {
 
 describe("resolveLegacyPlanModeEnabled", () => {
   it("enables plan mode on a device that never set the preference", () => {
-    expect(resolveLegacyPlanModeEnabled({ loaded: true, preference: undefined })).toBe(true);
+    expect(resolveLegacyPlanModeEnabled({ preference: undefined })).toBe(true);
   });
 
   it("honors an explicit opt-out", () => {
-    expect(resolveLegacyPlanModeEnabled({ loaded: true, preference: false })).toBe(false);
-    expect(resolveLegacyPlanModeEnabled({ loaded: true, preference: true })).toBe(true);
+    expect(resolveLegacyPlanModeEnabled({ preference: false })).toBe(false);
+    expect(resolveLegacyPlanModeEnabled({ preference: true })).toBe(true);
   });
 
-  it("stays off until the device preference has loaded", () => {
-    expect(resolveLegacyPlanModeEnabled({ loaded: false, preference: undefined })).toBe(false);
-    expect(resolveLegacyPlanModeEnabled({ loaded: false, preference: true })).toBe(false);
+  // An unread device store yields `undefined`, the same as a device that never
+  // set the preference. Reading that as disabled is the mobile counterpart of
+  // the web pre-hydration clamp: it downgraded a persisted plan thread to build
+  // for the duration of the load.
+  it("does not clamp to build while the device store is still unread", () => {
+    expect(resolveLegacyPlanModeEnabled({ preference: undefined })).toBe(true);
   });
 });
 
 describe("resolvePendingTaskInteractionMode", () => {
-  it.each([false, true])(
-    "clears a queued unsupported plan mode with preferenceLoaded=%s",
-    (preferenceLoaded) => {
-      expect(
-        resolvePendingTaskInteractionMode({
-          preferenceLoaded,
-          planModeEnabled: true,
-          draftInteractionMode: "plan",
-          queuedInteractionMode: "plan",
-          provider: { showInteractionModeToggle: false },
-        }),
-      ).toBe("default");
-    },
-  );
-
-  it("preserves a queued plan task while the preference is still loading", () => {
+  it("clears a queued plan mode the provider cannot use", () => {
     expect(
       resolvePendingTaskInteractionMode({
-        preferenceLoaded: false,
-        planModeEnabled: false,
-        draftInteractionMode: "plan",
-        queuedInteractionMode: "plan",
-      }),
-    ).toBe("plan");
-  });
-
-  it("forces build mode once the disabled preference has loaded", () => {
-    expect(
-      resolvePendingTaskInteractionMode({
-        preferenceLoaded: true,
-        planModeEnabled: false,
-        draftInteractionMode: "plan",
-        queuedInteractionMode: "plan",
-      }),
-    ).toBe("default");
-  });
-
-  it("keeps a fresh draft in build mode while the preference is loading", () => {
-    expect(
-      resolvePendingTaskInteractionMode({
-        preferenceLoaded: false,
-        planModeEnabled: false,
-        draftInteractionMode: "plan",
-        queuedInteractionMode: undefined,
-      }),
-    ).toBe("default");
-  });
-
-  it("honors the draft's mode when the plan preference is enabled", () => {
-    expect(
-      resolvePendingTaskInteractionMode({
-        preferenceLoaded: true,
         planModeEnabled: true,
         draftInteractionMode: "plan",
-        queuedInteractionMode: undefined,
+        provider: { showInteractionModeToggle: false },
+      }),
+    ).toBe("default");
+  });
+
+  it("forces build mode when the device opted out of plan mode", () => {
+    expect(
+      resolvePendingTaskInteractionMode({
+        planModeEnabled: false,
+        draftInteractionMode: "plan",
+      }),
+    ).toBe("default");
+  });
+
+  it("honors the draft's mode when plan mode is enabled", () => {
+    expect(
+      resolvePendingTaskInteractionMode({
+        planModeEnabled: true,
+        draftInteractionMode: "plan",
       }),
     ).toBe("plan");
     expect(
       resolvePendingTaskInteractionMode({
-        preferenceLoaded: true,
         planModeEnabled: true,
         draftInteractionMode: undefined,
-        queuedInteractionMode: "plan",
       }),
     ).toBe("default");
+  });
+
+  // A task opened for editing has its mode copied onto the draft by
+  // `beginEditingPendingTask`, so a queued plan task survives on the draft
+  // alone — including while the device preference is still unread, which now
+  // resolves as enabled instead of clamping the task to build.
+  it("sends an edited queued plan task in plan mode", () => {
+    expect(
+      resolvePendingTaskInteractionMode({
+        planModeEnabled: resolveLegacyPlanModeEnabled({ preference: undefined }),
+        draftInteractionMode: "plan",
+      }),
+    ).toBe("plan");
   });
 });

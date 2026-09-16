@@ -16,22 +16,27 @@ export function resolveProviderInteractionMode(
     : (interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE);
 }
 
+/**
+ * Plan mode ships on, so only an explicit opt-out turns it off. An unread
+ * preference is `undefined` and therefore enabled, which is what keeps a thread
+ * that persisted plan mode from running a turn as build during the window
+ * before the device store resolves. This mirrors web, where the same default
+ * backs `DEFAULT_CLIENT_SETTINGS` and is read before settings hydrate.
+ */
 export function resolveLegacyPlanModeEnabled(input: {
-  readonly loaded: boolean;
   readonly preference: boolean | undefined;
 }): boolean {
-  // Plan mode ships on, matching the web/desktop client setting default, so a
-  // device that has never touched the preference gets it. The `loaded` gate
-  // stays: showing plan controls before the store reads would flash them at
-  // someone who turned plan mode off on this device.
-  return input.loaded && input.preference !== false;
+  return input.preference !== false;
 }
 
+/**
+ * The mode a queued task is sent with. A task being edited carries its mode on
+ * the draft (`beginEditingPendingTask` seeds it), so the draft is the only
+ * source needed here.
+ */
 export function resolvePendingTaskInteractionMode(input: {
-  readonly preferenceLoaded: boolean;
   readonly planModeEnabled: boolean;
   readonly draftInteractionMode: ProviderInteractionMode | undefined;
-  readonly queuedInteractionMode: ProviderInteractionMode | undefined;
   readonly provider?: InteractionModeProvider | null;
 }): ProviderInteractionMode {
   if (input.provider?.showInteractionModeToggle === false) {
@@ -39,12 +44,6 @@ export function resolvePendingTaskInteractionMode(input: {
   }
   if (input.planModeEnabled) {
     return input.draftInteractionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
-  }
-  if (!input.preferenceLoaded) {
-    // Only an existing queued task may retain its previous mode while the
-    // preference is unknown. A fresh draft still defaults to Build so a stale
-    // persisted Plan selection cannot bypass a disabled preference at launch.
-    return input.queuedInteractionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
   }
   return DEFAULT_PROVIDER_INTERACTION_MODE;
 }
