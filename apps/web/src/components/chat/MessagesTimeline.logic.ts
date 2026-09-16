@@ -1666,6 +1666,24 @@ export function findMessagesTimelineMatches(
   return matches;
 }
 
+/**
+ * Case-insensitive occurrence offsets of `query` within one string, used to
+ * range-highlight the matched substrings inside the destination row. Kept
+ * beside the row matcher so both agree on what "matches" means.
+ */
+export function findSubstringOffsets(text: string, query: string): ReadonlyArray<number> {
+  if (query.length === 0) return [];
+  const haystack = text.toLowerCase();
+  const needle = query.toLowerCase();
+  const offsets: number[] = [];
+  for (let from = 0; ;) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) return offsets;
+    offsets.push(at);
+    from = at + needle.length;
+  }
+}
+
 /** Wrap-around step through the match list. Empty match lists stay at 0. */
 export function stepMessagesTimelineMatch(
   matchCount: number,

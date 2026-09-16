@@ -7,20 +7,57 @@ import { Input } from "../ui/input";
 import {
   buildMessagesTimelineSearchIndex,
   findMessagesTimelineMatches,
+  findSubstringOffsets,
   initialMessagesTimelineMatch,
   messagesTimelineFindStatus,
   stepMessagesTimelineMatch,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 
-/** Matches the minimap jump so a match lands clear of the top fade. */
-const FIND_SCROLL_VIEW_OFFSET = 24;
+/**
+ * The bar floats over the top of the timeline, so the destination has to clear
+ * its full height (top-2 plus the control row) or the match lands underneath
+ * the thing that found it.
+ */
+const FIND_SCROLL_VIEW_OFFSET = 56;
 const FIND_TARGET_CLASS = "timeline-find-target";
+const FIND_HIGHLIGHT_NAME = "timeline-find-match";
+
+/**
+ * The CSS Custom Highlight API paints ranges without touching the DOM or the
+ * React tree, which is the only reason substring highlighting is affordable
+ * here: wrapping matches in elements would mean re-rendering timeline rows on
+ * every keystroke. Browsers without it keep the row ring alone.
+ */
+function highlightRegistry(): HighlightRegistry | null {
+  return typeof CSS !== "undefined" && "highlights" in CSS ? CSS.highlights : null;
+}
 
 function clearFindTarget(viewport: HTMLElement | null) {
+  highlightRegistry()?.delete(FIND_HIGHLIGHT_NAME);
   viewport
     ?.querySelectorAll(`.${FIND_TARGET_CLASS}`)
     .forEach((element) => element.classList.remove(FIND_TARGET_CLASS));
+}
+
+/** Paint every occurrence of the query inside the destination row. */
+function highlightMatchesInRow(row: Element, query: string) {
+  const registry = highlightRegistry();
+  if (registry === null || query.length === 0) return;
+  const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+  const ranges: Range[] = [];
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const text = node.nodeValue;
+    if (text === null) continue;
+    for (const offset of findSubstringOffsets(text, query)) {
+      const range = document.createRange();
+      range.setStart(node, offset);
+      range.setEnd(node, offset + query.length);
+      ranges.push(range);
+    }
+  }
+  if (ranges.length === 0) return;
+  registry.set(FIND_HIGHLIGHT_NAME, new Highlight(...ranges));
 }
 
 export interface TimelineFindBarProps {
@@ -62,7 +99,7 @@ export function TimelineFindBar({
   const searchIndex = useMemo(() => buildMessagesTimelineSearchIndex(rows), [rows]);
 
   const revealRow = useCallback(
-    (rowIndex: number) => {
+    (rowIndex: number, query: string) => {
       anchorRowIndexRef.current = rowIndex;
       const rowId = rows[rowIndex]?.id;
       onManualNavigation();
@@ -73,9 +110,10 @@ export function TimelineFindBar({
           requestAnimationFrame(() => {
             clearFindTarget(viewport);
             if (rowId === undefined) return;
-            viewport
-              ?.querySelector(`[data-timeline-row-id="${CSS.escape(rowId)}"]`)
-              ?.classList.add(FIND_TARGET_CLASS);
+            const row = viewport?.querySelector(`[data-timeline-row-id="${CSS.escape(rowId)}"]`);
+            if (row === null || row === undefined) return;
+            row.classList.add(FIND_TARGET_CLASS);
+            highlightMatchesInRow(row, query);
           });
         });
     },
@@ -99,7 +137,7 @@ export function TimelineFindBar({
         clearFindTarget(viewport);
         return;
       }
-      revealRow(rowIndex);
+      revealRow(rowIndex, query);
     },
     [revealRow, searchIndex, viewport],
   );
@@ -109,7 +147,7 @@ export function TimelineFindBar({
       if (find.matches.length === 0) return;
       const position = stepMessagesTimelineMatch(find.matches.length, find.position, direction);
       setFind({ ...find, position });
-      revealRow(find.matches[position]!);
+      revealRow(find.matches[position]!, find.query);
     },
     [find, revealRow],
   );

@@ -828,11 +828,22 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 
   /* Find-in-thread destination. The pulse runs twice and stops; a steady ring
-     then holds the reader's place, so nothing repaints continuously. */
+     then holds the reader's place, so nothing repaints continuously. The ring
+     locates the row; ::highlight below marks the actual words, which is what
+     the reader is looking for. */
   [data-timeline-row-id].timeline-find-target {
     animation: timeline-find-target-pulse 650ms ease-in-out 2;
     border-radius: 0.75rem;
-    box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-primary) 30%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-primary) 55%, transparent);
+  }
+
+  /* Matched words inside the destination row. Painted through the CSS Custom
+     Highlight API, so no element wraps the text and no row re-renders. Solid
+     rather than tinted: a translucent wash over syntax-highlighted code and
+     muted commentary was the reason this was hard to see at all. */
+  ::highlight(timeline-find-match) {
+    background-color: oklch(0.82 0.16 85);
+    color: oklch(0.2 0.02 85);
   }
 
   @media (prefers-reduced-motion: reduce) {
