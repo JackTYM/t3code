@@ -9,7 +9,7 @@ import type {
 } from "@t3tools/contracts";
 import { ProviderInstanceId } from "@t3tools/contracts";
 
-import { projectThreadAwareness } from "./agentAwareness.ts";
+import { projectThreadAwareness, type ProjectThreadAwarenessInput } from "./agentAwareness.ts";
 
 const NOW = "2026-05-22T12:00:00.000Z";
 
@@ -19,20 +19,7 @@ const project = {
 
 function thread(
   overrides: Partial<OrchestrationThreadShell> = {},
-): Pick<
-  OrchestrationThreadShell,
-  | "id"
-  | "title"
-  | "modelSelection"
-  | "session"
-  | "latestTurn"
-  | "updatedAt"
-  | "hasPendingApprovals"
-  | "hasPendingUserInput"
-  | "archivedAt"
-  | "settledOverride"
-  | "snoozedUntil"
-> {
+): ProjectThreadAwarenessInput["thread"] {
   return {
     id: "thread-1" as ThreadId,
     title: "Fix failing CI",
@@ -42,6 +29,8 @@ function thread(
     updatedAt: NOW,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
+    hasActionableProposedPlan: false,
+    interactionMode: "default",
     archivedAt: null,
     settledOverride: null,
     snoozedUntil: null,

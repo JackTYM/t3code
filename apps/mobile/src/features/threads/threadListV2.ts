@@ -1,4 +1,5 @@
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
+import { resolveThreadStatusKind, type ThreadStatusKind } from "@t3tools/shared/threadStatus";
 import {
   effectiveSnoozed,
   hasQueuedTurnStart,
@@ -132,22 +133,38 @@ export function resolveThreadListV2Enabled(input: {
   return input.legacyPreference !== true;
 }
 
+// The flat list has no plan, background or completion vocabulary, so those
+// rungs fall through and the row reads as ready, as it always has.
+const THREAD_LIST_V2_SUPPRESSED: ReadonlySet<ThreadStatusKind> = new Set([
+  "plan-ready",
+  "background-working",
+  "monitoring",
+]);
+
+/** The flat list's row state, derived from the shared ladder. */
 export function resolveThreadListV2Status(
-  thread: Pick<EnvironmentThreadShell, "hasPendingApprovals" | "hasPendingUserInput" | "session">,
+  thread: Pick<
+    EnvironmentThreadShell,
+    | "hasPendingApprovals"
+    | "hasPendingUserInput"
+    | "hasBlockingUserInput"
+    | "latestTurn"
+    | "session"
+  >,
 ): ThreadListV2Status {
-  if (thread.hasPendingApprovals) {
-    return "approval";
+  switch (resolveThreadStatusKind(thread, { suppress: THREAD_LIST_V2_SUPPRESSED })) {
+    case "pending-approval":
+      return "approval";
+    case "awaiting-input":
+      return "input";
+    case "working":
+    case "connecting":
+      return "working";
+    case "failed":
+      return "failed";
+    default:
+      return "ready";
   }
-  if (thread.hasPendingUserInput) {
-    return "input";
-  }
-  if (thread.session?.status === "running" || thread.session?.status === "starting") {
-    return "working";
-  }
-  if (thread.session?.status === "error") {
-    return "failed";
-  }
-  return "ready";
 }
 
 /** NaN-safe Date.parse for sort comparators: a malformed timestamp must not
