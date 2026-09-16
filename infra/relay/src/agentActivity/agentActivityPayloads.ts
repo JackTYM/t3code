@@ -47,6 +47,24 @@ export function isExpiredAgentActivityState(
   return !Number.isFinite(expiresAt) || nowMs > expiresAt;
 }
 
+// A `running` state is published once per turn, so a turn that outlives the
+// running TTL looks identical to a dead environment. Dropping the row is right
+// for the dead machine and wrong for the long turn, and the wrong case is the
+// common one. Past its TTL the row stops counting as live work (unchanged), but
+// it stays visible as `stale` until this outer bound, so a long turn degrades
+// to "waiting for an update" instead of silently handing the display to a
+// newer terminal row.
+export function isAbandonedAgentActivityState(
+  state: RelayAgentActivityState,
+  nowMs: number,
+): boolean {
+  const updatedAtMs = Option.match(DateTime.make(state.updatedAt), {
+    onNone: () => Number.NaN,
+    onSome: (dt) => dt.epochMilliseconds,
+  });
+  return !Number.isFinite(updatedAtMs) || nowMs > updatedAtMs + WAITING_AGENT_ACTIVITY_ROW_TTL_MS;
+}
+
 const MAX_SUMMARY_TEXT_LENGTH = 120;
 const MAX_STATUS_TEXT_LENGTH = 40;
 const MAX_DEEP_LINK_LENGTH = 512;

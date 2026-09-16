@@ -720,7 +720,7 @@ describe("isExpiredAgentActivityState", () => {
 describe("makeAggregateState", () => {
   const hourMs = 60 * 60 * 1_000;
 
-  it("drops expired rows from the aggregate", () => {
+  it("stops counting an expired row as active but keeps it visible as stale", () => {
     const fresh: RelayAgentActivityState = {
       ...state,
       threadId: "thread-fresh" as RelayAgentActivityState["threadId"],
@@ -733,22 +733,62 @@ describe("makeAggregateState", () => {
     });
 
     expect(aggregate?.activeCount).toBe(1);
-    expect(aggregate?.activities).toMatchObject([{ threadId: "thread-fresh" }]);
+    expect(aggregate?.activities).toMatchObject([
+      { threadId: "thread-fresh", phase: "running" },
+      { threadId: "thread", phase: "stale", status: "Waiting" },
+    ]);
   });
 
-  it("returns null when every row has expired and nothing terminal remains", () => {
+  it("reports a lone expired row as stale rather than ending the card", () => {
     expect(
       AgentActivityPublisher.makeAggregateState({
         activeStates: [state],
         terminalState: null,
         nowMs: 3 * hourMs,
       }),
+    ).toMatchObject({
+      subtitle: "Waiting for an update",
+      activeCount: 0,
+      activities: [{ threadId: "thread", phase: "stale" }],
+    });
+  });
+
+  it("does not let an unrelated completion render Done over a long-running turn", () => {
+    // A turn outliving the running TTL publishes no further `running` state, so
+    // its row ages out while the agent is still working. It must not simply
+    // vanish and leave a neighbouring thread's completion speaking for the card.
+    const justCompleted: RelayAgentActivityState = {
+      ...state,
+      threadId: "thread-done" as RelayAgentActivityState["threadId"],
+      phase: "completed",
+      updatedAt: "1970-01-01T02:55:00.000Z",
+    };
+    const aggregate = AgentActivityPublisher.makeAggregateState({
+      activeStates: [state, justCompleted],
+      terminalState: null,
+      nowMs: 3 * hourMs,
+    });
+
+    expect(aggregate?.activities).toMatchObject([
+      { threadId: "thread-done", phase: "completed" },
+      { threadId: "thread", phase: "stale", status: "Waiting" },
+    ]);
+  });
+
+  it("returns null once an expired row is abandoned outright", () => {
+    expect(
+      AgentActivityPublisher.makeAggregateState({
+        activeStates: [state],
+        terminalState: null,
+        nowMs: 25 * hourMs,
+      }),
     ).toBeNull();
   });
 
-  it("still reports the terminal state when active rows have expired", () => {
+  it("keeps the terminal state leading when active rows have expired", () => {
     const terminalState: RelayAgentActivityState = {
       ...state,
+      threadId: "thread-done" as RelayAgentActivityState["threadId"],
       phase: "completed",
       updatedAt: "1970-01-01T03:00:00.000Z",
     };
@@ -759,7 +799,12 @@ describe("makeAggregateState", () => {
     });
 
     expect(aggregate?.activeCount).toBe(0);
-    expect(aggregate?.activities).toMatchObject([{ phase: "completed" }]);
+    // The completion leads so the alert and notification paths still read it
+    // out of slot 0; the thread we have lost touch with trails it as stale.
+    expect(aggregate?.activities).toMatchObject([
+      { threadId: "thread-done", phase: "completed" },
+      { threadId: "thread", phase: "stale" },
+    ]);
   });
 
   it("keeps a recently finished thread visible as Done beside active agents", () => {
