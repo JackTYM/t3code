@@ -8,7 +8,8 @@ export type ThreadStatusKind =
   | "working"
   | "connecting"
   | "error"
-  | "plan-ready";
+  | "plan-ready"
+  | "monitoring";
 
 export interface ThreadStatusPresentation extends StatusTone {
   readonly kind: ThreadStatusKind;
@@ -50,6 +51,9 @@ export function resolveThreadStatus(
         pulse: false,
       };
     case "working":
+    // The turn has settled and only background work (subagents, workflows)
+    // is alive. Same chip as a live turn, as on web.
+    case "background-working":
       return {
         kind: "working",
         label: "Working",
@@ -89,7 +93,19 @@ export function resolveThreadStatus(
         iconBackground: "rgba(191,90,242,0.22)",
         pulse: false,
       };
-    // Background work and completion have no chip on this list.
+    // Watch loops are the only live work: reported, but not in motion, so it
+    // shares working's hue without the pulse.
+    case "monitoring":
+      return {
+        kind: "monitoring",
+        label: "Monitoring",
+        pillClassName: "bg-primary/10",
+        textClassName: "text-adaptive-sky-600-400",
+        iconColor: "#0a84ff",
+        iconBackground: "rgba(10,132,255,0.22)",
+        pulse: false,
+      };
+    // Completion has no chip on this list.
     default:
       return null;
   }

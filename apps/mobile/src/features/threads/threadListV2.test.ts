@@ -168,6 +168,58 @@ describe("resolveThreadListV2Status", () => {
       "ready",
     );
   });
+
+  // The turn settles while subagents/workflows keep running. The row still
+  // has live work and must not read as ready.
+  it("reports background work on a settled turn as working", () => {
+    const thread = makeThread({
+      id: ThreadId.make("t"),
+      title: "t",
+      backgroundLiveness: "working",
+      session: {
+        threadId: ThreadId.make("t"),
+        status: "idle",
+        providerName: "Codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimeMode: "full-access",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: NOW,
+      },
+    });
+    expect(resolveThreadListV2Status(thread)).toBe("working");
+  });
+
+  it("reports a watch loop as monitoring", () => {
+    const thread = makeThread({
+      id: ThreadId.make("t"),
+      title: "t",
+      backgroundLiveness: "monitoring",
+      session: {
+        threadId: ThreadId.make("t"),
+        status: "idle",
+        providerName: "Codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimeMode: "full-access",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: NOW,
+      },
+    });
+    expect(resolveThreadListV2Status(thread)).toBe("monitoring");
+  });
+
+  // Background liveness reports; it never asks. A pending approval on the
+  // same thread must still win the row.
+  it("keeps approval ahead of background work", () => {
+    const thread = makeThread({
+      id: ThreadId.make("t"),
+      title: "t",
+      hasPendingApprovals: true,
+      backgroundLiveness: "working",
+    });
+    expect(resolveThreadListV2Status(thread)).toBe("approval");
+  });
 });
 
 describe("queued messages keep a settled thread active", () => {

@@ -35,7 +35,13 @@ export { snoozeWakeLabel };
  * (approval), "in motion" (working), and "broken" (failed). Ready is the
  * unlabeled resting state.
  */
-export type ThreadListV2Status = "approval" | "input" | "working" | "failed" | "ready";
+export type ThreadListV2Status =
+  | "approval"
+  | "input"
+  | "working"
+  | "monitoring"
+  | "failed"
+  | "ready";
 export type ThreadListV2SwipeAction = "archive" | "settle" | "unsettle" | "snooze" | "unsnooze";
 
 export function resolveThreadListV2SnoozeMenuSelection(input: {
@@ -133,13 +139,10 @@ export function resolveThreadListV2Enabled(input: {
   return input.legacyPreference !== true;
 }
 
-// The flat list has no plan, background or completion vocabulary, so those
-// rungs fall through and the row reads as ready, as it always has.
-const THREAD_LIST_V2_SUPPRESSED: ReadonlySet<ThreadStatusKind> = new Set([
-  "plan-ready",
-  "background-working",
-  "monitoring",
-]);
+// The flat list has no plan or completion vocabulary, so those rungs fall
+// through and the row reads as ready, as it always has. Background work does
+// have vocabulary here, matching the web sidebar row.
+const THREAD_LIST_V2_SUPPRESSED: ReadonlySet<ThreadStatusKind> = new Set(["plan-ready"]);
 
 /** The flat list's row state, derived from the shared ladder. */
 export function resolveThreadListV2Status(
@@ -150,6 +153,7 @@ export function resolveThreadListV2Status(
     | "hasBlockingUserInput"
     | "latestTurn"
     | "session"
+    | "backgroundLiveness"
   >,
 ): ThreadListV2Status {
   switch (resolveThreadStatusKind(thread, { suppress: THREAD_LIST_V2_SUPPRESSED })) {
@@ -159,7 +163,12 @@ export function resolveThreadListV2Status(
       return "input";
     case "working":
     case "connecting":
+    // The turn has settled and only background work (subagents, workflows)
+    // is alive. Same row state as a live turn, as on web.
+    case "background-working":
       return "working";
+    case "monitoring":
+      return "monitoring";
     case "failed":
       return "failed";
     default:
