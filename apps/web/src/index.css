@@ -817,6 +817,30 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     outline: none;
   }
 
+  @keyframes timeline-find-target-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 transparent;
+    }
+    50% {
+      box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-primary) 70%, transparent);
+    }
+  }
+
+  /* Find-in-thread destination. The pulse runs twice and stops; a steady ring
+     then holds the reader's place, so nothing repaints continuously. */
+  [data-timeline-row-id].timeline-find-target {
+    animation: timeline-find-target-pulse 650ms ease-in-out 2;
+    border-radius: 0.75rem;
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-primary) 30%, transparent);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-timeline-row-id].timeline-find-target {
+      animation: none;
+    }
+  }
+
   .settings-slider {
     --settings-slider-progress: 0%;
     --settings-slider-fill-offset: 0.5rem;

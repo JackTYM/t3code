@@ -1544,3 +1544,154 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     }
   }
 }
+
+function joinSearchText(parts: ReadonlyArray<string | null | undefined>): string {
+  return parts.filter((part): part is string => !!part).join("\n");
+}
+
+function workLogEntrySearchText(entry: WorkLogEntry): string {
+  return joinSearchText([
+    entry.label,
+    entry.toolTitle,
+    entry.detail,
+    entry.command,
+    ...(entry.changedFiles ?? []),
+  ]);
+}
+
+function worktreeSetupSearchText(snapshot: WorktreeSetupSnapshot): string {
+  return joinSearchText([
+    snapshot.branch,
+    snapshot.baseRef,
+    snapshot.worktreePath,
+    snapshot.setupScript?.name,
+    snapshot.setupScript?.command,
+    snapshot.error,
+    ...snapshot.stages.flatMap((stage) => [stage.detail, ...stage.tail]),
+  ]);
+}
+
+/**
+ * The text a row contributes to in-thread find. Searching the row model rather
+ * than the DOM is the point: the timeline virtualizes, so only rows near the
+ * viewport exist as elements.
+ *
+ * Three kinds return "" and can never match, deliberately:
+ * `assistant-meta` carries the same `message` as the `message` row that
+ * precedes it, so indexing both would report one message as two hits;
+ * `working` and `thinking` are transient status affordances with no content.
+ *
+ * Collapsed content is reachable only through its summary — a folded turn is a
+ * `turn-fold` label and a collapsed tool group is a `work-toggle` summary, and
+ * the entries they hide are absent from the row model until expanded.
+ */
+export function messagesTimelineRowSearchText(row: MessagesTimelineRow): string {
+  switch (row.kind) {
+    case "work":
+      return joinSearchText([row.displayLabel, ...row.groupedEntries.map(workLogEntrySearchText)]);
+    case "work-live":
+      return joinSearchText([
+        workLogEntrySearchText(row.entry),
+        ...row.groupedEntries.map(workLogEntrySearchText),
+      ]);
+    case "work-toggle":
+      return row.summary;
+    case "turn-fold":
+    case "context-compaction":
+      return row.label;
+    case "message":
+      return joinSearchText([
+        row.message.text,
+        ...(row.message.attachments ?? []).map((attachment) => attachment.name),
+      ]);
+    case "proposed-plan":
+      return row.proposedPlan.planMarkdown;
+    case "queued-message":
+      return row.queuedMessage.prompt;
+    case "worktree-setup":
+      return worktreeSetupSearchText(row.snapshot);
+    case "assistant-meta":
+    case "working":
+    case "thinking":
+      return "";
+  }
+}
+
+export interface MessagesTimelineSearchEntry {
+  readonly rowIndex: number;
+  /** Lowercased once per index build; the query is lowercased per search. */
+  readonly haystack: string;
+}
+
+/**
+ * Build once per rows array, never per keystroke. Rows are capped at 500, so a
+ * flat array scanned with `includes` is enough; an inverted index would cost
+ * more to maintain than it saves.
+ */
+export function buildMessagesTimelineSearchIndex(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+): ReadonlyArray<MessagesTimelineSearchEntry> {
+  const entries: MessagesTimelineSearchEntry[] = [];
+  for (const [rowIndex, row] of rows.entries()) {
+    const text = messagesTimelineRowSearchText(row);
+    if (text.length === 0) continue;
+    entries.push({ rowIndex, haystack: text.toLowerCase() });
+  }
+  return entries;
+}
+
+/**
+ * Row indices matching `query`, in timeline order. Case-insensitive substring;
+ * a blank query matches nothing rather than everything. The query is not
+ * trimmed, so a deliberate leading or trailing space still searches for it.
+ */
+export function findMessagesTimelineMatches(
+  index: ReadonlyArray<MessagesTimelineSearchEntry>,
+  query: string,
+): ReadonlyArray<number> {
+  if (query.trim().length === 0) return [];
+  const needle = query.toLowerCase();
+  const matches: number[] = [];
+  for (const entry of index) {
+    if (entry.haystack.includes(needle)) matches.push(entry.rowIndex);
+  }
+  return matches;
+}
+
+/** Wrap-around step through the match list. Empty match lists stay at 0. */
+export function stepMessagesTimelineMatch(
+  matchCount: number,
+  current: number,
+  direction: 1 | -1,
+): number {
+  if (matchCount <= 0) return 0;
+  return (((current + direction) % matchCount) + matchCount) % matchCount;
+}
+
+/**
+ * Keep the reader's place when the query changes: land on the first match at or
+ * after the row they were already looking at, wrapping to the first match when
+ * every hit is behind them.
+ */
+export function initialMessagesTimelineMatch(
+  matches: ReadonlyArray<number>,
+  anchorRowIndex: number,
+): number {
+  const index = matches.findIndex((rowIndex) => rowIndex >= anchorRowIndex);
+  return index < 0 ? 0 : index;
+}
+
+/**
+ * Counter text for the find bar. A blank query reads as no text at all rather
+ * than as a zero count, so "searched and found nothing" never looks the same as
+ * "has not searched yet".
+ */
+export function messagesTimelineFindStatus(
+  query: string,
+  matchCount: number,
+  position: number,
+): string | null {
+  if (query.trim().length === 0) return null;
+  if (matchCount === 0) return "No matches";
+  return `${position + 1}/${matchCount}`;
+}

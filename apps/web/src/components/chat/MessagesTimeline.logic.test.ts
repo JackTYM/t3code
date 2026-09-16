@@ -20,16 +20,22 @@ import {
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import {
+  buildMessagesTimelineSearchIndex,
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
   deriveMessagesTimelineRowsWithState,
+  findMessagesTimelineMatches,
+  initialMessagesTimelineMatch,
   liveWorkEntryLabel,
+  messagesTimelineFindStatus,
+  messagesTimelineRowSearchText,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveWorkGroupScrollIndex,
   shouldFollowWorkGroupAppend,
   shouldPreserveAssistantLineBreaks,
+  stepMessagesTimelineMatch,
   type MessagesTimelineRow,
   type MessagesTimelineRowsProjection,
   WORKTREE_SETUP_ROW_ID,
@@ -3455,5 +3461,307 @@ describe("computeStableMessagesTimelineRows", () => {
 
     expect(reordered).not.toBe(initial);
     expect(reordered.result).toEqual([initial.result[1], initial.result[0]]);
+  });
+});
+
+describe("in-thread find", () => {
+  const time = "2026-01-01T00:00:00Z";
+
+  const message = (id: string, text: string, attachmentName?: string): ChatMessage => ({
+    id: MessageId.make(id),
+    role: "assistant",
+    text,
+    turnId: null,
+    createdAt: time,
+    updatedAt: time,
+    streaming: false,
+    ...(attachmentName
+      ? {
+          attachments: [
+            {
+              type: "file" as const,
+              id: `${id}-attachment` as never,
+              name: attachmentName,
+              mimeType: "text/plain",
+              sizeBytes: 12,
+            },
+          ],
+        }
+      : {}),
+  });
+
+  const workEntry = (overrides: Partial<WorkLogEntry>): WorkLogEntry => ({
+    id: "entry",
+    createdAt: time,
+    label: "Ran a tool",
+    tone: "tool",
+    ...overrides,
+  });
+
+  describe("messagesTimelineRowSearchText", () => {
+    it("reads message prose and attachment names", () => {
+      expect(
+        messagesTimelineRowSearchText({
+          kind: "message",
+          id: "m1",
+          createdAt: time,
+          message: message("m1", "The migration is reversible", "rollback-notes.md"),
+          durationStart: time,
+          showAssistantMeta: true,
+          showAssistantCopyButton: true,
+          assistantCopyStreaming: false,
+        }),
+      ).toBe("The migration is reversible\nrollback-notes.md");
+    });
+
+    it("reads every grouped work entry, including commands and changed files", () => {
+      expect(
+        messagesTimelineRowSearchText({
+          kind: "work",
+          id: "w1",
+          createdAt: time,
+          isExpandedToolGroup: false,
+          displayLabel: "Edited 2 files",
+          groupedEntries: [
+            workEntry({ id: "a", label: "Ran command", command: "pnpm typecheck" }),
+            workEntry({
+              id: "b",
+              label: "Edited",
+              toolTitle: "Edit",
+              detail: "two hunks",
+              changedFiles: ["apps/web/src/components/chat/MessagesTimeline.tsx"],
+            }),
+          ],
+        }),
+      ).toBe(
+        [
+          "Edited 2 files",
+          "Ran command\npnpm typecheck",
+          "Edited\nEdit\ntwo hunks\napps/web/src/components/chat/MessagesTimeline.tsx",
+        ].join("\n"),
+      );
+    });
+
+    it("reads the live work entry alongside its group", () => {
+      expect(
+        messagesTimelineRowSearchText({
+          kind: "work-live",
+          id: "wl1",
+          createdAt: time,
+          entry: workEntry({ id: "live", label: "Running tests" }),
+          groupedEntries: [workEntry({ id: "prior", label: "Read package.json" })],
+          groupId: "group",
+          expanded: false,
+          active: true,
+        }),
+      ).toBe("Running tests\nRead package.json");
+    });
+
+    it("reads collapsed groups and folds through their summaries only", () => {
+      expect(
+        messagesTimelineRowSearchText({
+          kind: "work-toggle",
+          id: "wt1",
+          createdAt: time,
+          groupId: "group",
+          hiddenCount: 4,
+          expanded: false,
+          summary: "Searched 4 files",
+          summaryKind: "mixed",
+          hasFailure: false,
+        }),
+      ).toBe("Searched 4 files");
+
+      expect(
+        messagesTimelineRowSearchText({
+          kind: "turn-fold",
+          id: "tf1",
+          createdAt: time,
+          turnId: TurnId.make("turn-1"),
+          label: "12 steps",
+          expanded: false,
+        }),
+      ).toBe("12 steps");
+    });
+
+    it("reads plan markdown, queued prompts, compactions and setup snapshots", () => {
+      expect(
+        messagesTimelineRowSearchText({
+          kind: "proposed-plan",
+          id: "p1",
+          createdAt: time,
+          proposedPlan: {
+            id: "plan-1",
+            turnId: null,
+            planMarkdown: "## Plan\nSwap the projector",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: time,
+            updatedAt: time,
+          },
+        }),
+      ).toBe("## Plan\nSwap the projector");
+
+      expect(
+        messagesTimelineRowSearchText({
+          kind: "queued-message",
+          id: "q1",
+          createdAt: time,
+          isNext: true,
+          queuedMessage: {
+            id: "q1",
+            prompt: "then run the linter",
+            images: [],
+            files: [],
+            terminalContexts: [],
+            previewAnnotations: [],
+            reviewComments: [],
+            submissionIntent: "foreground",
+            queuedAfterToolActivityId: null,
+            createdAt: time,
+          },
+        }),
+      ).toBe("then run the linter");
+
+      expect(
+        messagesTimelineRowSearchText({
+          kind: "context-compaction",
+          id: "c1",
+          createdAt: time,
+          label: "Context compacted",
+        }),
+      ).toBe("Context compacted");
+
+      expect(
+        messagesTimelineRowSearchText({
+          kind: "worktree-setup",
+          id: WORKTREE_SETUP_ROW_ID,
+          createdAt: time,
+          embedded: false,
+          snapshot: {
+            threadId: ThreadId.make("thread-setup"),
+            phase: "failed",
+            startedAt: time,
+            endedAt: null,
+            branch: "feat/thread-find",
+            baseRef: "main",
+            worktreePath: "/tmp/wt",
+            setupScript: { name: "install", command: "pnpm i", terminalId: "t1" },
+            stages: [
+              {
+                id: "fetch",
+                status: "done",
+                startedAt: null,
+                endedAt: null,
+                percent: null,
+                detail: "3 refs",
+                tail: [],
+              },
+              {
+                id: "setup-script",
+                status: "failed",
+                startedAt: null,
+                endedAt: null,
+                percent: null,
+                detail: null,
+                tail: ["ERR_PNPM_OUTDATED_LOCKFILE"],
+              },
+            ],
+            error: "setup script exited 1",
+            sequence: 1,
+          },
+        }),
+      ).toBe(
+        [
+          "feat/thread-find",
+          "main",
+          "/tmp/wt",
+          "install",
+          "pnpm i",
+          "setup script exited 1",
+          "3 refs",
+          "ERR_PNPM_OUTDATED_LOCKFILE",
+        ].join("\n"),
+      );
+    });
+
+    it("gives no text to rows that would double-count or carry no content", () => {
+      // The same message is already indexed by its `message` row.
+      expect(
+        messagesTimelineRowSearchText({
+          kind: "assistant-meta",
+          id: "am1",
+          createdAt: time,
+          message: message("m1", "The migration is reversible"),
+          showAssistantCopyButton: true,
+          assistantCopyStreaming: false,
+        }),
+      ).toBe("");
+      expect(messagesTimelineRowSearchText({ kind: "working", id: "wk", createdAt: null })).toBe(
+        "",
+      );
+      expect(messagesTimelineRowSearchText({ kind: "thinking", id: "th", createdAt: null })).toBe(
+        "",
+      );
+    });
+  });
+
+  describe("matching", () => {
+    const textRow = (id: string, text: string): MessagesTimelineRow => ({
+      kind: "message",
+      id,
+      createdAt: time,
+      message: message(id, text),
+      durationStart: time,
+      showAssistantMeta: false,
+      showAssistantCopyButton: false,
+      assistantCopyStreaming: false,
+    });
+
+    const rows: MessagesTimelineRow[] = [
+      textRow("m1", "Reticulating splines"),
+      { kind: "working", id: "wk", createdAt: null },
+      textRow("m2", "SPLINES are reticulated"),
+      textRow("m3", "unrelated"),
+      textRow("m4", "splines again"),
+    ];
+
+    it("keeps row indices across rows that contribute no text", () => {
+      const index = buildMessagesTimelineSearchIndex(rows);
+      expect(index.map((entry) => entry.rowIndex)).toEqual([0, 2, 3, 4]);
+      expect(findMessagesTimelineMatches(index, "splines")).toEqual([0, 2, 4]);
+    });
+
+    it("matches case-insensitively and distinguishes blank from zero matches", () => {
+      const index = buildMessagesTimelineSearchIndex(rows);
+      expect(findMessagesTimelineMatches(index, "SpLiNeS")).toEqual([0, 2, 4]);
+      expect(findMessagesTimelineMatches(index, "")).toEqual([]);
+      expect(findMessagesTimelineMatches(index, "   ")).toEqual([]);
+      expect(findMessagesTimelineMatches(index, "nowhere")).toEqual([]);
+    });
+
+    it("wraps forward and backward through matches", () => {
+      expect(stepMessagesTimelineMatch(3, 0, 1)).toBe(1);
+      expect(stepMessagesTimelineMatch(3, 2, 1)).toBe(0);
+      expect(stepMessagesTimelineMatch(3, 0, -1)).toBe(2);
+      expect(stepMessagesTimelineMatch(1, 0, 1)).toBe(0);
+      expect(stepMessagesTimelineMatch(1, 0, -1)).toBe(0);
+      expect(stepMessagesTimelineMatch(0, 0, 1)).toBe(0);
+      expect(stepMessagesTimelineMatch(0, 0, -1)).toBe(0);
+    });
+
+    it("reads blank for an untouched query and says so when nothing matched", () => {
+      expect(messagesTimelineFindStatus("", 0, 0)).toBeNull();
+      expect(messagesTimelineFindStatus("   ", 0, 0)).toBeNull();
+      expect(messagesTimelineFindStatus("splines", 0, 0)).toBe("No matches");
+      expect(messagesTimelineFindStatus("splines", 17, 2)).toBe("3/17");
+    });
+
+    it("starts at the first match at or after the reader's position, wrapping when all are behind", () => {
+      expect(initialMessagesTimelineMatch([0, 2, 4], 0)).toBe(0);
+      expect(initialMessagesTimelineMatch([0, 2, 4], 3)).toBe(2);
+      expect(initialMessagesTimelineMatch([0, 2, 4], 9)).toBe(0);
+      expect(initialMessagesTimelineMatch([], 3)).toBe(0);
+    });
   });
 });

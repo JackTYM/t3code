@@ -1254,3 +1254,31 @@ describe("composer and pull request shortcuts", () => {
     });
   }
 });
+
+describe("thread.find default scope", () => {
+  for (const platform of ["MacIntel", "Win32"]) {
+    it(`leaves Cmd/Ctrl+F to the browser outside the transcript on ${platform}`, () => {
+      const input = event({
+        key: "f",
+        metaKey: platform === "MacIntel",
+        ctrlKey: platform !== "MacIntel",
+      });
+      assert.strictEqual(
+        resolveShortcutCommand(input, DEFAULT_RESOLVED_KEYBINDINGS, {
+          platform,
+          context: { threadTranscriptFocus: true },
+        }),
+        "thread.find",
+      );
+      // The composer, side panels, dialogs and the terminal all report false,
+      // which must leave the shortcut unclaimed so the browser's find opens.
+      assert.isNull(
+        resolveShortcutCommand(input, DEFAULT_RESOLVED_KEYBINDINGS, {
+          platform,
+          context: { threadTranscriptFocus: false },
+        }),
+      );
+      assert.isNull(resolveShortcutCommand(input, DEFAULT_RESOLVED_KEYBINDINGS, { platform }));
+    });
+  }
+});

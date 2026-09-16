@@ -235,6 +235,8 @@ import { useOpenPrLink } from "~/lib/openPullRequestLink";
 import type { ChatMarkdownContextReference } from "../ChatMarkdown";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
+import { onOpenThreadFind } from "../../threadFindBus";
+import { TimelineFindBar } from "./TimelineFindBar";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
@@ -762,6 +764,31 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
     null,
   );
+  const [findOpen, setFindOpen] = useState(false);
+  const findRestoreFocusRef = useRef<HTMLElement | null>(null);
+  const openFind = useCallback(() => {
+    // With the bar already open, reselect the query the way a browser's own find
+    // does, rather than stacking a second one.
+    const input = timelineViewportElement?.querySelector<HTMLInputElement>(
+      "[data-timeline-find-bar] input",
+    );
+    if (input) {
+      input.focus();
+      input.select();
+      return;
+    }
+    const active = document.activeElement;
+    findRestoreFocusRef.current = active instanceof HTMLElement ? active : null;
+    setFindOpen(true);
+  }, [timelineViewportElement]);
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    const restore = findRestoreFocusRef.current;
+    findRestoreFocusRef.current = null;
+    // Closing returns the keyboard where it was without moving the transcript.
+    if (restore?.isConnected) restore.focus({ preventScroll: true });
+  }, []);
+  useEffect(() => onOpenThreadFind(openFind), [openFind]);
   const {
     target: readyCitationRequest,
     positioning: citationPositioning,
@@ -1033,12 +1060,24 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           ref={setTimelineViewportElement}
           className="relative h-full min-h-0"
           data-assistant-citation-viewport="true"
+          // Marks the keyboard scope for `thread.find`, so Cmd/Ctrl+F is only
+          // claimed here and stays the browser's own find elsewhere.
+          data-thread-transcript="true"
         >
           {onCiteAssistantText && citationThreadRef ? (
             <AssistantSelectionToolbar
               viewport={timelineViewportElement}
               threadRef={citationThreadRef}
               onCite={onCiteAssistantText}
+            />
+          ) : null}
+          {findOpen ? (
+            <TimelineFindBar
+              rows={rows}
+              listRef={listRef}
+              viewport={timelineViewportElement}
+              onManualNavigation={onManualNavigation}
+              onClose={closeFind}
             />
           ) : null}
           <LegendList<MessagesTimelineRow>
