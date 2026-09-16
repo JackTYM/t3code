@@ -166,6 +166,14 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       setting. Older servers drop the key on write, so clients show the
       picker inert rather than offering a choice that would never stick. */
   environmentIcon: Schema.optionalKey(Schema.Boolean),
+  /** Server searches stored thread content rather than just message text:
+      `orchestration.searchThreads` accepts `threadId` and
+      `includeActivityMatches`, and returns navigation anchors plus match
+      counts. Older servers silently ignore both inputs, so a scoped search
+      would answer with cross-thread results -- clients must check this before
+      sending either key and otherwise fall back to searching the loaded
+      window. */
+  threadContentSearch: Schema.optionalKey(Schema.Boolean),
   /** The desktop app supervising this server can be driven over RPC:
       server.updateServer runs its check -> download -> relaunch. Absent on
       desktop servers whose app predates the remote trigger, where clients

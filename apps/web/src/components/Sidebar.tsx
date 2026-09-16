@@ -133,6 +133,7 @@ import {
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
 import { vcsEnvironment } from "../state/vcs";
 import { threadEnvironment } from "../state/threads";
+import { useThreadSearch } from "../state/queries";
 import { useEnvironmentQuery } from "../state/query";
 import { useAtomCommand } from "../state/use-atom-command";
 import {
@@ -167,7 +168,7 @@ import {
   resolveSidebarDropVerb,
   type SidebarDropVerb,
   resolveSidebarThreadStatus,
-  searchSidebarThreads,
+  mergeSidebarThreadSearchResults,
   shouldCreateNewThreadInCurrentProject,
   shouldNavigateAfterThreadPark,
   shouldRecedeSidebarThread,
@@ -2000,6 +2001,9 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
   isHighlighted: boolean;
   isRouteActive: boolean;
   resultId: string;
+  /** Text from inside the thread, when that is why it matched. */
+  snippet?: string | null;
+  matchCount?: number;
   onHighlight: () => void;
   onSelect: () => void;
   onFileDropThreads: (threadRef: ScopedThreadRef, files: File[]) => void;
@@ -2089,7 +2093,8 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
               onMouseMove={props.onHighlight}
               onClick={props.onSelect}
               className={cn(
-                "flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left text-sm outline-none",
+                "flex w-full cursor-pointer gap-2.5 rounded-md px-2.5 text-left text-sm outline-none",
+                props.snippet ? "min-h-9 flex-col justify-center py-1.5" : "h-9 items-center",
                 props.isHighlighted || props.isRouteActive
                   ? "bg-sidebar-row-active text-sidebar-foreground"
                   : "text-sidebar-muted-foreground/75 hover:bg-sidebar-row-hover hover:text-sidebar-foreground",
@@ -2099,13 +2104,25 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
             />
           }
         >
-          {props.project ? (
-            <ProjectFavicon project={props.project} className="size-4 shrink-0" />
-          ) : null}
-          <span className="min-w-0 flex-1 truncate">{thread.title}</span>
-          <span className="shrink-0 text-xs text-muted-foreground/55 tabular-nums">
-            {threadTimeLabel(thread)}
+          <span className="flex w-full min-w-0 items-center gap-2.5">
+            {props.project ? (
+              <ProjectFavicon project={props.project} className="size-4 shrink-0" />
+            ) : null}
+            <span className="min-w-0 flex-1 truncate">{thread.title}</span>
+            {props.matchCount != null && props.matchCount > 1 ? (
+              <span className="shrink-0 text-xs text-muted-foreground/55 tabular-nums">
+                {props.matchCount}
+              </span>
+            ) : null}
+            <span className="shrink-0 text-xs text-muted-foreground/55 tabular-nums">
+              {threadTimeLabel(thread)}
+            </span>
           </span>
+          {props.snippet ? (
+            <span className="min-w-0 truncate pl-6.5 text-xs text-muted-foreground/60">
+              {props.snippet}
+            </span>
+          ) : null}
         </TooltipTrigger>
         <SidebarThreadTooltip
           thread={thread}
@@ -2623,9 +2640,42 @@ export default function Sidebar() {
     () => [...pinnedThreads, ...activeThreads, ...snoozedThreads, ...settledThreads],
     [activeThreads, pinnedThreads, settledThreads, snoozedThreads],
   );
+  // Only ask servers that can answer. An older one ignores the content search
+  // and the box keeps behaving exactly as it did: titles only.
+  const contentSearchEnvironmentIds = useMemo(
+    () =>
+      [...serverConfigs]
+        .filter(([, config]) => config.environment.capabilities.threadContentSearch === true)
+        .map(([environmentId]) => environmentId),
+    [serverConfigs],
+  );
+  const threadContentSearch = useThreadSearch(contentSearchEnvironmentIds, threadSearchQuery, {
+    includeActivityMatches: true,
+  });
+  const threadSearchResultEntries = useMemo(
+    () =>
+      mergeSidebarThreadSearchResults(
+        searchableThreads,
+        threadSearchQuery,
+        threadContentSearch.matches,
+      ),
+    [searchableThreads, threadContentSearch.matches, threadSearchQuery],
+  );
   const threadSearchResults = useMemo(
-    () => searchSidebarThreads(searchableThreads, threadSearchQuery),
-    [searchableThreads, threadSearchQuery],
+    () => threadSearchResultEntries.map((entry) => entry.thread),
+    [threadSearchResultEntries],
+  );
+  const threadSearchSnippetByKey = useMemo(
+    () =>
+      new Map(
+        threadSearchResultEntries
+          .filter((entry) => entry.snippet !== null)
+          .map((entry) => [
+            scopedThreadKey(scopeThreadRef(entry.thread.environmentId, entry.thread.id)),
+            { snippet: entry.snippet as string, matchCount: entry.matchCount },
+          ]),
+      ),
+    [threadSearchResultEntries],
   );
   const threadSearchResultOrderKey = threadSearchResults
     .map((thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)))
@@ -4573,6 +4623,8 @@ export default function Sidebar() {
                         isHighlighted={activeSearchResultIndex === index}
                         isRouteActive={routeThreadKey === threadKey}
                         resultId={`sidebar-thread-search-result-${index}`}
+                        snippet={threadSearchSnippetByKey.get(threadKey)?.snippet ?? null}
+                        matchCount={threadSearchSnippetByKey.get(threadKey)?.matchCount ?? 0}
                         onHighlight={() => setActiveSearchResultIndex(index)}
                         onSelect={() => selectThreadSearchResult(thread)}
                         onFileDropThreads={handleThreadFileDrop}

@@ -27,6 +27,7 @@ import {
   resolveSidebarThreadStatus,
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
+  mergeSidebarThreadSearchResults,
   searchSidebarThreads,
   formatWorkingDurationLabel,
   shouldClearThreadSelectionOnMouseDown,
@@ -832,6 +833,61 @@ describe("searchSidebarThreads", () => {
 
   it("returns no results for an empty query", () => {
     expect(searchSidebarThreads(threads, "   ")).toEqual([]);
+  });
+});
+
+describe("mergeSidebarThreadSearchResults", () => {
+  const threads = [
+    { id: "thread-1", environmentId: "env-a", title: "Fix workspace search" },
+    { id: "thread-2", environmentId: "env-a", title: "Review providers" },
+    { id: "thread-3", environmentId: "env-b", title: "Unrelated" },
+  ];
+  const match = (
+    environmentId: string,
+    threadId: string,
+    snippet: string,
+    threadMatchCount?: number,
+  ) => ({ environmentId, threadId, snippet, threadMatchCount });
+
+  it("puts title matches first and content-only matches after them", () => {
+    const merged = mergeSidebarThreadSearchResults(threads, "workspace", [
+      match("env-b", "thread-3", "we discussed the workspace layout", 3),
+    ]);
+    expect(merged.map((result) => [result.thread.id, result.snippet, result.matchCount])).toEqual([
+      ["thread-1", null, 0],
+      ["thread-3", "we discussed the workspace layout", 3],
+    ]);
+  });
+
+  it("shows a thread matching both ways once, keeping its snippet", () => {
+    const merged = mergeSidebarThreadSearchResults(threads, "workspace", [
+      match("env-a", "thread-1", "the workspace root moved", 2),
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.snippet).toBe("the workspace root moved");
+    expect(merged[0]?.matchCount).toBe(2);
+  });
+
+  it("drops content matches for threads the sidebar is not holding", () => {
+    const merged = mergeSidebarThreadSearchResults(threads, "nothingmatchesthis", [
+      match("env-z", "thread-absent", "orphan hit", 1),
+    ]);
+    expect(merged).toEqual([]);
+  });
+
+  it("keys on environment as well as thread, so ids cannot collide across servers", () => {
+    const merged = mergeSidebarThreadSearchResults(threads, "nothingmatchesthis", [
+      match("env-b", "thread-1", "wrong environment", 1),
+    ]);
+    expect(merged).toEqual([]);
+  });
+
+  it("returns nothing for a blank query even when matches are supplied", () => {
+    expect(
+      mergeSidebarThreadSearchResults(threads, "   ", [
+        match("env-a", "thread-1", "stale result", 1),
+      ]),
+    ).toEqual([]);
   });
 });
 
