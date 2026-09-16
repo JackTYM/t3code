@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
@@ -96,6 +97,14 @@ export function shouldPublishAgentAwarenessEvent(event: OrchestrationEvent): boo
       return true;
   }
 }
+
+const RELAY_AGENT_ACTIVITY_PUBLISH_TIMEOUT = "30 seconds";
+
+/**
+ * Stands in for "what the relay holds is unknown". Real identities are `"null"`
+ * or JSON, so this can never compare equal to one and the dedupe always misses.
+ */
+export const PUBLISH_FAILED_IDENTITY = "publish-failed";
 
 export function agentAwarenessPublishIdentity(state: RelayAgentActivityState | null): string {
   if (state === null) {
@@ -510,12 +519,31 @@ export const make = Effect.gen(function* () {
 
   const publishThread: AgentAwarenessRelay["Service"]["publishThread"] = (threadId) =>
     publishThreadUnsafe(threadId).pipe(
-      Effect.catchCause((cause) => {
-        return Effect.logWarning("agent activity publish failed", {
+      // Publishes drain through one serial worker, so an unbounded relay call
+      // stalls awareness for every thread in the environment, not just this one.
+      Effect.timeout(RELAY_AGENT_ACTIVITY_PUBLISH_TIMEOUT),
+      Effect.retry({ times: 2, schedule: Schedule.exponential("500 millis") }),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("agent activity publish failed", {
           threadId,
           cause: Cause.pretty(cause),
-        });
-      }),
+        }).pipe(
+          // A dropped publish leaves the relay holding an older state while
+          // this map still names the state before it. "running" is published
+          // exactly once per turn and nothing mid-turn republishes, so the
+          // next turn's "completed" — byte-identical to the last one, since
+          // the identity deliberately ignores updatedAt — would be skipped as
+          // unchanged and freeze the card on Done while the agent works.
+          // Poisoning the entry guarantees the next publish actually goes out.
+          Effect.andThen(
+            Ref.update(publishedStateByThreadRef, (publishedStates) => {
+              const nextPublishedStates = new Map(publishedStates);
+              nextPublishedStates.set(threadId, PUBLISH_FAILED_IDENTITY);
+              return nextPublishedStates;
+            }),
+          ),
+        ),
+      ),
       Effect.withSpan("AgentAwarenessRelay.publishThread"),
       withRelayClientTracing,
     );
