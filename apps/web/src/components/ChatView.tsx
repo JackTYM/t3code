@@ -355,7 +355,7 @@ import { createPageScrollController, type PageScrollKey } from "./chat/pageScrol
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
-import { MessagesTimeline } from "./chat/MessagesTimeline";
+import { MessagesTimeline, type TimelineFindHandle } from "./chat/MessagesTimeline";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { resolveTimelineIsAtEnd, worktreeSetupAgentStarted } from "./chat/MessagesTimeline.logic";
 import { resolveComposerTimelineInset, resolveScrollToEndClearance } from "./composerFooterLayout";
@@ -668,6 +668,27 @@ function shouldRedirectInputToComposer(event: Event): boolean {
   if (eventPathContainsSelector(event, TYPE_TO_FOCUS_INTERACTIVE_SELECTOR)) return false;
   if (document.querySelector(TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR)) return false;
   return true;
+}
+
+/**
+ * Whether the transcript, rather than a text field or another panel, owns the
+ * keyboard. `thread.find` binds Cmd/Ctrl+F, which is the browser's own find
+ * everywhere else, so this stays conservative: anything it does not recognise
+ * as the transcript reads as false and the browser keeps the shortcut.
+ *
+ * Reading a thread usually leaves focus on the body — clicking message text
+ * focuses nothing — so an unfocused document counts as the transcript.
+ */
+function isThreadTranscriptFocused(): boolean {
+  if (document.querySelector(TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR)) return false;
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !active.isConnected) return false;
+  if (active === document.body || active === document.documentElement) return true;
+  // The find bar's own input is part of the transcript's scope, so pressing the
+  // shortcut again reaches the bar instead of falling through to the browser.
+  if (active.closest("[data-timeline-find-bar]")) return true;
+  if (active.closest(TYPE_TO_FOCUS_EDITABLE_SELECTOR)) return false;
+  return active.closest("[data-thread-transcript]") !== null;
 }
 
 function shouldTypeToFocusComposer(event: KeyboardEvent): boolean {
@@ -1749,6 +1770,7 @@ export default function ChatView(props: ChatViewProps) {
     LastInvokedScriptByProjectSchema,
   );
   const legendListRef = useRef<LegendListRef | null>(null);
+  const timelineFindRef = useRef<TimelineFindHandle | null>(null);
   const getTimelineScrollableNode = useCallback(
     () => legendListRef.current?.getScrollableNode() ?? null,
     [],
@@ -6582,6 +6604,7 @@ export default function ChatView(props: ChatViewProps) {
       previewFocus: isPreviewFocused(),
       previewOpen: previewPanelOpen,
       modelPickerOpen: composerRef.current?.isModelPickerOpen() ?? false,
+      threadTranscriptFocus: isThreadTranscriptFocused(),
     }),
     [composerRef, previewPanelOpen, terminalUiState.terminalOpen],
   );
@@ -6809,6 +6832,15 @@ export default function ChatView(props: ChatViewProps) {
         event.preventDefault();
         event.stopPropagation();
         if (!event.repeat) queuedMessageActionsRef.current.steer(message.id);
+        return;
+      }
+
+      if (command === "thread.find") {
+        // Claim the key before the browser opens its own find, which would only
+        // see the handful of rows the virtualizer has mounted.
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) timelineFindRef.current?.open();
         return;
       }
 
@@ -9602,6 +9634,7 @@ export default function ChatView(props: ChatViewProps) {
                 {...(draftId ? { onWorktreeSetupWorkLocally } : {})}
                 {...(onOpenWorktreeSetupTerminal ? { onOpenWorktreeSetupTerminal } : {})}
                 listRef={legendListRef}
+                findRef={timelineFindRef}
                 timelineEntries={displayedTimeline.entries}
                 latestTurn={paintOnlyDisplayedTimeline ? null : activeLatestTurn}
                 runningTurnId={paintOnlyDisplayedTimeline ? null : activeRunningTurnId}
