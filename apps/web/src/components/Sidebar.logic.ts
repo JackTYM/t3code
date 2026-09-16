@@ -916,6 +916,101 @@ export function searchSidebarThreads<
   );
 }
 
+export interface SidebarThreadSearchResult<T> {
+  readonly thread: T;
+  /** Text from inside the conversation, when that is why the thread matched. */
+  readonly snippet: string | null;
+  /** Matches inside this thread, 0 when only the title matched. */
+  readonly matchCount: number;
+}
+
+/**
+ * One result list for "find that conversation", whether the user remembers the
+ * title or a phrase from inside it.
+ *
+ * Title matches keep their lifecycle order and come first: they are the ones
+ * the user can confirm at a glance. Content-only matches follow in the server's
+ * relevance order. A thread that matched both ways appears once, in the title
+ * group, but still shows its snippet -- the title told them it is the right
+ * thread, the snippet tells them why it came up.
+ *
+ * Content matches for threads the sidebar is not holding a shell for are
+ * dropped rather than rendered half-known.
+ */
+export function mergeSidebarThreadSearchResults<
+  T extends {
+    readonly id: string;
+    readonly environmentId: string;
+    readonly title: string;
+  } & Parameters<typeof threadPullRequestSearchTerms>[0],
+>(
+  threads: readonly T[],
+  query: string,
+  contentMatches: ReadonlyArray<{
+    readonly environmentId: string;
+    readonly threadId: string;
+    readonly snippet: string;
+    readonly threadMatchCount?: number | undefined;
+  }>,
+): ReadonlyArray<SidebarThreadSearchResult<T>> {
+  const titleMatches = searchSidebarThreads(threads, query);
+  if (query.trim().length === 0) return [];
+
+  const bestMatchByThread = new Map<string, { snippet: string; matchCount: number }>();
+  for (const match of contentMatches) {
+    const key = `${match.environmentId} ${match.threadId}`;
+    const existing = bestMatchByThread.get(key);
+    if (existing) {
+      // Several rows can arrive for one thread; keep the first snippet and let
+      // the count stand for the rest.
+      bestMatchByThread.set(key, {
+        snippet: existing.snippet,
+        matchCount: Math.max(
+          existing.matchCount,
+          match.threadMatchCount ?? existing.matchCount + 1,
+        ),
+      });
+      continue;
+    }
+    bestMatchByThread.set(key, {
+      snippet: match.snippet,
+      matchCount: match.threadMatchCount ?? 1,
+    });
+  }
+
+  const threadKey = (thread: T) => `${thread.environmentId} ${thread.id}`;
+  const seen = new Set<string>();
+  const results: SidebarThreadSearchResult<T>[] = [];
+
+  for (const thread of titleMatches) {
+    const key = threadKey(thread);
+    seen.add(key);
+    const content = bestMatchByThread.get(key);
+    results.push({
+      thread,
+      snippet: content?.snippet ?? null,
+      matchCount: content?.matchCount ?? 0,
+    });
+  }
+
+  const threadByKey = new Map(threads.map((thread) => [threadKey(thread), thread]));
+  for (const match of contentMatches) {
+    const key = `${match.environmentId} ${match.threadId}`;
+    if (seen.has(key)) continue;
+    const thread = threadByKey.get(key);
+    if (!thread) continue;
+    seen.add(key);
+    const content = bestMatchByThread.get(key);
+    results.push({
+      thread,
+      snippet: content?.snippet ?? match.snippet,
+      matchCount: content?.matchCount ?? 1,
+    });
+  }
+
+  return results;
+}
+
 export function filterSidebarProjectScopeItems<TItem extends { readonly value: string }>(input: {
   items: readonly TItem[];
   query: string;

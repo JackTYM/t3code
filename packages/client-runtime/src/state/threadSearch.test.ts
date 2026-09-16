@@ -28,7 +28,7 @@ it("creates keys without array methods unavailable in Hermes", () => {
   Reflect.deleteProperty(Array.prototype, "toSorted");
 
   try {
-    expect(makeThreadSearchKey([envB, envA], "needle")).toBe('[["env-a","env-b"],"needle"]');
+    expect(makeThreadSearchKey([envB, envA], "needle")).toBe('[["env-a","env-b"],"needle",false]');
   } finally {
     if (descriptor !== undefined) {
       Reflect.defineProperty(Array.prototype, "toSorted", descriptor);
@@ -127,4 +127,10 @@ it("merges successful environments and silently ignores failures", () => {
   expect(threadSearchMatchKey(state.matches[0]!)).toBe('["env-a","thread-a"]');
 
   registry.dispose();
+});
+
+it("separates the activity-aware search from the message-only one", () => {
+  expect(makeThreadSearchKey([envA], "needle", true)).not.toBe(
+    makeThreadSearchKey([envA], "needle"),
+  );
 });
