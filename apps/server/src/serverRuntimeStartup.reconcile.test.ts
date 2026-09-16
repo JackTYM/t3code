@@ -552,10 +552,12 @@ it.effect("reconciles multiple active and archived orphans but skips live sessio
     Effect.tap(() =>
       Effect.sync(() => {
         const orphanIds = [starting.id, running.id, staleActiveTurn.id, archived.id];
+        // The at-rest pass runs first and touches no directory bindings, so
+        // the binding reads still belong to the orphans alone.
         assert.deepStrictEqual(bindingReads, orphanIds);
         assert.deepStrictEqual(
           dispatched.map((command) => command.type === "thread.session.set" && command.threadId),
-          orphanIds,
+          [settled.id, ...orphanIds],
         );
         assert.deepStrictEqual(
           dispatched.map((command) =>
@@ -566,7 +568,11 @@ it.effect("reconciles multiple active and archived orphans but skips live sessio
                 }
               : null,
           ),
-          orphanIds.map(() => ({ status: "error" as const, activeTurnId: null })),
+          [
+            // Settled normally, just not backed by a process any more.
+            { status: "stopped" as const, activeTurnId: null },
+            ...orphanIds.map(() => ({ status: "error" as const, activeTurnId: null })),
+          ],
         );
         assert.equal(upserts.length, orphanIds.length);
         for (const binding of upserts) {
@@ -584,6 +590,51 @@ it.effect("reconciles multiple active and archived orphans but skips live sessio
           );
           assert.deepStrictEqual(binding.resumeCursor, { cursor: binding.threadId });
         }
+      }),
+    ),
+  );
+});
+
+// A session row outlives its process. Leaving an at-rest one reading "ready"
+// told every client a provider was attached, which kept a settled thread's
+// subagents rendering as running with the elapsed timer still counting.
+it.effect("marks at-rest sessions stopped when no provider process survived", () => {
+  const ready = makeThread("thread-ready", "ready");
+  const idle = makeThread("thread-idle", "idle");
+  const live = makeThread("thread-live-ready", "ready");
+  const deleted = makeThread("thread-deleted", "ready", null, null, updatedAt);
+  const alreadyStopped = makeThread("thread-stopped", "stopped");
+  const dispatched: OrchestrationCommand[] = [];
+
+  return runReconciliation({
+    threads: [ready, idle, live, deleted, alreadyStopped],
+    liveThreadIds: [live.id],
+    directory: {
+      // No orphans here, so nothing reads a binding; only the prepared-marker
+      // scan runs.
+      getBinding: () => Effect.die("unused"),
+      upsert: () => Effect.die("unused"),
+      recordImportedTranscript: () => Effect.die("unused"),
+      getProvider: () => Effect.die("unused"),
+      listThreadIds: () => Effect.die("unused"),
+      listBindings: () => Effect.succeed([]),
+    },
+    dispatch: (command) =>
+      Effect.sync(() => dispatched.push(command)).pipe(Effect.as({ sequence: dispatched.length })),
+  }).pipe(
+    Effect.tap(() =>
+      Effect.sync(() => {
+        assert.deepStrictEqual(
+          dispatched.map((command) =>
+            command.type === "thread.session.set"
+              ? { threadId: command.threadId, status: command.session.status }
+              : null,
+          ),
+          [
+            { threadId: ready.id, status: "stopped" as const },
+            { threadId: idle.id, status: "stopped" as const },
+          ],
+        );
       }),
     ),
   );
@@ -898,7 +949,9 @@ for (const preparedStatus of [
         };
         yield* runReconciliation(input);
         assert.deepStrictEqual(sends, []);
-        assert.equal(thread.session.status, "ready");
+        // The continuation already ran, so nothing is re-sent; the row is
+        // marked stopped because no process backs it in this new run.
+        assert.equal(thread.session.status, "stopped");
         return;
       }
       thread.session.status =

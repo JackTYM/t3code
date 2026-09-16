@@ -543,6 +543,66 @@ export const reconcileProviderSessions = Effect.gen(function* () {
       !liveThreadIds.has(thread.id),
   );
 
+  const orphanedThreadIds = new Set(orphanedThreads.map((thread) => thread.id));
+
+  // A session row outlives the process that owned it, and no provider session
+  // survives a restart — `liveThreadIds` comes from the provider service in
+  // this process, so at startup it is empty. The orphan pass above only claims
+  // the sessions caught mid-turn; one that was at rest keeps a row reading
+  // "ready", which every client reads as "a provider is attached". That is how
+  // a thread whose turn had settled went on showing its subagents as running,
+  // elapsed timers still counting, long after those processes died.
+  //
+  // ProviderSessionReaper does eventually settle these, but it is built for
+  // live servers: it waits out a 30 minute inactivity window and sweeps every
+  // 5, so the lie stands for over half an hour. That window buys nothing at
+  // startup, where the absence of a process is certain rather than inferred.
+  //
+  // Stopped, not error: the turn ended normally, the session simply is not
+  // there any more.
+  const staleAtRestThreads = threads.filter(
+    (thread) =>
+      thread.session !== null &&
+      (thread.session.status === "ready" || thread.session.status === "idle") &&
+      thread.session.activeTurnId === null &&
+      thread.deletedAt === null &&
+      !liveThreadIds.has(thread.id) &&
+      !orphanedThreadIds.has(thread.id),
+  );
+
+  for (const thread of staleAtRestThreads) {
+    const session = thread.session;
+    if (session === null) {
+      continue;
+    }
+    yield* Effect.gen(function* () {
+      const reconciledAt = DateTime.formatIso(yield* DateTime.now);
+      yield* orchestrationEngine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(yield* crypto.randomUUIDv4),
+        threadId: thread.id,
+        session: {
+          ...session,
+          status: "stopped",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: reconciledAt,
+        },
+        createdAt: reconciledAt,
+      });
+    }).pipe(
+      Effect.retry({ times: 1 }),
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.failCause(cause)
+          : Effect.logWarning("failed to settle at-rest provider session projection", {
+              threadId: thread.id,
+              cause,
+            }),
+      ),
+    );
+  }
+
   for (const thread of orphanedThreads) {
     const session = thread.session;
     if (session === null) {
