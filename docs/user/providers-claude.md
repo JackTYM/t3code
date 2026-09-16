@@ -4,6 +4,21 @@ T3 Code uses Claude Code's login and configuration. Start with the default provi
 for one account; [provider setup](./install.md#providers) covers installation and
 shared provider settings.
 
+## Plan with Opus, build with Sonnet
+
+**Claude Opus 5 Planning · Sonnet 5** in the model picker is a policy rather than a
+single model: Claude plans with Opus 5 and does the building with Sonnet 5. Choose it
+when you want the stronger model shaping the approach without running it for the whole
+session.
+
+The Opus half applies only while the composer is set to **Plan**. In **Build** the same
+selection runs as ordinary Sonnet 5, and nothing in the thread marks the difference.
+Planning also falls back to Sonnet once a conversation grows past roughly 200,000
+tokens.
+
+The context meter and usage limits count against Sonnet, so a planning turn can use
+more context than the meter shows and can draw down a different limit than you expect.
+
 ## Separate accounts or configurations
 
 Use a separate Claude config directory for each account. This also works for named

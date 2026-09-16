@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-09-12T00:41:55Z",
+  "updatedAt": "2026-09-15T00:00:00Z",
   "currentModels": {
     "codex": [
       "gpt-6-astra",
@@ -164,6 +164,77 @@
             "claudeCode": {
               "effortMap": {
                 "ultracode": "xhigh",
+                "ultrathink": null
+              },
+              "modelSuffixes": {
+                "contextWindow": {
+                  "1m": "[1m]"
+                }
+              },
+              "contextWindowTokens": {
+                "200k": 200000,
+                "1m": 1000000
+              }
+            }
+          }
+        },
+        "opusplan": {
+          "capabilities": {
+            "optionDescriptors": [
+              {
+                "id": "effort",
+                "label": "Reasoning",
+                "type": "select",
+                "options": [
+                  {
+                    "id": "low",
+                    "label": "Low"
+                  },
+                  {
+                    "id": "medium",
+                    "label": "Medium"
+                  },
+                  {
+                    "id": "high",
+                    "label": "High",
+                    "isDefault": true
+                  },
+                  {
+                    "id": "xhigh",
+                    "label": "Extra High"
+                  },
+                  {
+                    "id": "max",
+                    "label": "Max"
+                  },
+                  {
+                    "id": "ultrathink",
+                    "label": "Ultrathink"
+                  }
+                ],
+                "promptInjectedValues": ["ultrathink"]
+              },
+              {
+                "id": "contextWindow",
+                "label": "Context Window",
+                "type": "select",
+                "options": [
+                  {
+                    "id": "200k",
+                    "label": "200k",
+                    "isDefault": true
+                  },
+                  {
+                    "id": "1m",
+                    "label": "1M"
+                  }
+                ]
+              }
+            ]
+          },
+          "adapter": {
+            "claudeCode": {
+              "effortMap": {
                 "ultrathink": null
               },
               "modelSuffixes": {
@@ -587,6 +658,18 @@
           "adapter": {
             "claudeCode": {
               "minVersion": "2.1.219"
+            }
+          }
+        },
+        {
+          "slug": "opusplan",
+          "name": "Claude Opus 5 Planning · Sonnet 5",
+          "shortName": "Opus 5 Plan",
+          "status": "current",
+          "profile": "opusplan",
+          "adapter": {
+            "claudeCode": {
+              "minVersion": "2.1.270"
             }
           }
         },
