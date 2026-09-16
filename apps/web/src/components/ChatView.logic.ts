@@ -452,6 +452,36 @@ export function resolveThreadSwitchTimeline<T extends readonly unknown[]>(input:
   return { entries: input.nextEntries, displayThreadKey: input.activeThreadKey };
 }
 
+/**
+ * Whether a thread switch still owes the timeline a pin to its end.
+ *
+ * `resolveThreadSwitchTimeline` reports the destination key before that
+ * thread's entries exist whenever there is no snapshot to paint over the gap —
+ * a jump to another environment and a never-cached thread both resolve to the
+ * new key with an empty timeline. Pinning there is worse than useless:
+ * LegendList's `scrollToEnd` is a no-op on empty data, yet the call still
+ * supersedes the list's own `initialScrollAtEnd`, so nothing repositions the
+ * rows when they finally land and the thread opens at the top.
+ *
+ * So the decision is made from the rows themselves rather than from the key
+ * edge: pin on the first commit that has a settled key *and* something to pin
+ * to, and let the caller record the key only once the pin actually ran.
+ */
+export function shouldPinThreadSwitchToEnd(input: {
+  activeThreadKey: string | null;
+  displayThreadKey: string | null;
+  entryCount: number;
+  pinnedThreadKey: string | null;
+}): boolean {
+  if (input.displayThreadKey === null || input.displayThreadKey !== input.activeThreadKey) {
+    return false;
+  }
+  if (input.entryCount === 0) {
+    return false;
+  }
+  return input.pinnedThreadKey !== input.displayThreadKey;
+}
+
 export function resolveDraftPromotionNavigationTarget(input: {
   serverThreadRef: ScopedThreadRef | null;
   serverThread: Pick<Thread, "latestTurn" | "session" | "messages"> | null | undefined;
