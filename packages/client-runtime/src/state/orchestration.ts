@@ -19,6 +19,16 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       staleTimeMs: 300_000,
       idleTtlMs: 300_000,
     }),
+    agentTranscript: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:agent-transcript",
+      tag: ORCHESTRATION_WS_METHODS.getAgentTranscript,
+      // A running agent appends as it works, so revalidate briskly while the
+      // view is mounted. The atom is evicted shortly after it closes: nothing
+      // is fetched for an agent nobody is looking at.
+      staleTimeMs: 2_000,
+      idleTtlMs: 15_000,
+      refreshIntervalMs: 2_000,
+    }),
     fullThreadDiff: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:full-thread-diff",
       tag: ORCHESTRATION_WS_METHODS.getFullThreadDiff,

@@ -17,8 +17,10 @@ import type {
   RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
+  canOpenSubagentTranscript,
   formatSubagentModelLabel,
   formatSubagentTokenCount,
+  isActiveSubagentStatus,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
@@ -137,7 +139,13 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
 }
 
 /** Flat, non-interactive agent status line. No unfold. */
-function AgentRow({ agent }: { agent: RuntimeSubagent }) {
+function AgentRow({
+  agent,
+  onOpen,
+}: {
+  agent: RuntimeSubagent;
+  onOpen?: ((agent: RuntimeSubagent) => void) | undefined;
+}) {
   const visuals = STATUS_VISUALS[agent.status];
   const statusLabel =
     agent.kind === "subagent_batch" && agent.status === "idle" ? "Idle" : visuals.label;
@@ -154,8 +162,26 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);
 
+  const openable = onOpen !== undefined && canOpenSubagentTranscript(agent);
+
+  // The row keeps its fixed three-line height whether or not it is a button:
+  // the grid metrics below are the invariant this file documents up top.
+  const Row = openable ? "button" : "div";
+
   return (
-    <div className="grid h-[3.875rem] grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
+    <Row
+      {...(openable
+        ? {
+            type: "button" as const,
+            onClick: () => onOpen(agent),
+            "aria-label": `Open ${agent.title} transcript`,
+          }
+        : {})}
+      className={cn(
+        "grid h-[3.875rem] w-full grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1",
+        openable && "text-left hover:bg-accent/40",
+      )}
+    >
       <span className="col-start-1 row-start-1 flex items-center">
         <StatusDot status={agent.status} />
       </span>
@@ -187,7 +213,7 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
         {metadata.join(" · ")}
       </span>
       <span className="sr-only">{statusLabel}</span>
-    </div>
+    </Row>
   );
 }
 
@@ -310,6 +336,153 @@ function WorkflowScriptView({
   );
 }
 
+/** Every agent in the model, flattened, so a selection survives by id. */
+function allAgents(model: AgentPanelModel): ReadonlyArray<RuntimeSubagent> {
+  return [
+    ...model.directAgents,
+    ...model.workflows.flatMap((group) => [
+      group.workflow,
+      ...group.unphasedMembers,
+      ...group.phases.flatMap((phase) => phase.members),
+    ]),
+  ];
+}
+
+/**
+ * One agent's own narration, plus a box for replying to it.
+ *
+ * The reply is deliberately not framed as a private channel. There is no
+ * control-protocol route that delivers client text to an in-process subagent,
+ * so sending asks the session to pass the message along and the main agent
+ * relays it. It may paraphrase it, or judge it not worth sending.
+ */
+function AgentTranscriptView({
+  agent,
+  environmentId,
+  threadId,
+  onClose,
+  onSendAgentMessage,
+}: {
+  agent: RuntimeSubagent;
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  onClose: () => void;
+  onSendAgentMessage?: ((agentId: string, text: string) => Promise<boolean>) | undefined;
+}) {
+  const result = useAtomValue(
+    orchestrationEnvironment.agentTranscript({
+      environmentId,
+      input: { threadId, taskId: agent.id },
+    }),
+  );
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [dispatchNote, setDispatchNote] = useState<"sent" | "failed" | null>(null);
+
+  const entries = result._tag === "Success" ? result.value.entries : [];
+  const settled = !isActiveSubagentStatus(agent.status);
+
+  const send = async () => {
+    const text = draft.trim();
+    if (text.length === 0 || !onSendAgentMessage || sending) {
+      return;
+    }
+    setSending(true);
+    const delivered = await onSendAgentMessage(agent.id, text);
+    setSending(false);
+    setDispatchNote(delivered ? "sent" : "failed");
+    if (delivered) {
+      setDraft("");
+    }
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center gap-2 border-b border-border/60 px-2 py-1.5">
+        <StatusDot status={agent.status} />
+        <span className="min-w-0 truncate text-sm font-medium">{agent.title}</span>
+        <Button
+          size="icon-micro"
+          variant="ghost-muted"
+          onClick={onClose}
+          aria-label="Back to agents"
+          className="ml-auto"
+        >
+          <X aria-hidden className="size-3" />
+        </Button>
+      </div>
+
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="flex flex-col gap-2 p-2">
+          {result._tag === "Failure" ? (
+            <p className="text-xs text-destructive-foreground">Could not load this transcript.</p>
+          ) : entries.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              {result._tag === "Success" ? "No narration captured for this agent." : "Loading…"}
+            </p>
+          ) : (
+            entries.map((entry) => (
+              <div key={entry.activityId} className="flex flex-col gap-1">
+                {entry.blocks.map((block) => (
+                  <p
+                    // A persisted entry never changes, so type plus content is
+                    // a stable identity for its blocks.
+                    key={`${entry.activityId}:${block.type}:${block.text.length}:${block.text.slice(0, 32)}`}
+                    className={cn(
+                      "whitespace-pre-wrap break-words text-xs leading-relaxed",
+                      block.type === "thinking"
+                        ? "border-l-2 border-border/60 pl-2 italic text-muted-foreground"
+                        : "text-foreground/90",
+                    )}
+                  >
+                    {block.text}
+                  </p>
+                ))}
+              </div>
+            ))
+          )}
+        </div>
+      </ScrollArea>
+
+      <div className="border-t border-border/60 p-2">
+        <textarea
+          value={draft}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setDispatchNote(null);
+          }}
+          rows={2}
+          disabled={!onSendAgentMessage || settled}
+          placeholder={
+            settled ? "This agent has finished." : `Ask the session to tell ${agent.title}…`
+          }
+          aria-label={`Message for ${agent.title}, relayed by the session`}
+          className="w-full resize-none rounded-md border border-border/60 bg-background/60 px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/70 focus-visible:border-border disabled:opacity-60"
+        />
+        <div className="mt-1 flex items-center gap-2">
+          <p className="min-w-0 flex-1 text-[.65rem] leading-tight text-muted-foreground">
+            {dispatchNote === "failed"
+              ? "Could not reach the session — nothing was sent."
+              : dispatchNote === "sent"
+                ? "Sent to the session. It decides whether to pass this on."
+                : "Goes to the session, which relays it. Not a direct channel."}
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={draft.trim().length === 0 || sending || !onSendAgentMessage || settled}
+            onClick={() => {
+              void send();
+            }}
+          >
+            {sending ? "Sending…" : "Send"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Collapsible phase section. A phase opens when it becomes active, then keeps
  * that shape as it settles so completion never yanks rows out from under the
@@ -318,9 +491,11 @@ function WorkflowScriptView({
 function PhaseSection({
   phase,
   defaultOpen = false,
+  onOpenAgent,
 }: {
   phase: AgentPanelWorkflowGroup["phases"][number];
   defaultOpen?: boolean;
+  onOpenAgent?: ((agent: RuntimeSubagent) => void) | undefined;
 }) {
   const [open, setOpen] = useState(defaultOpen || phase.state === "running");
   const previousState = useRef(phase.state);
@@ -369,7 +544,11 @@ function PhaseSection({
           </span>
         ) : null}
       </button>
-      {open ? phase.members.map((member) => <AgentRow key={member.id} agent={member} />) : null}
+      {open
+        ? phase.members.map((member) => (
+            <AgentRow key={member.id} agent={member} onOpen={onOpenAgent} />
+          ))
+        : null}
     </div>
   );
 }
@@ -380,11 +559,13 @@ function ExpandedWorkflowSection({
   environmentId,
   threadId,
   onCollapse,
+  onOpenAgent,
 }: {
   group: AgentPanelWorkflowGroup;
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
   onCollapse: () => void;
+  onOpenAgent?: ((agent: RuntimeSubagent) => void) | undefined;
 }) {
   const [scriptOpen, setScriptOpen] = useState(false);
   const members = workflowMembers(group);
@@ -439,13 +620,18 @@ function ExpandedWorkflowSection({
         />
       ) : null}
       {group.phases.map((phase) => (
-        <PhaseSection key={phase.index} phase={phase} defaultOpen={!workflowIsLive(group)} />
+        <PhaseSection
+          key={phase.index}
+          phase={phase}
+          defaultOpen={!workflowIsLive(group)}
+          onOpenAgent={onOpenAgent}
+        />
       ))}
       {group.unphasedMembers.map((member) => (
-        <AgentRow key={member.id} agent={member} />
+        <AgentRow key={member.id} agent={member} onOpen={onOpenAgent} />
       ))}
       {group.phases.length === 0 && group.unphasedMembers.length === 0 ? (
-        <AgentRow agent={group.workflow} />
+        <AgentRow agent={group.workflow} onOpen={onOpenAgent} />
       ) : null}
     </section>
   );
@@ -503,10 +689,12 @@ function WorkflowSection({
   group,
   environmentId,
   threadId,
+  onOpenAgent,
 }: {
   group: AgentPanelWorkflowGroup;
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
+  onOpenAgent?: ((agent: RuntimeSubagent) => void) | undefined;
 }) {
   const [open, setOpen] = useState(() => workflowIsLive(group));
   return open ? (
@@ -515,6 +703,7 @@ function WorkflowSection({
       environmentId={environmentId}
       threadId={threadId}
       onCollapse={() => setOpen(false)}
+      onOpenAgent={onOpenAgent}
     />
   ) : (
     <CollapsedWorkflowSection group={group} onExpand={() => setOpen(true)} />
@@ -525,11 +714,46 @@ export function AgentsPanel({
   model,
   environmentId = null,
   threadId = null,
+  onSendAgentMessage,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
+  /**
+   * Relays a message for one agent through the thread's own send path.
+   * Resolves false when the dispatch itself failed, so the view can say so
+   * instead of implying the agent received anything.
+   */
+  onSendAgentMessage?: ((agentId: string, text: string) => Promise<boolean>) | undefined;
 }) {
+  // Selection is presentation state, and it is held by id rather than by value
+  // so an open view keeps updating — and keeps its shape — as its agent works
+  // and then settles.
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const selectedAgent =
+    selectedAgentId === null
+      ? null
+      : (allAgents(model).find((agent) => agent.id === selectedAgentId) ?? null);
+
+  // Without an environment and thread there is nothing to scope a transcript
+  // read to, so rows stay non-interactive rather than opening a dead view.
+  const openAgent =
+    environmentId && threadId
+      ? (agent: RuntimeSubagent) => setSelectedAgentId(agent.id)
+      : undefined;
+
+  if (selectedAgent && environmentId && threadId) {
+    return (
+      <AgentTranscriptView
+        agent={selectedAgent}
+        environmentId={environmentId}
+        threadId={threadId}
+        onClose={() => setSelectedAgentId(null)}
+        onSendAgentMessage={onSendAgentMessage}
+      />
+    );
+  }
+
   if (!model.hasAgents) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
@@ -553,6 +777,7 @@ export function AgentsPanel({
               group={group}
               environmentId={environmentId}
               threadId={threadId}
+              onOpenAgent={openAgent}
             />
           ))}
           {model.directAgents.length > 0 ? (
@@ -561,7 +786,7 @@ export function AgentsPanel({
                 Direct spawns
               </div>
               {model.directAgents.map((agent) => (
-                <AgentRow key={agent.id} agent={agent} />
+                <AgentRow key={agent.id} agent={agent} onOpen={openAgent} />
               ))}
             </section>
           ) : null}
