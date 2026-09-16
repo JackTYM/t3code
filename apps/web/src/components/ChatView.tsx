@@ -7102,6 +7102,102 @@ export default function ChatView(props: ChatViewProps) {
     }
   };
 
+  /**
+   * Relays a message aimed at one subagent.
+   *
+   * There is no route that delivers client text to an in-process subagent, so
+   * this is an ordinary thread turn that names the target and asks the session
+   * to pass it on — a steer when a turn is already running, a fresh turn when
+   * not. It goes through the same send path as any other message so thread
+   * settings, model selection and dispatch bookkeeping are not skipped.
+   * Returns whether the dispatch itself succeeded, never whether the agent
+   * actually received anything.
+   */
+  const onSendAgentMessage = async (agentId: string, text: string): Promise<boolean> => {
+    if (!activeThread || !clientSettingsHydrated || sendInFlightRef.current) {
+      return false;
+    }
+    const context = composerRef.current?.getSendContext();
+    if (!context?.providerAvailable) {
+      return false;
+    }
+    const agentTitle =
+      [
+        ...agentPanelModel.directAgents,
+        ...agentPanelModel.workflows.flatMap((group) => [
+          group.workflow,
+          ...group.unphasedMembers,
+          ...group.phases.flatMap((phase) => phase.members),
+        ]),
+      ].find((agent) => agent.id === agentId)?.title ?? agentId;
+    const threadId = activeThread.id;
+    const messageId = newMessageId();
+    const createdAt = new Date().toISOString();
+    const message = `Relay this to the "${agentTitle}" subagent (task ${agentId}) with SendMessage; if it has already finished, tell me instead of starting new work:\n\n${text}`;
+
+    sendInFlightRef.current = true;
+    beginLocalDispatch();
+    setThreadError(threadId, null);
+    // The relay is a real message in this thread, so show it as one. The user
+    // should see exactly what the session was asked to pass on.
+    setOptimisticUserMessages((messages) => [
+      ...messages,
+      {
+        id: messageId,
+        role: "user",
+        text: message,
+        turnId: null,
+        createdAt,
+        updatedAt: createdAt,
+        streaming: false,
+      },
+    ]);
+    scrollToEnd();
+    try {
+      const settingsResult = await persistThreadSettingsForNextTurn({
+        threadId,
+        createdAt,
+        modelSelection: context.selectedModelSelection,
+        ...(localCheckoutBranchMismatch
+          ? { branch: localCheckoutBranchMismatch.currentBranch }
+          : {}),
+        runtimeMode,
+        interactionMode: context.interactionMode,
+      });
+      const result =
+        settingsResult._tag === "Failure"
+          ? settingsResult
+          : await startThreadTurn({
+              environmentId,
+              input: {
+                threadId,
+                message: { messageId, role: "user", text: message, attachments: [] },
+                modelSelection: context.selectedModelSelection,
+                runtimeMode,
+                interactionMode: context.interactionMode,
+                createdAt,
+              },
+            });
+      if (result._tag === "Failure") {
+        setOptimisticUserMessages((messages) =>
+          messages.filter((candidate) => candidate.id !== messageId),
+        );
+        resetLocalDispatch();
+        if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          setThreadError(
+            threadId,
+            error instanceof Error ? error.message : "Failed to send the message.",
+          );
+        }
+        return false;
+      }
+      return true;
+    } finally {
+      sendInFlightRef.current = false;
+    }
+  };
+
   const queuedMessages = useQueuedMessages(activeThreadKey ?? "");
   // Puts queued messages back into the composer, e.g. after Stop or a failed
   // send. Prompts join with blank lines; attachments and contexts are added.
@@ -9250,6 +9346,7 @@ export default function ChatView(props: ChatViewProps) {
         model={agentPanelModel}
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
+        onSendAgentMessage={onSendAgentMessage}
       />
     ) : renderedRightPanelSurface?.kind === "device" ? (
       <Suspense fallback={null}>

@@ -68,6 +68,23 @@ You can also send `/compact` in an existing conversation. Web and desktop offer
 a large older thread. See [commands and skills](./composer.md#commands-and-skills)
 for using composer commands.
 
+## Read and reply to a subagent
+
+When a Claude thread spawns subagents, the Agents panel lists them. Select an
+agent to read its own narration — the reasoning and commentary it produced while
+working — and use the back control to return to the list. An agent you opened
+while it was running keeps its place when it finishes.
+
+The box at the bottom sends a message about that agent **to the session**, not to
+the agent. Claude has no inbox for a subagent that is running inside it, so your
+message becomes part of the conversation asking the main agent to pass it along.
+The main agent decides whether to relay it, and may reword it. Your message
+appears in the thread like any other. If the send itself fails, the panel says
+so; if it succeeds, that only means the session received it.
+
+Agents that finished before you opened the panel still show whatever narration
+was captured. Agents started before this feature existed show none.
+
 ## Usage limits
 
 If your Claude subscription runs out of usage mid-turn, the thread shows which

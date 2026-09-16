@@ -2027,6 +2027,233 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("routes subagent narration to its task transcript, not the parent transcript", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "delegate this",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-transcript",
+        uuid: "stream-transcript-1",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-transcript-1",
+            name: "Task",
+            input: {
+              description: "Audit the SQL",
+              prompt: "Audit the SQL changes",
+              subagent_type: "code-reviewer",
+            },
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-transcript-1",
+        description: "Audit the SQL",
+        task_type: "local_agent",
+        tool_use_id: "tool-transcript-1",
+        uuid: "task-transcript-1-uuid",
+        session_id: "sdk-session-transcript",
+      } as unknown as SDKMessage);
+
+      // The subagent's own message. With forwardSubagentText on, its text and
+      // thinking arrive on a snapshot stamped with the Task tool_use_id.
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-transcript",
+        uuid: "assistant-subagent-1",
+        parent_tool_use_id: "tool-transcript-1",
+        message: {
+          id: "assistant-message-subagent-1",
+          model: SYNTHETIC_SUBAGENT_MODEL,
+          content: [
+            { type: "thinking", thinking: "Checking the migration order first." },
+            { type: "text", text: "The SQL changes look safe to apply." },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        usage: {
+          input_tokens: 100,
+          cache_read_input_tokens: 40,
+          cache_creation_input_tokens: 10,
+          output_tokens: 20,
+        },
+        session_id: "sdk-session-transcript",
+        uuid: "result-transcript-1",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+
+      const transcript = runtimeEvents.find((event) => event.type === "task.transcript");
+      assert.equal(transcript?.type, "task.transcript");
+      if (transcript?.type === "task.transcript") {
+        assert.equal(String(transcript.payload.taskId), "task-transcript-1");
+        assert.deepEqual(
+          transcript.payload.blocks.map((block) => block.type),
+          ["thinking", "text"],
+        );
+        assert.equal(transcript.payload.blocks[1]?.text, "The SQL changes look safe to apply.");
+      }
+
+      // The narration must not reach the parent transcript by any route: no
+      // content deltas, and no synthetic turn spawned for the subagent.
+      assert.equal(
+        runtimeEvents.some(
+          (event) =>
+            event.type === "content.delta" &&
+            JSON.stringify(event.payload).includes("safe to apply"),
+        ),
+        false,
+      );
+      assert.equal(runtimeEvents.filter((event) => event.type === "turn.started").length, 1);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("leaves per-turn event traffic unchanged when a subagent narrates", () => {
+    // The regression this design exists to prevent: a fleet's narration must
+    // not add per-turn traffic for clients that never opened an agent view.
+    // task.transcript is the only addition, and it is excluded from thread
+    // detail (ws.ts isThreadDetailEvent) and from every default projection
+    // read, so a client with no agent view open sees the same stream as before.
+    const runTurn = (options: { readonly withSubagentText: boolean }) => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "delegate this",
+          attachments: [],
+        });
+
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-traffic",
+          uuid: "stream-traffic-1",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: {
+              type: "tool_use",
+              id: "tool-traffic-1",
+              name: "Task",
+              input: { description: "Work", prompt: "Work", subagent_type: "general" },
+            },
+          },
+        } as unknown as SDKMessage);
+
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-traffic-1",
+          description: "Work",
+          task_type: "local_agent",
+          tool_use_id: "tool-traffic-1",
+          uuid: "task-traffic-1-uuid",
+          session_id: "sdk-session-traffic",
+        } as unknown as SDKMessage);
+
+        if (options.withSubagentText) {
+          for (const index of [1, 2, 3]) {
+            harness.query.emit({
+              type: "assistant",
+              session_id: "sdk-session-traffic",
+              uuid: `assistant-subagent-traffic-${index}`,
+              parent_tool_use_id: "tool-traffic-1",
+              message: {
+                id: `assistant-message-subagent-traffic-${index}`,
+                model: SYNTHETIC_SUBAGENT_MODEL,
+                content: [{ type: "text", text: `Narration chunk ${index}` }],
+              },
+            } as unknown as SDKMessage);
+          }
+        }
+
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          errors: [],
+          usage: {
+            input_tokens: 100,
+            cache_read_input_tokens: 40,
+            cache_creation_input_tokens: 10,
+            output_tokens: 20,
+          },
+          session_id: "sdk-session-traffic",
+          uuid: "result-traffic-1",
+        } as unknown as SDKMessage);
+
+        return Array.from(yield* Fiber.join(runtimeEventsFiber)).map((event) => event.type);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    };
+
+    return Effect.gen(function* () {
+      const quiet = yield* runTurn({ withSubagentText: false });
+      const narrated = yield* runTurn({ withSubagentText: true });
+
+      // Three subagent messages add exactly three task.transcript events and
+      // nothing else. Every other event type keeps its original count.
+      assert.deepEqual(
+        narrated.filter((type) => type !== "task.transcript"),
+        quiet.filter((type) => type !== "task.transcript"),
+      );
+      assert.equal(quiet.filter((type) => type === "task.transcript").length, 0);
+      assert.equal(narrated.filter((type) => type === "task.transcript").length, 3);
+    });
+  });
+
   it.effect("treats user-aborted Claude results as interrupted without a runtime error", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

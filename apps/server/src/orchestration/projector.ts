@@ -8,6 +8,7 @@ import type {
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import {
+  AGENT_TRANSCRIPT_ACTIVITY_KIND,
   isImportedAgentSessionMessageId,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
@@ -1044,6 +1045,15 @@ export function projectEvent(
         Effect.map((payload) => {
           const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
           if (!thread) {
+            return nextBase;
+          }
+
+          // Subagent narration is not thread detail. It is persisted by the
+          // projection pipeline and read back through the scoped transcript
+          // query, so keeping it out of the in-memory read model also keeps a
+          // fleet's output from evicting real activity from the retained
+          // window below.
+          if (payload.activity.kind === AGENT_TRANSCRIPT_ACTIVITY_KIND) {
             return nextBase;
           }
 

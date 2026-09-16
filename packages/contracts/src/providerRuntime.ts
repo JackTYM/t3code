@@ -15,7 +15,7 @@ import {
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 import { ProviderUsageLimitsUpdate } from "./providerUsageLimits.ts";
-import { ProviderApprovalOption } from "./orchestration.ts";
+import { AgentTranscriptBlock, ProviderApprovalOption } from "./orchestration.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -181,6 +181,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "task.progress",
   "task.updated",
   "task.completed",
+  "task.transcript",
   "hook.started",
   "hook.progress",
   "hook.completed",
@@ -233,6 +234,7 @@ const TaskStartedType = Schema.Literal("task.started");
 const TaskProgressType = Schema.Literal("task.progress");
 const TaskUpdatedType = Schema.Literal("task.updated");
 const TaskCompletedType = Schema.Literal("task.completed");
+const TaskTranscriptType = Schema.Literal("task.transcript");
 const HookStartedType = Schema.Literal("hook.started");
 const HookProgressType = Schema.Literal("hook.progress");
 const HookCompletedType = Schema.Literal("hook.completed");
@@ -731,6 +733,20 @@ const TaskCompletedPayload = Schema.Struct({
 });
 export type TaskCompletedPayload = typeof TaskCompletedPayload.Type;
 
+/**
+ * One subagent assistant message, re-homed onto the owning task instead of the
+ * parent transcript. Emitted per completed message (never per streamed delta):
+ * a fleet's narration is ~N times the parent's token stream, so per-delta
+ * events would multiply websocket traffic for a panel most users never open.
+ * Rows land excluded from the default thread-detail projection and are read
+ * back through the scoped `(threadId, taskId)` query.
+ */
+const TaskTranscriptPayload = Schema.Struct({
+  taskId: RuntimeTaskId,
+  blocks: Schema.Array(AgentTranscriptBlock),
+});
+export type TaskTranscriptPayload = typeof TaskTranscriptPayload.Type;
+
 const HookStartedPayload = Schema.Struct({
   hookId: TrimmedNonEmptyStringSchema,
   hookName: TrimmedNonEmptyStringSchema,
@@ -1104,6 +1120,13 @@ const ProviderRuntimeTaskCompletedEvent = Schema.Struct({
 });
 export type ProviderRuntimeTaskCompletedEvent = typeof ProviderRuntimeTaskCompletedEvent.Type;
 
+const ProviderRuntimeTaskTranscriptEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: TaskTranscriptType,
+  payload: TaskTranscriptPayload,
+});
+export type ProviderRuntimeTaskTranscriptEvent = typeof ProviderRuntimeTaskTranscriptEvent.Type;
+
 const ProviderRuntimeHookStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: HookStartedType,
@@ -1259,6 +1282,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeTaskProgressEvent,
   ProviderRuntimeTaskUpdatedEvent,
   ProviderRuntimeTaskCompletedEvent,
+  ProviderRuntimeTaskTranscriptEvent,
   ProviderRuntimeHookStartedEvent,
   ProviderRuntimeHookProgressEvent,
   ProviderRuntimeHookCompletedEvent,
