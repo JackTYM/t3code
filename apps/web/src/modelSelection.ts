@@ -351,7 +351,7 @@ export function getCustomModelOptionsByInstance(
 
 /**
  * Drop the opencode "plan" agent option from a stored model selection.
- * Used when legacy plan mode is turned off so server-side text-generation
+ * Used when plan mode is turned off so server-side text-generation
  * tasks (title, branch, PR) cannot keep dispatching the plan agent.
  */
 export function withoutPlanAgentSelection(
@@ -369,8 +369,8 @@ export function withoutPlanAgentSelection(
   return createModelSelection(selection.instanceId, selection.model, options);
 }
 
-// The dropdown hides the opencode "plan" agent while legacy plan mode is off,
-// but the persisted text-generation selections are only healed when the toggle
+// The dropdown hides the opencode "plan" agent while plan mode is off, but
+// the persisted text-generation selections are only healed when the toggle
 // flips. Users who already have plan mode off and a stored "plan" selection
 // never trip the toggle handler, so resolve the heal once per settings load.
 export function resolvePlanAgentHealPatch(input: {

@@ -117,7 +117,7 @@ import { useDiffPanelStore } from "../diffPanelStore";
 import {
   collapseExpandedComposerCursor,
   type ComposerSubmissionIntent,
-  parseStandaloneComposerSlashCommand,
+  parseComposerInteractionModeCommand,
 } from "../composer-logic";
 import {
   createMessageAttachmentPreviewProjector,
@@ -7283,7 +7283,7 @@ export default function ChatView(props: ChatViewProps) {
       selectedProviderModels: ctxSelectedProviderModels,
       selectedPromptEffort: ctxSelectedPromptEffort,
       selectedModelSelection: ctxSelectedModelSelection,
-      interactionMode: sendInteractionMode,
+      interactionMode: ctxInteractionMode,
       interactionModeEnabled: sendInteractionModeEnabled,
     } = sendCtx;
     const annotationImageAlreadyAttached =
@@ -7320,13 +7320,34 @@ export default function ChatView(props: ChatViewProps) {
         : sendContextPreviewAnnotations;
     // A direct "send annotation" writes the draft and sends in the same tick; the reference
     // must be in the text now, not after the next render.
-    const promptForSend = queuedMessage
+    const rawPromptForSend = queuedMessage
       ? queuedMessage.prompt
       : directAnnotation
         ? ensureInlineContextReferences(promptRef.current, [
             previewAnnotationContextReference(directAnnotation.annotation),
           ])
         : promptRef.current;
+    // `/plan <text>` switches the mode and sends `<text>` as that same turn. The
+    // bare `/plan` form is handled further down, where the attachment guards
+    // live. A queued message already chose its mode when it was queued, so it is
+    // left alone. Gating on `sendInteractionModeEnabled` is what lets a
+    // provider's own `/plan` (Antigravity ships one) through unmodified.
+    const interactionModeCommand =
+      sendInteractionModeEnabled && !queuedMessage
+        ? parseComposerInteractionModeCommand(rawPromptForSend)
+        : null;
+    const inlineInteractionModeCommand =
+      interactionModeCommand && interactionModeCommand.remainder.length > 0
+        ? interactionModeCommand
+        : null;
+    // The dispatched mode cannot come from the send context here: that snapshot
+    // was taken before this command was read.
+    const sendInteractionMode = inlineInteractionModeCommand
+      ? inlineInteractionModeCommand.mode
+      : ctxInteractionMode;
+    const promptForSend = inlineInteractionModeCommand
+      ? inlineInteractionModeCommand.remainder
+      : rawPromptForSend;
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
@@ -7460,22 +7481,27 @@ export default function ChatView(props: ChatViewProps) {
       }
       return;
     }
-    // Providers without the legacy toggle receive their native commands unchanged.
+    // A bare `/plan` or `/default` only switches the mode, so it must not
+    // swallow a composer that still holds attachments or contexts.
     const standaloneSlashCommand =
-      sendInteractionModeEnabled &&
+      interactionModeCommand &&
+      interactionModeCommand.remainder.length === 0 &&
       composerImages.length === 0 &&
       composerFiles.length === 0 &&
       sendableComposerTerminalContexts.length === 0 &&
       composerPreviewAnnotations.length === 0 &&
       composerReviewComments.length === 0
-        ? parseStandaloneComposerSlashCommand(trimmed)
+        ? interactionModeCommand.mode
         : null;
-    if (standaloneSlashCommand && !queuedMessage) {
+    if (standaloneSlashCommand) {
       handleInteractionModeChange(standaloneSlashCommand);
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
       return;
+    }
+    if (inlineInteractionModeCommand) {
+      handleInteractionModeChange(inlineInteractionModeCommand.mode);
     }
     if (!hasSendableContent) {
       if (expiredTerminalContextCount > 0) {

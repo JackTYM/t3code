@@ -420,10 +420,16 @@ export const ClientSettingsSchema = Schema.Struct({
     TrimmedNonEmptyString,
     PullRequestMergeMethod,
   ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
-  // Legacy plan mode. The composer's Build/Plan toggle was removed from the
-  // default UI; this beta flag restores it (plus the /plan and /default slash
-  // commands) for users who still rely on the old workflow.
-  planModeEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Plan mode. Ships on: the composer shows the Build/Plan toggle (plus
+  // Shift+Tab and the /plan and /default slash commands) on providers whose
+  // adapter sets `showInteractionModeToggle`. Turning it off hides all of it
+  // and clamps every thread to build mode.
+  //
+  // This default also feeds `DEFAULT_CLIENT_SETTINGS`, which is what clients
+  // read before persisted settings hydrate. `true` is load-bearing there: a
+  // pre-hydration `false` would clamp a thread that legitimately persisted
+  // plan mode down to build before its real setting arrived.
+  planModeEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   // Legacy context window meter. The composer hides it by default; users who
   // still want the old usage indicator can restore it from Settings.
   contextWindowMeterEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),

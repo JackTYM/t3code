@@ -20,7 +20,11 @@ export function resolveLegacyPlanModeEnabled(input: {
   readonly loaded: boolean;
   readonly preference: boolean | undefined;
 }): boolean {
-  return input.loaded && input.preference === true;
+  // Plan mode ships on, matching the web/desktop client setting default, so a
+  // device that has never touched the preference gets it. The `loaded` gate
+  // stays: showing plan controls before the store reads would flash them at
+  // someone who turned plan mode off on this device.
+  return input.loaded && input.preference !== false;
 }
 
 export function resolvePendingTaskInteractionMode(input: {

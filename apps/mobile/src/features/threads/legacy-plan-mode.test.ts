@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  resolveLegacyPlanModeEnabled,
   resolvePendingTaskInteractionMode,
   resolveProviderInteractionMode,
 } from "./legacy-plan-mode";
@@ -19,6 +20,22 @@ describe("resolveProviderInteractionMode", () => {
     expect(resolveProviderInteractionMode({}, "plan")).toBe("plan");
     expect(resolveProviderInteractionMode(null, "plan")).toBe("plan");
     expect(resolveProviderInteractionMode(undefined, undefined)).toBe("default");
+  });
+});
+
+describe("resolveLegacyPlanModeEnabled", () => {
+  it("enables plan mode on a device that never set the preference", () => {
+    expect(resolveLegacyPlanModeEnabled({ loaded: true, preference: undefined })).toBe(true);
+  });
+
+  it("honors an explicit opt-out", () => {
+    expect(resolveLegacyPlanModeEnabled({ loaded: true, preference: false })).toBe(false);
+    expect(resolveLegacyPlanModeEnabled({ loaded: true, preference: true })).toBe(true);
+  });
+
+  it("stays off until the device preference has loaded", () => {
+    expect(resolveLegacyPlanModeEnabled({ loaded: false, preference: undefined })).toBe(false);
+    expect(resolveLegacyPlanModeEnabled({ loaded: false, preference: true })).toBe(false);
   });
 });
 
