@@ -14,6 +14,7 @@ import { projectThreadAwareness } from "@t3tools/shared/agentAwareness";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
@@ -157,6 +158,8 @@ const main = Effect.gen(function* () {
               break;
           }
           const next = new Map<string, RelayAgentActivityState>();
+          // Snooze parking is time-dependent, so the ladder needs the clock.
+          const awarenessNow = DateTime.formatIso(yield* DateTime.now);
           for (const thread of threads.values()) {
             const project = projects.get(thread.projectId);
             if (!project || thread.archivedAt) continue;
@@ -164,6 +167,7 @@ const main = Effect.gen(function* () {
               environmentId: config.environment.environmentId,
               project,
               thread,
+              now: awarenessNow,
             });
             if (state) next.set(thread.id, state);
           }
