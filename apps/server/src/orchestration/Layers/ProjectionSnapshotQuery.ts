@@ -143,6 +143,12 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
 const ProjectionThreadActivityIdRowSchema = Schema.Struct({
   activityId: ProjectionThreadActivity.fields.activityId,
 });
+const ProjectionOpenUserInputRequestRowSchema = Schema.Struct({
+  threadId: ThreadId,
+  requestId: Schema.String,
+  turnId: Schema.NullOr(Schema.String),
+  responseMode: Schema.NullOr(Schema.String),
+});
 const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
 const ProjectionThreadRuntimeContextDbRowSchema = Schema.Struct({
   titleState: Schema.NullOr(Schema.fromJsonString(ThreadTitleState)),
@@ -1480,6 +1486,69 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         toPersistenceSqlOrDecodeError(
           "ProjectionSnapshotQuery.listActivitiesByKind:query",
           "ProjectionSnapshotQuery.listActivitiesByKind:decodeRow",
+        ),
+      ),
+    );
+
+  // Mirrors derivePendingUserInputCountFromActivities: the newest lifecycle
+  // row per requestId decides, and a stale-failure counts as a resolution.
+  // Scoped to threads the summary already flags, so the window stays small.
+  const listOpenUserInputRequestRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionOpenUserInputRequestRowSchema,
+    execute: () => sql`
+      WITH lifecycle AS (
+        SELECT
+          activity.thread_id AS thread_id,
+          activity.turn_id AS turn_id,
+          activity.kind AS kind,
+          json_extract(activity.payload_json, '$.requestId') AS request_id,
+          json_extract(activity.payload_json, '$.responseMode') AS response_mode,
+          ROW_NUMBER() OVER (
+            PARTITION BY activity.thread_id, json_extract(activity.payload_json, '$.requestId')
+            ORDER BY activity.created_at DESC, activity.activity_id DESC
+          ) AS request_order
+        FROM projection_thread_activities AS activity
+        JOIN projection_threads AS thread ON thread.thread_id = activity.thread_id
+        WHERE thread.pending_user_input_count > 0
+          AND thread.deleted_at IS NULL
+          AND thread.archived_at IS NULL
+          AND json_extract(activity.payload_json, '$.requestId') IS NOT NULL
+          AND (
+            activity.kind IN ('user-input.requested', 'user-input.resolved')
+            OR (
+              activity.kind = 'provider.user-input.respond.failed'
+              AND (
+                lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                  LIKE '%stale pending user-input request%'
+                OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                  LIKE '%unknown pending user-input request%'
+                OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                  LIKE '%unknown pending user input request%'
+                OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                  LIKE '%unknown pending codex user input request%'
+              )
+            )
+          )
+      )
+      SELECT
+        thread_id AS "threadId",
+        request_id AS "requestId",
+        turn_id AS "turnId",
+        response_mode AS "responseMode"
+      FROM lifecycle
+      WHERE request_order = 1
+        AND kind = 'user-input.requested'
+      ORDER BY thread_id ASC, request_id ASC
+    `,
+  });
+
+  const listOpenUserInputRequests: ProjectionSnapshotQueryShape["listOpenUserInputRequests"] = () =>
+    listOpenUserInputRequestRows(undefined).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listOpenUserInputRequests:query",
+          "ProjectionSnapshotQuery.listOpenUserInputRequests:decodeRow",
         ),
       ),
     );
@@ -3727,6 +3796,7 @@ pending_approval_requests AS (
     getCommandReadModel,
     getUserInputActivity,
     listActivitiesByKind,
+    listOpenUserInputRequests,
     getSnapshot,
     getShellSnapshot,
     getArchivedShellSnapshot,
