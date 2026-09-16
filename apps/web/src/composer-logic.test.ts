@@ -665,9 +665,10 @@ describe("parseComposerInteractionModeCommand", () => {
   });
 
   it("keeps a multi-line remainder intact", () => {
-    expect(parseComposerInteractionModeCommand("/plan\nrewrite the parser\nthen test it")).toEqual(
-      { mode: "plan", remainder: "rewrite the parser\nthen test it" },
-    );
+    expect(parseComposerInteractionModeCommand("/plan\nrewrite the parser\nthen test it")).toEqual({
+      mode: "plan",
+      remainder: "rewrite the parser\nthen test it",
+    });
   });
 
   it("ignores commands that only share a prefix", () => {

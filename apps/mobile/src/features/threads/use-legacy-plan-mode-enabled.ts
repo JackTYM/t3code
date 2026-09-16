@@ -12,8 +12,6 @@ import { resolveLegacyPlanModeEnabled } from "./legacy-plan-mode";
 export function useLegacyPlanModeState(): boolean {
   const preferences = useAtomValue(mobilePreferencesAtom);
   return resolveLegacyPlanModeEnabled({
-    preference: AsyncResult.isSuccess(preferences)
-      ? preferences.value.planModeEnabled
-      : undefined,
+    preference: AsyncResult.isSuccess(preferences) ? preferences.value.planModeEnabled : undefined,
   });
 }

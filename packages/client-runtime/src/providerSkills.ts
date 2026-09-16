@@ -78,11 +78,14 @@ const INTERACTION_MODE_COMMAND_NAMES: ReadonlySet<string> = new Set(["plan", "de
  * ships its own `/plan`), the provider's command is the only one offered and
  * reaches the provider unmodified.
  */
-export function withInteractionModeCommandPrecedence<
-  Command extends { readonly name: string },
->(commands: ReadonlyArray<Command>, planModeAvailable: boolean): Command[] {
+export function withInteractionModeCommandPrecedence<Command extends { readonly name: string }>(
+  commands: ReadonlyArray<Command>,
+  planModeAvailable: boolean,
+): Command[] {
   return planModeAvailable
-    ? commands.filter((command) => !INTERACTION_MODE_COMMAND_NAMES.has(command.name.trim().toLowerCase()))
+    ? commands.filter(
+        (command) => !INTERACTION_MODE_COMMAND_NAMES.has(command.name.trim().toLowerCase()),
+      )
     : [...commands];
 }
 
