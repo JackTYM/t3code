@@ -62,7 +62,6 @@ import {
   useCallback,
   useEffect,
   useId,
-  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -236,6 +235,7 @@ import { useOpenPrLink } from "~/lib/openPullRequestLink";
 import type { ChatMarkdownContextReference } from "../ChatMarkdown";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
+import { onOpenThreadFind } from "../../threadFindBus";
 import { TimelineFindBar } from "./TimelineFindBar";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
@@ -446,12 +446,6 @@ interface MessagesTimelineProps {
   onSteerQueuedMessage?: (id: string) => void;
   steerQueuedMessageShortcutLabel?: string | null;
   onRemoveQueuedMessage?: (id: string) => void;
-  /** Lets the thread's `thread.find` keybinding open the find bar. */
-  findRef?: React.RefObject<TimelineFindHandle | null>;
-}
-
-export interface TimelineFindHandle {
-  open: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -508,7 +502,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onSteerQueuedMessage = NOOP_QUEUED_MESSAGE_ACTION,
   steerQueuedMessageShortcutLabel = null,
   onRemoveQueuedMessage = NOOP_QUEUED_MESSAGE_ACTION,
-  findRef,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
@@ -786,7 +779,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     // Closing returns the keyboard where it was without moving the transcript.
     if (restore?.isConnected) restore.focus({ preventScroll: true });
   }, []);
-  useImperativeHandle(findRef, () => ({ open: openFind }), [openFind]);
+  useEffect(() => onOpenThreadFind(openFind), [openFind]);
   const {
     target: readyCitationRequest,
     positioning: citationPositioning,
