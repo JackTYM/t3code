@@ -104,6 +104,18 @@ export function isActiveSubagentStatus(status: RuntimeSubagentStatus): boolean {
   return status === "pending" || status === "running" || status === "waiting";
 }
 
+/**
+ * Whether this agent can have a readable transcript of its own.
+ *
+ * Narration is captured per subagent, so a batch or workflow container has
+ * none of its own — its members do. The transcript itself is excluded from the
+ * thread projection this fold reads, so whether any was actually captured is
+ * only known once the scoped query answers; the view says so when it is empty.
+ */
+export function canOpenSubagentTranscript(agent: RuntimeSubagent): boolean {
+  return agent.kind === "subagent" || agent.kind === "workflow_agent";
+}
+
 const RECENT_ACTIVITY_LIMIT = 6;
 const SUMMARY_CHAR_LIMIT = 180;
 const ROSTER_LIMIT = 100;

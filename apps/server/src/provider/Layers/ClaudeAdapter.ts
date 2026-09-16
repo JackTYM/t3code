@@ -1256,6 +1256,38 @@ function agentIdForParentToolUse(
 }
 
 /**
+ * Text and thinking blocks of one subagent assistant snapshot, in wire order.
+ * Tool blocks are deliberately excluded: they already reach the UI as
+ * attributed tool items, so repeating them here would double-render the
+ * agent's own tool calls inside its transcript.
+ */
+function subagentTranscriptBlocks(content: unknown): Array<{
+  readonly type: "text" | "thinking";
+  readonly text: string;
+}> {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const blocks: Array<{ readonly type: "text" | "thinking"; readonly text: string }> = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") {
+      continue;
+    }
+    const candidate = block as { type?: unknown; text?: unknown; thinking?: unknown };
+    const text =
+      candidate.type === "text"
+        ? trimmedString(candidate.text)
+        : candidate.type === "thinking"
+          ? trimmedString(candidate.thinking)
+          : undefined;
+    if (text) {
+      blocks.push({ type: candidate.type === "text" ? "text" : "thinking", text });
+    }
+  }
+  return blocks;
+}
+
+/**
  * Linkage bundle repeated on every task.* payload for `taskId`. Reads the
  * remembered identity (from task_started) so progress/terminal rows are
  * self-describing even when the start row ages out of activity retention.
@@ -3158,9 +3190,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     // Subagent-owned assistant snapshots (parent_tool_use_id set) are the
-    // subagent's own conversation, not the parent's. Emitting them created
-    // interleaved "Agent N done"-adjacent leak messages and spawned synthetic
-    // turns per subagent completion (which also reset the Working timer).
+    // subagent's own conversation, not the parent's. Emitting them into the
+    // parent created interleaved "Agent N done"-adjacent leak messages and
+    // spawned synthetic turns per subagent completion (which also reset the
+    // Working timer). They are re-homed onto the owning task as transcript
+    // rows instead: the snapshot is the authoritative complete-block form of
+    // the same text the stream deltas carry, so routing it (and continuing to
+    // drop the deltas in handleStreamEvent) keeps one event per message
+    // instead of one per token.
     const assistantParentToolUseId = (message as { parent_tool_use_id?: string | null })
       .parent_tool_use_id;
     if (assistantParentToolUseId !== null && assistantParentToolUseId !== undefined) {
@@ -3182,6 +3219,30 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           );
         }
       }
+
+      const transcriptBlocks = subagentTranscriptBlocks(message.message?.content);
+      if (owningTaskId && transcriptBlocks.length > 0) {
+        const transcriptStamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "task.transcript",
+          eventId: transcriptStamp.eventId,
+          provider: PROVIDER,
+          createdAt: transcriptStamp.createdAt,
+          threadId: context.session.threadId,
+          ...(context.turnState ? { turnId: context.turnState.turnId } : {}),
+          payload: {
+            taskId: RuntimeTaskId.make(owningTaskId),
+            blocks: transcriptBlocks,
+          },
+          providerRefs: nativeProviderRefs(context),
+          raw: {
+            source: "claude.sdk.message",
+            method: "claude/assistant/subagent",
+            payload: message,
+          },
+        });
+      }
+
       context.lastAssistantUuid = message.uuid;
       yield* updateResumeCursor(context);
       return;
@@ -4743,6 +4804,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(existingResumeSessionId ? { resume: existingResumeSessionId } : {}),
         ...(newSessionId ? { sessionId: newSessionId } : {}),
         includePartialMessages: true,
+        // Without this the SDK forwards only subagent tool_use/tool_result
+        // blocks (enough for a heartbeat counter). With it the subagent's own
+        // text and thinking arrive too, which is what the per-agent transcript
+        // renders. It does not reach the parent transcript: the snapshot
+        // handler re-homes it onto the owning task.
+        forwardSubagentText: true,
         canUseTool,
         onUserDialog,
         supportedDialogKinds: ["resume_return"],

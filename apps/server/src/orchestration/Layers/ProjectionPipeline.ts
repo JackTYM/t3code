@@ -158,10 +158,16 @@ function shouldRefreshThreadShellSummary(event: OrchestrationEvent): boolean {
   }
 }
 
-function derivePendingUserInputCountFromActivities(
+/**
+ * Open requests split by whether the agent is actually blocked. Async
+ * questions (`responseMode: "message"`) are answered by sending an ordinary
+ * message, so the agent carries on and they must not outrank a live run.
+ */
+function derivePendingUserInputCountsFromActivities(
   activities: ReadonlyArray<ProjectionThreadActivity>,
-): number {
+): { readonly total: number; readonly async: number } {
   const openRequestIds = new Set<string>();
+  const asyncRequestIds = new Set<string>();
   const ordered = [...activities].toSorted(
     (left, right) =>
       left.createdAt.localeCompare(right.createdAt) ||
@@ -181,11 +187,17 @@ function derivePendingUserInputCountFromActivities(
 
     if (activity.kind === "user-input.requested") {
       openRequestIds.add(requestId);
+      if (payload?.responseMode === "message") {
+        asyncRequestIds.add(requestId);
+      } else {
+        asyncRequestIds.delete(requestId);
+      }
       continue;
     }
 
     if (activity.kind === "user-input.resolved") {
       openRequestIds.delete(requestId);
+      asyncRequestIds.delete(requestId);
       continue;
     }
 
@@ -198,10 +210,11 @@ function derivePendingUserInputCountFromActivities(
         detail.includes("unknown pending codex user input request"))
     ) {
       openRequestIds.delete(requestId);
+      asyncRequestIds.delete(requestId);
     }
   }
 
-  return openRequestIds.size;
+  return { total: openRequestIds.size, async: asyncRequestIds.size };
 }
 
 function retainProjectionMessagesAfterRevert(
@@ -590,13 +603,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           projectionPendingApprovalRepository.countPendingByThreadId({ threadId }),
         ]);
 
-      const pendingUserInputCount = derivePendingUserInputCountFromActivities(activities);
+      const pendingUserInput = derivePendingUserInputCountsFromActivities(activities);
 
       yield* projectionThreadRepository.upsert({
         ...existingRow.value,
         latestUserMessageAt,
         pendingApprovalCount,
-        pendingUserInputCount,
+        pendingUserInputCount: pendingUserInput.total,
+        pendingAsyncUserInputCount: pendingUserInput.async,
         hasActionableProposedPlan: hasActionableProposedPlan ? 1 : 0,
       });
     });
@@ -637,6 +651,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             titleRegenerationStartedAt: null,
             latestUserMessageAt: null,
             pendingApprovalCount: 0,
+            pendingAsyncUserInputCount: 0,
             pendingUserInputCount: 0,
             hasActionableProposedPlan: 0,
             deletedAt: null,
@@ -1876,7 +1891,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           // rows.  Other activity kinds that happen to carry a requestId
           // (e.g. user-input.requested / user-input.resolved) must not
           // pollute this projection — they have their own accounting via
-          // derivePendingUserInputCountFromActivities.
+          // derivePendingUserInputCountsFromActivities.
           if (event.payload.activity.kind !== "approval.requested") {
             return;
           }

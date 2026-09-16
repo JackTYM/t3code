@@ -255,16 +255,26 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
   };
 }
 
-export function parseStandaloneComposerSlashCommand(
+/**
+ * Reads a leading `/plan` or `/default` off a composer message. A bare command
+ * only switches the thread's interaction mode; anything after it is the prompt
+ * for that same turn, so switching and sending cost one action instead of two.
+ *
+ * Callers gate this on the provider supporting T3 plan mode, which is what
+ * keeps a provider's own `/plan` (Antigravity ships one) reaching the provider
+ * unmodified.
+ */
+export function parseComposerInteractionModeCommand(
   text: string,
-): Exclude<ComposerSlashCommand, "model"> | null {
-  const match = /^\/(plan|default)\s*$/i.exec(text.trim());
+): { mode: Exclude<ComposerSlashCommand, "model">; remainder: string } | null {
+  const match = /^\/(plan|default)(?:\s+([\s\S]*?))?\s*$/i.exec(text.trim());
   if (!match) {
     return null;
   }
-  const command = match[1]?.toLowerCase();
-  if (command === "plan") return "plan";
-  return "default";
+  return {
+    mode: match[1]?.toLowerCase() === "plan" ? "plan" : "default",
+    remainder: match[2] ?? "",
+  };
 }
 
 export function replaceTextRange(

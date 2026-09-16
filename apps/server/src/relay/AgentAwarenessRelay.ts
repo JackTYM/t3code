@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
@@ -96,6 +97,14 @@ export function shouldPublishAgentAwarenessEvent(event: OrchestrationEvent): boo
       return true;
   }
 }
+
+const RELAY_AGENT_ACTIVITY_PUBLISH_TIMEOUT = "30 seconds";
+
+/**
+ * Stands in for "what the relay holds is unknown". Real identities are `"null"`
+ * or JSON, so this can never compare equal to one and the dedupe always misses.
+ */
+const PUBLISH_FAILED_IDENTITY = "publish-failed";
 
 export function agentAwarenessPublishIdentity(state: RelayAgentActivityState | null): string {
   if (state === null) {
@@ -227,6 +236,9 @@ function describeThreadShellForAwareness(
     latestTurnCompletedAt: shell.latestTurn?.completedAt ?? null,
     hasPendingApprovals: shell.hasPendingApprovals,
     hasPendingUserInput: shell.hasPendingUserInput,
+    archivedAt: shell.archivedAt,
+    settledOverride: shell.settledOverride,
+    snoozedUntil: shell.snoozedUntil ?? null,
   };
 }
 
@@ -235,6 +247,7 @@ export function resolveAgentAwarenessRelayPublishSnapshot(input: {
   readonly threadId: ThreadId;
   readonly thread: Option.Option<OrchestrationThreadShell>;
   readonly project: Option.Option<OrchestrationProjectShell>;
+  readonly now: string;
 }): {
   readonly projectId: string | null;
   readonly state: RelayAgentActivityState | null;
@@ -261,6 +274,7 @@ export function resolveAgentAwarenessRelayPublishSnapshot(input: {
         environmentId: input.environmentId,
         project: input.project.value,
         thread: input.thread.value,
+        now: input.now,
       }),
     ),
     reason: "snapshot",
@@ -271,6 +285,7 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
   readonly environmentId: EnvironmentId;
   readonly projects: ReadonlyArray<Pick<OrchestrationProjectShell, "id" | "title">>;
   readonly threads: ReadonlyArray<OrchestrationThreadShell>;
+  readonly now: string;
 }): ReadonlyArray<ThreadId> {
   const projectById = new Map(input.projects.map((project) => [project.id, project]));
   return input.threads
@@ -284,6 +299,7 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
           environmentId: input.environmentId,
           project,
           thread,
+          now: input.now,
         }) !== null
       );
     })
@@ -414,6 +430,7 @@ export const make = Effect.gen(function* () {
       threadId,
       thread,
       project,
+      now: DateTime.formatIso(yield* DateTime.now),
     });
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
@@ -502,12 +519,31 @@ export const make = Effect.gen(function* () {
 
   const publishThread: AgentAwarenessRelay["Service"]["publishThread"] = (threadId) =>
     publishThreadUnsafe(threadId).pipe(
-      Effect.catchCause((cause) => {
-        return Effect.logWarning("agent activity publish failed", {
+      // Publishes drain through one serial worker, so an unbounded relay call
+      // stalls awareness for every thread in the environment, not just this one.
+      Effect.timeout(RELAY_AGENT_ACTIVITY_PUBLISH_TIMEOUT),
+      Effect.retry({ times: 2, schedule: Schedule.exponential("500 millis") }),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("agent activity publish failed", {
           threadId,
           cause: Cause.pretty(cause),
-        });
-      }),
+        }).pipe(
+          // A dropped publish leaves the relay holding an older state while
+          // this map still names the state before it. "running" is published
+          // exactly once per turn and nothing mid-turn republishes, so the
+          // next turn's "completed" — byte-identical to the last one, since
+          // the identity deliberately ignores updatedAt — would be skipped as
+          // unchanged and freeze the card on Done while the agent works.
+          // Poisoning the entry guarantees the next publish actually goes out.
+          Effect.andThen(
+            Ref.update(publishedStateByThreadRef, (publishedStates) => {
+              const nextPublishedStates = new Map(publishedStates);
+              nextPublishedStates.set(threadId, PUBLISH_FAILED_IDENTITY);
+              return nextPublishedStates;
+            }),
+          ),
+        ),
+      ),
       Effect.withSpan("AgentAwarenessRelay.publishThread"),
       withRelayClientTracing,
     );
@@ -531,6 +567,7 @@ export const make = Effect.gen(function* () {
       environmentId,
       projects: snapshot.projects,
       threads: snapshot.threads,
+      now: DateTime.formatIso(yield* DateTime.now),
     });
     if (activeThreadIds.length === 0) {
       yield* Effect.logDebug("agent activity snapshot has no publishable threads");

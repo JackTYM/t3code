@@ -33,6 +33,20 @@ import type * as Effect from "effect/Effect";
 
 import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
 
+/** An unanswered `user-input.requested` and the thread that raised it. */
+export interface ProjectionOpenUserInputRequest {
+  readonly threadId: ThreadId;
+  readonly requestId: string;
+  readonly turnId: string | null;
+  /**
+   * Async questions (`responseMode: "message"`) are answered by sending an
+   * ordinary message, so they outlive their turn and their provider session.
+   * Every other question is answered through a provider callback that only
+   * exists in the adapter's memory.
+   */
+  readonly responseMode: string | null;
+}
+
 export interface ProjectionSnapshotCounts {
   readonly projectCount: number;
   readonly threadCount: number;
@@ -91,6 +105,26 @@ export interface ProjectionSnapshotQueryShape {
   readonly listActivitiesByKind: (
     kind: string,
   ) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
+  /**
+   * Read one subagent's own narration. These rows are stamped with their
+   * owning taskId and excluded from every default thread-detail read, so this
+   * scoped query is the only way they reach a client — and only a client that
+   * opened that agent's view asks for them.
+   */
+  readonly listAgentTranscript: (input: {
+    readonly threadId: ThreadId;
+    readonly taskId: string;
+  }) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
+  /**
+   * Every unanswered user-input request across active threads. Used at
+   * startup to close the ones whose provider callback died with the process.
+   */
+  readonly listOpenUserInputRequests: () => Effect.Effect<
+    ReadonlyArray<ProjectionOpenUserInputRequest>,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Read the lightweight command snapshot used to bootstrap the in-memory

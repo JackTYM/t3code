@@ -22,9 +22,26 @@ import * as Layer from "effect/Layer";
 
 export type ThreadBackgroundLiveness = "working" | "monitoring" | null;
 
+export interface ThreadBackgroundLivenessState {
+  readonly liveness: ThreadBackgroundLiveness;
+  /**
+   * When this thread last went from having no live background work to having
+   * some. Null whenever nothing is live, and after a restart, because the
+   * registry starts empty and an elapsed time we cannot substantiate is worse
+   * than no elapsed time at all.
+   */
+  readonly since: string | null;
+}
+
 interface ThreadLivenessState {
   readonly agents: Set<string>;
   readonly monitors: Set<string>;
+  /**
+   * Stamped once per live stretch, not per task, so the elapsed time does not
+   * jump around as individual agents come and go. The entry is deleted when
+   * the last task settles, so a later resume is a new stretch.
+   */
+  readonly since: string | null;
 }
 
 // Classification sets are the shared contracts copies (MONITOR_TASK_TYPES:
@@ -59,6 +76,12 @@ export class ThreadBackgroundLivenessService extends Context.Service<
       readonly status: string | undefined;
       readonly kind: "started" | "progress" | "updated" | "completed";
       readonly agentId?: string | undefined;
+      /**
+       * The lifecycle event's own timestamp; stamps the start of a stretch.
+       * Absent means the stretch has no substantiated start, which surfaces
+       * render as no elapsed time.
+       */
+      readonly occurredAt?: string | undefined;
     }) => void;
 
     /** Session death orphans all of a thread's background work. */
@@ -69,18 +92,27 @@ export class ThreadBackgroundLivenessService extends Context.Service<
      * "monitoring" only when watch loops are the ONLY live work.
      */
     readonly getThreadBackgroundLiveness: (threadId: string) => ThreadBackgroundLiveness;
+
+    /** Liveness plus the start of the current stretch, for the elapsed label. */
+    readonly getThreadBackgroundLivenessState: (threadId: string) => ThreadBackgroundLivenessState;
   }
 >()("t3/orchestration/ThreadBackgroundLiveness/ThreadBackgroundLivenessService") {}
 
 export function make(): ThreadBackgroundLivenessService["Service"] {
   const stateByThreadId = new Map<string, ThreadLivenessState>();
 
-  const stateFor = (threadId: string): ThreadLivenessState => {
+  const stateFor = (threadId: string, since: string | undefined): ThreadLivenessState => {
     const existing = stateByThreadId.get(threadId);
     if (existing) {
       return existing;
     }
-    const created: ThreadLivenessState = { agents: new Set(), monitors: new Set() };
+    // Creating the entry IS the transition into live background work: `drop`
+    // deletes it once the last task settles.
+    const created: ThreadLivenessState = {
+      agents: new Set(),
+      monitors: new Set(),
+      since: since ?? null,
+    };
     stateByThreadId.set(threadId, created);
     return created;
   };
@@ -99,6 +131,19 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
     if (state.agents.size === 0 && state.monitors.size === 0) {
       stateByThreadId.delete(threadId);
     }
+  };
+
+  const livenessOf = (state: ThreadLivenessState | undefined): ThreadBackgroundLiveness => {
+    if (!state) {
+      return null;
+    }
+    if (state.agents.size > 0) {
+      return "working";
+    }
+    if (state.monitors.size > 0) {
+      return "monitoring";
+    }
+    return null;
   };
 
   return {
@@ -143,7 +188,7 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
       }
 
       drop(input.threadId, input.taskId);
-      const state = stateFor(input.threadId);
+      const state = stateFor(input.threadId, input.occurredAt);
       const bucket =
         taskType !== undefined && MONITOR_TASK_TYPES.has(taskType) ? state.monitors : state.agents;
       bucket.add(input.taskId);
@@ -153,18 +198,12 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
       stateByThreadId.delete(threadId);
     },
 
-    getThreadBackgroundLiveness: (threadId) => {
+    getThreadBackgroundLiveness: (threadId) => livenessOf(stateByThreadId.get(threadId)),
+
+    getThreadBackgroundLivenessState: (threadId) => {
       const state = stateByThreadId.get(threadId);
-      if (!state) {
-        return null;
-      }
-      if (state.agents.size > 0) {
-        return "working";
-      }
-      if (state.monitors.size > 0) {
-        return "monitoring";
-      }
-      return null;
+      const liveness = livenessOf(state);
+      return { liveness, since: liveness === null ? null : (state?.since ?? null) };
     },
   };
 }

@@ -11,6 +11,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { Atom, AsyncResult } from "effect/unstable/reactivity";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -73,6 +74,7 @@ import {
   rememberReadyThreadTimeline,
   resetHeldThreadTimeline,
   resolveThreadSwitchTimeline,
+  shouldPinThreadSwitchToEnd,
   threadKeysShareEnvironment,
   timelineHasEphemeralPreviewUrls,
   scheduleEnvironmentReconnectWarning,
@@ -819,6 +821,150 @@ describe("resolveThreadSwitchTimeline", () => {
   });
 });
 
+describe("shouldPinThreadSwitchToEnd", () => {
+  afterEach(() => {
+    resetHeldThreadTimeline();
+  });
+
+  type ThreadSwitchCommit = {
+    activeThreadKey: string;
+    loading: boolean;
+    nextEntries: readonly string[];
+  };
+
+  /**
+   * Replays ChatView's render pass for a sequence of commits: resolve what the
+   * timeline displays, remember it once it is ready, then decide whether that
+   * commit pins the list to its end. Returns the row count each pin saw, which
+   * is the whole question — a pin issued against an empty timeline never moves
+   * the list and cannot be reissued.
+   */
+  function replayThreadSwitch(commits: readonly ThreadSwitchCommit[]): number[] {
+    let pinnedThreadKey: string | null | undefined;
+    const pinnedEntryCounts: number[] = [];
+
+    for (const commit of commits) {
+      const displayed = resolveThreadSwitchTimeline({
+        loading: commit.loading,
+        activeThreadKey: commit.activeThreadKey,
+        nextEntries: commit.nextEntries,
+      });
+      // `useRef(displayedTimeline.displayThreadKey)` on the first render.
+      if (pinnedThreadKey === undefined) {
+        pinnedThreadKey = displayed.displayThreadKey;
+      }
+      if (
+        shouldPinThreadSwitchToEnd({
+          activeThreadKey: commit.activeThreadKey,
+          displayThreadKey: displayed.displayThreadKey,
+          entryCount: displayed.entries.length,
+          pinnedThreadKey,
+        })
+      ) {
+        pinnedThreadKey = displayed.displayThreadKey;
+        pinnedEntryCounts.push(displayed.entries.length);
+      }
+      if (!commit.loading && commit.nextEntries.length > 0) {
+        rememberReadyThreadTimeline({
+          threadKey: commit.activeThreadKey,
+          entries: commit.nextEntries,
+        });
+      }
+    }
+
+    return pinnedEntryCounts;
+  }
+
+  it("pins the rows, not the bare destination key, when nothing paints the gap", () => {
+    // A jump to another environment refuses the held snapshot, so the middle
+    // commit resolves to the destination key with an empty timeline. Pinning
+    // there is the bug: LegendList cannot scroll an empty list and the call
+    // supersedes its own initialScrollAtEnd, so the rows land at the top.
+    expect(
+      replayThreadSwitch([
+        { activeThreadKey: "env-1:thread-a", loading: false, nextEntries: ["a1", "a2"] },
+        { activeThreadKey: "env-2:thread-b", loading: true, nextEntries: [] },
+        { activeThreadKey: "env-2:thread-b", loading: false, nextEntries: ["b1", "b2"] },
+      ]),
+    ).toEqual([2]);
+  });
+
+  it("pins once after a settled thread resolves its entries a commit late", () => {
+    // `loading` goes false before the projection produces entries, so the
+    // destination key and its rows arrive in separate commits.
+    expect(
+      replayThreadSwitch([
+        { activeThreadKey: "env-1:thread-a", loading: false, nextEntries: ["a1"] },
+        { activeThreadKey: "env-1:thread-b", loading: false, nextEntries: [] },
+        { activeThreadKey: "env-1:thread-b", loading: false, nextEntries: ["b1", "b2", "b3"] },
+      ]),
+    ).toEqual([3]);
+  });
+
+  it("still pins exactly once when a held snapshot paints the gap", () => {
+    expect(
+      replayThreadSwitch([
+        { activeThreadKey: "env-1:thread-a", loading: false, nextEntries: ["a1", "a2"] },
+        { activeThreadKey: "env-1:thread-b", loading: true, nextEntries: [] },
+        { activeThreadKey: "env-1:thread-b", loading: false, nextEntries: ["b1"] },
+        { activeThreadKey: "env-1:thread-b", loading: false, nextEntries: ["b1", "b2"] },
+      ]),
+    ).toEqual([1]);
+  });
+
+  it("does not pin the thread the list mounted on", () => {
+    expect(
+      replayThreadSwitch([
+        { activeThreadKey: "env-1:thread-a", loading: false, nextEntries: ["a1", "a2"] },
+        { activeThreadKey: "env-1:thread-a", loading: false, nextEntries: ["a1", "a2", "a3"] },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("re-pins a thread that is returned to", () => {
+    expect(
+      replayThreadSwitch([
+        { activeThreadKey: "env-1:thread-a", loading: false, nextEntries: ["a1"] },
+        { activeThreadKey: "env-1:thread-b", loading: false, nextEntries: ["b1"] },
+        { activeThreadKey: "env-1:thread-a", loading: false, nextEntries: ["a1"] },
+      ]),
+    ).toEqual([1, 1]);
+  });
+
+  it("holds the pin while another thread's snapshot is painted", () => {
+    expect(
+      shouldPinThreadSwitchToEnd({
+        activeThreadKey: "env-1:thread-b",
+        displayThreadKey: "env-1:thread-a",
+        entryCount: 2,
+        pinnedThreadKey: "env-1:thread-a",
+      }),
+    ).toBe(false);
+  });
+
+  it("never pins an empty timeline", () => {
+    expect(
+      shouldPinThreadSwitchToEnd({
+        activeThreadKey: "env-1:thread-b",
+        displayThreadKey: "env-1:thread-b",
+        entryCount: 0,
+        pinnedThreadKey: "env-1:thread-a",
+      }),
+    ).toBe(false);
+  });
+
+  it("ignores a route with no thread", () => {
+    expect(
+      shouldPinThreadSwitchToEnd({
+        activeThreadKey: null,
+        displayThreadKey: null,
+        entryCount: 3,
+        pinnedThreadKey: "env-1:thread-a",
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("shouldReleaseTimelineAnchorForToolActivity", () => {
   const activeTurnId = TurnId.make("active-turn");
   const anchorMessageId = MessageId.make("anchored-message");
@@ -1538,7 +1684,7 @@ describe("resolveComposerInteractionMode", () => {
     ).toEqual({ enabled: true, interactionMode: "plan" });
   });
 
-  it("resets a restored plan draft when the beta setting is off", () => {
+  it("resets a restored plan draft when the setting is off", () => {
     expect(
       resolveComposerInteractionMode({
         planModeEnabled: false,
@@ -1556,6 +1702,79 @@ describe("resolveComposerInteractionMode", () => {
         interactionMode: "plan",
       }),
     ).toEqual({ enabled: false, interactionMode: "default" });
+  });
+
+  // Mirrors `showInteractionModeToggle` on each adapter under
+  // apps/server/src/provider/Layers. Plan mode reaches exactly the three
+  // providers that opt in; the rest keep their own native behavior.
+  const PROVIDER_TOGGLE_SUPPORT = [
+    { provider: "claude", showInteractionModeToggle: true },
+    { provider: "codex", showInteractionModeToggle: true },
+    { provider: "cursor", showInteractionModeToggle: true },
+    { provider: "grok", showInteractionModeToggle: false },
+    { provider: "antigravity", showInteractionModeToggle: false },
+    { provider: "opencode", showInteractionModeToggle: false },
+  ] as const;
+
+  it.each(PROVIDER_TOGGLE_SUPPORT)(
+    "with the setting on, $provider follows its adapter toggle flag",
+    ({ showInteractionModeToggle }) => {
+      expect(
+        resolveComposerInteractionMode({
+          planModeEnabled: true,
+          provider: { showInteractionModeToggle },
+          interactionMode: "plan",
+        }),
+      ).toEqual(
+        showInteractionModeToggle
+          ? { enabled: true, interactionMode: "plan" }
+          : { enabled: false, interactionMode: "default" },
+      );
+    },
+  );
+
+  it.each(PROVIDER_TOGGLE_SUPPORT)(
+    "with the setting off, $provider gets no plan mode at all",
+    ({ showInteractionModeToggle }) => {
+      expect(
+        resolveComposerInteractionMode({
+          planModeEnabled: false,
+          provider: { showInteractionModeToggle },
+          interactionMode: "plan",
+        }),
+      ).toEqual({ enabled: false, interactionMode: "default" });
+    },
+  );
+
+  // Clients render with DEFAULT_CLIENT_SETTINGS before persisted settings
+  // arrive over the wire. While the default was `false` the clamp below turned
+  // every restored plan thread into a build thread for that window, so a send
+  // landing early ran as build without the user ever asking. Reading the real
+  // default here (rather than a literal `true`) makes this fail if the schema
+  // default is ever flipped back.
+  it("does not clamp a persisted plan thread before client settings hydrate", () => {
+    expect(
+      resolveComposerInteractionMode({
+        planModeEnabled: DEFAULT_CLIENT_SETTINGS.planModeEnabled,
+        provider: { showInteractionModeToggle: true },
+        interactionMode: "plan",
+      }),
+    ).toEqual({ enabled: true, interactionMode: "plan" });
+  });
+
+  it("keeps a persisted plan thread in plan mode once settings hydrate", () => {
+    // The hydrated value for a user who never touched the setting is the same
+    // default, so reopening a plan thread must survive the pre- to
+    // post-hydration transition without a transient build frame.
+    for (const planModeEnabled of [DEFAULT_CLIENT_SETTINGS.planModeEnabled, true]) {
+      expect(
+        resolveComposerInteractionMode({
+          planModeEnabled,
+          provider: { showInteractionModeToggle: true },
+          interactionMode: "plan",
+        }),
+      ).toEqual({ enabled: true, interactionMode: "plan" });
+    }
   });
 });
 

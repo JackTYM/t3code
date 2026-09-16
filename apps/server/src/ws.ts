@@ -43,8 +43,10 @@ import {
   type OrchestrationShellStreamItem,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
+  OrchestrationGetAgentTranscriptError,
   OrchestrationSearchThreadsError,
   OrchestrationGetTurnDiffError,
+  AGENT_TRANSCRIPT_ACTIVITY_KIND,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   type ProjectEntriesFailure,
@@ -352,7 +354,12 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
   return (
     event.type === "thread.message-sent" ||
     event.type === "thread.proposed-plan-upserted" ||
-    event.type === "thread.activity-appended" ||
+    // Subagent narration is re-homed onto its owning task and is not part of
+    // thread detail. Excluding it in SQL alone would still stream every row
+    // live to every subscribed client, which is the traffic regression this
+    // design exists to prevent; the scoped transcript query serves it instead.
+    (event.type === "thread.activity-appended" &&
+      event.payload.activity.kind !== AGENT_TRANSCRIPT_ACTIVITY_KIND) ||
     event.type === "thread.turn-diff-completed" ||
     event.type === "thread.reverted" ||
     event.type === "thread.session-set"
@@ -1901,6 +1908,41 @@ const makeWsRpcLayer = (
                     }),
               ),
             ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getAgentTranscript]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getAgentTranscript,
+            projectionSnapshotQuery
+              .listAgentTranscript({ threadId: input.threadId, taskId: input.taskId })
+              .pipe(
+                Effect.map((activities) => ({
+                  taskId: input.taskId,
+                  entries: activities.flatMap((activity) => {
+                    const payload = activity.payload;
+                    const blocks =
+                      payload !== null && typeof payload === "object"
+                        ? (payload as { blocks?: unknown }).blocks
+                        : undefined;
+                    return Array.isArray(blocks) && blocks.length > 0
+                      ? [
+                          {
+                            activityId: activity.id,
+                            createdAt: activity.createdAt,
+                            blocks,
+                          },
+                        ]
+                      : [];
+                  }),
+                })),
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetAgentTranscriptError({
+                      message: "Failed to load agent transcript",
+                      cause,
+                    }),
+                ),
+              ),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.getWorkflowScript]: (input) =>

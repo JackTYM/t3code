@@ -5,6 +5,7 @@ import {
   dedupeProviderSkillsByName,
   formatProviderSkillDisplayName,
   getProviderSlashCommandsForSlashMenu,
+  withInteractionModeCommandPrecedence,
   getProviderSkillsForSlashMenu,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
@@ -182,6 +183,47 @@ describe("getProviderSlashCommandsForSlashMenu", () => {
     expect(
       getProviderSlashCommandsForSlashMenu(commands, visibleSkills).map((command) => command.name),
     ).toEqual(["ask-matt", "compact"]);
+  });
+});
+
+describe("withInteractionModeCommandPrecedence", () => {
+  // Antigravity advertises its own /plan and does not support T3 plan mode.
+  const antigravityCommands = [
+    { name: "plan", description: "Antigravity's own planning command." },
+    { name: "memory", description: "Inspect memories." },
+  ];
+
+  it("passes a provider's own /plan through where T3 plan mode is unavailable", () => {
+    expect(
+      withInteractionModeCommandPrecedence(antigravityCommands, false).map(
+        (command) => command.name,
+      ),
+    ).toEqual(["plan", "memory"]);
+  });
+
+  it("shadows a provider's /plan where T3 plan mode is available", () => {
+    expect(
+      withInteractionModeCommandPrecedence(antigravityCommands, true).map(
+        (command) => command.name,
+      ),
+    ).toEqual(["memory"]);
+  });
+
+  it("shadows /default too, and matches case and padding insensitively", () => {
+    const commands = [{ name: " Default " }, { name: "PLAN" }, { name: "review" }];
+
+    expect(withInteractionModeCommandPrecedence(commands, true).map((c) => c.name)).toEqual([
+      "review",
+    ]);
+  });
+
+  it("leaves commands that merely share a prefix alone", () => {
+    const commands = [{ name: "planning" }, { name: "defaults" }];
+
+    expect(withInteractionModeCommandPrecedence(commands, true).map((c) => c.name)).toEqual([
+      "planning",
+      "defaults",
+    ]);
   });
 });
 

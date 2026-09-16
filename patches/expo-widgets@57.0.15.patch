@@ -13,6 +13,54 @@ index 15e026868625ce20a3e359e5cc8e5c7e937c4650..f5cc83174ede4fb6e01cbce494f61e08
      /**
       * Whether the activity is displayed in a context with reduced luminance.
       * @platform iOS 16+
+diff --git a/ios/LiveActivityFactory.swift b/ios/LiveActivityFactory.swift
+index 4b8a632965ddb507aeeb54a4d8944f455e5dffd7..d0c1c397a65e5938cec17652ebbc38d609fd98ce 100644
+--- a/ios/LiveActivityFactory.swift
++++ b/ios/LiveActivityFactory.swift
+@@ -14,12 +14,43 @@ final class LiveActivityFactory: SharedObject {
+     WidgetsStorage.set(layout, forKey: "__expo_widgets_live_activity_\(name)_layout")
+   }
+ 
++  // T3 patch. An activity ended by a push (dismissal-date in the future) stops
++  // updating but stays on the lock screen, and ActivityKit reports it as
++  // `.ended`, so `getInstances()` filters it out. Every JS-side duplicate guard
++  // reads `getInstances()`, so that frozen card is invisible to all of them and
++  // the next start arms a second card beside it — two cards showing
++  // contradictory aggregates. Dismiss the corpses here, the one choke point
++  // every start path passes through, so the guard cannot be raced or skipped.
++  //
++  // Only `.ended`/`.dismissed` activities match, so an activity requested
++  // moments ago can never be caught by this regardless of whether ActivityKit
++  // reflects it in `activities` synchronously.
++  private func dismissEndedActivities() {
++    guard #available(iOS 16.2, *) else { return }
++
++    let ended = Activity<LiveActivityAttributes>.activities
++      .filter { $0.content.state.name == name }
++      .filter { $0.activityState != .active && $0.activityState != .stale }
++    guard !ended.isEmpty else { return }
++
++    for id in ended.map(\.id) {
++      instances.removeValue(forKey: id)
++    }
++    Task {
++      for activity in ended {
++        await activity.end(nil, dismissalPolicy: .immediate)
++      }
++    }
++  }
++
+   func start(props: String, url: URL?, staleDate: Date?) throws -> LiveActivity {
+     guard #available(iOS 16.2, *) else { throw LiveActivitiesNotSupportedException() }
+     guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+       throw LiveActivitiesNotSupportedException()
+     }
+ 
++    dismissEndedActivities()
++
+     do {
+       let initialState = LiveActivityAttributes.ContentState(name: name, props: props)
+       let activity = try Activity.request(
 diff --git a/ios/Widgets/Utils.swift b/ios/Widgets/Utils.swift
 index 2b4c044b597de7e0fab42dbc47af14d8bb521838..801f0aed65ea2659f221d477dd841787d9146c26 100644
 --- a/ios/Widgets/Utils.swift

@@ -117,7 +117,7 @@ import { useDiffPanelStore } from "../diffPanelStore";
 import {
   collapseExpandedComposerCursor,
   type ComposerSubmissionIntent,
-  parseStandaloneComposerSlashCommand,
+  parseComposerInteractionModeCommand,
 } from "../composer-logic";
 import {
   createMessageAttachmentPreviewProjector,
@@ -451,6 +451,7 @@ import {
   peekRememberedThreadTimeline,
   rememberReadyThreadTimeline,
   resolveThreadSwitchTimeline,
+  shouldPinThreadSwitchToEnd,
   timelineHasEphemeralPreviewUrls,
   observeProactivePanelUserChoice,
   resolveProactiveTurnDiffAction,
@@ -5318,21 +5319,40 @@ export default function ChatView(props: ChatViewProps) {
       void legendListRef.current?.scrollToEnd?.({ animated });
     });
   }, []);
-  const displayedTimelineKeyRef = useRef(displayedTimeline.displayThreadKey);
+  // The thread whose end has already been pinned, written only when a pin
+  // actually ran. Latching the key on its own spent the pin on the commits
+  // where the destination has resolved but its rows have not.
+  const pinnedTimelineThreadKeyRef = useRef(displayedTimeline.displayThreadKey);
+  const displayedTimelineEntryCount = displayedTimeline.entries.length;
   useLayoutEffect(() => {
     const displayKey = displayedTimeline.displayThreadKey;
-    if (displayKey === null || displayKey !== activeThreadKey) {
-      displayedTimelineKeyRef.current = displayKey;
+    if (
+      !shouldPinThreadSwitchToEnd({
+        activeThreadKey,
+        displayThreadKey: displayKey,
+        entryCount: displayedTimelineEntryCount,
+        pinnedThreadKey: pinnedTimelineThreadKeyRef.current,
+      })
+    ) {
       return;
     }
-    if (displayedTimelineKeyRef.current === displayKey) {
+    pinnedTimelineThreadKeyRef.current = displayKey;
+    // A citation deep link owns where its thread lands, which is why it also
+    // turns off the list's own initialScrollAtEnd. Count the thread as placed
+    // rather than racing the citation to the end.
+    if (citationRequest !== null) {
       return;
     }
-    displayedTimelineKeyRef.current = displayKey;
     // Keep the list mounted across jumps; pin the newly displayed thread to
     // its end the way a remount used to via initialScrollAtEnd.
     scrollToEnd();
-  }, [activeThreadKey, displayedTimeline.displayThreadKey, scrollToEnd]);
+  }, [
+    activeThreadKey,
+    citationRequest,
+    displayedTimeline.displayThreadKey,
+    displayedTimelineEntryCount,
+    scrollToEnd,
+  ]);
   useLayoutEffect(() => {
     if (timelineScrollModeRef.current !== "anchoring-new-turn") {
       return;
@@ -7102,6 +7122,102 @@ export default function ChatView(props: ChatViewProps) {
     }
   };
 
+  /**
+   * Relays a message aimed at one subagent.
+   *
+   * There is no route that delivers client text to an in-process subagent, so
+   * this is an ordinary thread turn that names the target and asks the session
+   * to pass it on — a steer when a turn is already running, a fresh turn when
+   * not. It goes through the same send path as any other message so thread
+   * settings, model selection and dispatch bookkeeping are not skipped.
+   * Returns whether the dispatch itself succeeded, never whether the agent
+   * actually received anything.
+   */
+  const onSendAgentMessage = async (agentId: string, text: string): Promise<boolean> => {
+    if (!activeThread || !clientSettingsHydrated || sendInFlightRef.current) {
+      return false;
+    }
+    const context = composerRef.current?.getSendContext();
+    if (!context?.providerAvailable) {
+      return false;
+    }
+    const agentTitle =
+      [
+        ...agentPanelModel.directAgents,
+        ...agentPanelModel.workflows.flatMap((group) => [
+          group.workflow,
+          ...group.unphasedMembers,
+          ...group.phases.flatMap((phase) => phase.members),
+        ]),
+      ].find((agent) => agent.id === agentId)?.title ?? agentId;
+    const threadId = activeThread.id;
+    const messageId = newMessageId();
+    const createdAt = new Date().toISOString();
+    const message = `Relay this to the "${agentTitle}" subagent (task ${agentId}) with SendMessage; if it has already finished, tell me instead of starting new work:\n\n${text}`;
+
+    sendInFlightRef.current = true;
+    beginLocalDispatch();
+    setThreadError(threadId, null);
+    // The relay is a real message in this thread, so show it as one. The user
+    // should see exactly what the session was asked to pass on.
+    setOptimisticUserMessages((messages) => [
+      ...messages,
+      {
+        id: messageId,
+        role: "user",
+        text: message,
+        turnId: null,
+        createdAt,
+        updatedAt: createdAt,
+        streaming: false,
+      },
+    ]);
+    scrollToEnd();
+    try {
+      const settingsResult = await persistThreadSettingsForNextTurn({
+        threadId,
+        createdAt,
+        modelSelection: context.selectedModelSelection,
+        ...(localCheckoutBranchMismatch
+          ? { branch: localCheckoutBranchMismatch.currentBranch }
+          : {}),
+        runtimeMode,
+        interactionMode: context.interactionMode,
+      });
+      const result =
+        settingsResult._tag === "Failure"
+          ? settingsResult
+          : await startThreadTurn({
+              environmentId,
+              input: {
+                threadId,
+                message: { messageId, role: "user", text: message, attachments: [] },
+                modelSelection: context.selectedModelSelection,
+                runtimeMode,
+                interactionMode: context.interactionMode,
+                createdAt,
+              },
+            });
+      if (result._tag === "Failure") {
+        setOptimisticUserMessages((messages) =>
+          messages.filter((candidate) => candidate.id !== messageId),
+        );
+        resetLocalDispatch();
+        if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          setThreadError(
+            threadId,
+            error instanceof Error ? error.message : "Failed to send the message.",
+          );
+        }
+        return false;
+      }
+      return true;
+    } finally {
+      sendInFlightRef.current = false;
+    }
+  };
+
   const queuedMessages = useQueuedMessages(activeThreadKey ?? "");
   // Puts queued messages back into the composer, e.g. after Stop or a failed
   // send. Prompts join with blank lines; attachments and contexts are added.
@@ -7283,7 +7399,7 @@ export default function ChatView(props: ChatViewProps) {
       selectedProviderModels: ctxSelectedProviderModels,
       selectedPromptEffort: ctxSelectedPromptEffort,
       selectedModelSelection: ctxSelectedModelSelection,
-      interactionMode: sendInteractionMode,
+      interactionMode: ctxInteractionMode,
       interactionModeEnabled: sendInteractionModeEnabled,
     } = sendCtx;
     const annotationImageAlreadyAttached =
@@ -7320,13 +7436,34 @@ export default function ChatView(props: ChatViewProps) {
         : sendContextPreviewAnnotations;
     // A direct "send annotation" writes the draft and sends in the same tick; the reference
     // must be in the text now, not after the next render.
-    const promptForSend = queuedMessage
+    const rawPromptForSend = queuedMessage
       ? queuedMessage.prompt
       : directAnnotation
         ? ensureInlineContextReferences(promptRef.current, [
             previewAnnotationContextReference(directAnnotation.annotation),
           ])
         : promptRef.current;
+    // `/plan <text>` switches the mode and sends `<text>` as that same turn. The
+    // bare `/plan` form is handled further down, where the attachment guards
+    // live. A queued message already chose its mode when it was queued, so it is
+    // left alone. Gating on `sendInteractionModeEnabled` is what lets a
+    // provider's own `/plan` (Antigravity ships one) through unmodified.
+    const interactionModeCommand =
+      sendInteractionModeEnabled && !queuedMessage
+        ? parseComposerInteractionModeCommand(rawPromptForSend)
+        : null;
+    const inlineInteractionModeCommand =
+      interactionModeCommand && interactionModeCommand.remainder.length > 0
+        ? interactionModeCommand
+        : null;
+    // The dispatched mode cannot come from the send context here: that snapshot
+    // was taken before this command was read.
+    const sendInteractionMode = inlineInteractionModeCommand
+      ? inlineInteractionModeCommand.mode
+      : ctxInteractionMode;
+    const promptForSend = inlineInteractionModeCommand
+      ? inlineInteractionModeCommand.remainder
+      : rawPromptForSend;
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
@@ -7460,22 +7597,27 @@ export default function ChatView(props: ChatViewProps) {
       }
       return;
     }
-    // Providers without the legacy toggle receive their native commands unchanged.
+    // A bare `/plan` or `/default` only switches the mode, so it must not
+    // swallow a composer that still holds attachments or contexts.
     const standaloneSlashCommand =
-      sendInteractionModeEnabled &&
+      interactionModeCommand &&
+      interactionModeCommand.remainder.length === 0 &&
       composerImages.length === 0 &&
       composerFiles.length === 0 &&
       sendableComposerTerminalContexts.length === 0 &&
       composerPreviewAnnotations.length === 0 &&
       composerReviewComments.length === 0
-        ? parseStandaloneComposerSlashCommand(trimmed)
+        ? interactionModeCommand.mode
         : null;
-    if (standaloneSlashCommand && !queuedMessage) {
+    if (standaloneSlashCommand) {
       handleInteractionModeChange(standaloneSlashCommand);
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
       return;
+    }
+    if (inlineInteractionModeCommand) {
+      handleInteractionModeChange(inlineInteractionModeCommand.mode);
     }
     if (!hasSendableContent) {
       if (expiredTerminalContextCount > 0) {
@@ -9250,6 +9392,7 @@ export default function ChatView(props: ChatViewProps) {
         model={agentPanelModel}
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
+        onSendAgentMessage={onSendAgentMessage}
       />
     ) : renderedRightPanelSurface?.kind === "device" ? (
       <Suspense fallback={null}>

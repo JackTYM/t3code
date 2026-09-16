@@ -4,6 +4,21 @@ T3 Code uses Claude Code's login and configuration. Start with the default provi
 for one account; [provider setup](./install.md#providers) covers installation and
 shared provider settings.
 
+## Plan with Opus, build with Sonnet
+
+**Claude Opus 5 Planning · Sonnet 5** in the model picker is a policy rather than a
+single model: Claude plans with Opus 5 and does the building with Sonnet 5. Choose it
+when you want the stronger model shaping the approach without running it for the whole
+session.
+
+The Opus half applies only while the composer is set to **Plan**. In **Build** the same
+selection runs as ordinary Sonnet 5, and nothing in the thread marks the difference.
+Planning also falls back to Sonnet once a conversation grows past roughly 200,000
+tokens.
+
+The context meter and usage limits count against Sonnet, so a planning turn can use
+more context than the meter shows and can draw down a different limit than you expect.
+
 ## Separate accounts or configurations
 
 Use a separate Claude config directory for each account. This also works for named
@@ -52,6 +67,23 @@ You can also send `/compact` in an existing conversation. Web and desktop offer
 **Compact context** from the context meter and may suggest it when you return to
 a large older thread. See [commands and skills](./composer.md#commands-and-skills)
 for using composer commands.
+
+## Read and reply to a subagent
+
+When a Claude thread spawns subagents, the Agents panel lists them. Select an
+agent to read its own narration — the reasoning and commentary it produced while
+working — and use the back control to return to the list. An agent you opened
+while it was running keeps its place when it finishes.
+
+The box at the bottom sends a message about that agent **to the session**, not to
+the agent. Claude has no inbox for a subagent that is running inside it, so your
+message becomes part of the conversation asking the main agent to pass it along.
+The main agent decides whether to relay it, and may reword it. Your message
+appears in the thread like any other. If the send itself fails, the panel says
+so; if it succeeds, that only means the session received it.
+
+Agents that finished before you opened the panel still show whatever narration
+was captured. Agents started before this feature existed show none.
 
 ## Usage limits
 

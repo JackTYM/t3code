@@ -15,7 +15,7 @@ import {
   expandCollapsedComposerCursor,
   formatAssistantCitationForComposer,
   isCollapsedCursorAdjacentToInlineToken,
-  parseStandaloneComposerSlashCommand,
+  parseComposerInteractionModeCommand,
   replaceTextRange,
 } from "./composer-logic";
 import { formatTerminalContextReference } from "./lib/terminalContext";
@@ -638,16 +638,45 @@ describe("isCollapsedCursorAdjacentToInlineToken", () => {
   });
 });
 
-describe("parseStandaloneComposerSlashCommand", () => {
-  it("parses standalone /plan command", () => {
-    expect(parseStandaloneComposerSlashCommand(" /plan ")).toBe("plan");
+describe("parseComposerInteractionModeCommand", () => {
+  it("parses a bare /plan command", () => {
+    expect(parseComposerInteractionModeCommand(" /plan ")).toEqual({
+      mode: "plan",
+      remainder: "",
+    });
   });
 
-  it("parses standalone /default command", () => {
-    expect(parseStandaloneComposerSlashCommand("/default")).toBe("default");
+  it("parses a bare /default command", () => {
+    expect(parseComposerInteractionModeCommand("/default")).toEqual({
+      mode: "default",
+      remainder: "",
+    });
   });
 
-  it("ignores slash commands with extra message text", () => {
-    expect(parseStandaloneComposerSlashCommand("/plan explain this")).toBeNull();
+  it("returns the rest of the message as the turn's prompt", () => {
+    expect(parseComposerInteractionModeCommand("/plan explain this")).toEqual({
+      mode: "plan",
+      remainder: "explain this",
+    });
+    expect(parseComposerInteractionModeCommand("/default ship it")).toEqual({
+      mode: "default",
+      remainder: "ship it",
+    });
+  });
+
+  it("keeps a multi-line remainder intact", () => {
+    expect(parseComposerInteractionModeCommand("/plan\nrewrite the parser\nthen test it")).toEqual({
+      mode: "plan",
+      remainder: "rewrite the parser\nthen test it",
+    });
+  });
+
+  it("ignores commands that only share a prefix", () => {
+    expect(parseComposerInteractionModeCommand("/planning")).toBeNull();
+    expect(parseComposerInteractionModeCommand("/defaults off")).toBeNull();
+  });
+
+  it("ignores a command that does not lead the message", () => {
+    expect(parseComposerInteractionModeCommand("please /plan this")).toBeNull();
   });
 });

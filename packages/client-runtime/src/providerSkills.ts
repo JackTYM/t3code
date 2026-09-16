@@ -65,6 +65,30 @@ export function getProviderSkillsForSlashMenu(
     : [];
 }
 
+/**
+ * T3's own `/plan` and `/default`. Used to shadow a provider command of the
+ * same name, so the two never both appear in the slash menu.
+ */
+const INTERACTION_MODE_COMMAND_NAMES: ReadonlySet<string> = new Set(["plan", "default"]);
+
+/**
+ * Applies `/plan` precedence: where T3 plan mode is available for the selected
+ * provider, T3's interaction-mode commands win and the provider's same-named
+ * commands are dropped. Where it is not (Grok, OpenCode, and Antigravity, which
+ * ships its own `/plan`), the provider's command is the only one offered and
+ * reaches the provider unmodified.
+ */
+export function withInteractionModeCommandPrecedence<Command extends { readonly name: string }>(
+  commands: ReadonlyArray<Command>,
+  planModeAvailable: boolean,
+): Command[] {
+  return planModeAvailable
+    ? commands.filter(
+        (command) => !INTERACTION_MODE_COMMAND_NAMES.has(command.name.trim().toLowerCase()),
+      )
+    : [...commands];
+}
+
 export function getProviderSlashCommandsForSlashMenu(
   slashCommands: ReadonlyArray<ServerProviderSlashCommand>,
   visibleSkills: ReadonlyArray<ServerProviderSkill>,

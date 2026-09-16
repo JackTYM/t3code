@@ -5,6 +5,12 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 
+import {
+  resolveThreadStatusKind,
+  type ThreadStatusKind,
+  type ThreadStatusShell,
+} from "./threadStatus.ts";
+
 export type AgentAwarenessPhase =
   | "starting"
   | "running"
@@ -30,17 +36,19 @@ export interface AgentAwarenessState {
 export interface ProjectThreadAwarenessInput {
   readonly environmentId: EnvironmentId;
   readonly project: Pick<OrchestrationProjectShell, "title">;
-  readonly thread: Pick<
-    OrchestrationThreadShell,
-    | "id"
-    | "title"
-    | "modelSelection"
-    | "session"
-    | "latestTurn"
-    | "updatedAt"
-    | "hasPendingApprovals"
-    | "hasPendingUserInput"
-  >;
+  readonly thread: ThreadStatusShell &
+    Pick<
+      OrchestrationThreadShell,
+      | "id"
+      | "title"
+      | "modelSelection"
+      | "updatedAt"
+      | "archivedAt"
+      | "settledOverride"
+      | "snoozedUntil"
+    >;
+  /** Resolves snooze windows. */
+  readonly now: string;
 }
 
 function buildAgentAwarenessDeepLink(input: {
@@ -50,12 +58,40 @@ function buildAgentAwarenessDeepLink(input: {
   return `/threads/${encodeURIComponent(input.environmentId)}/${encodeURIComponent(input.threadId)}`;
 }
 
+/**
+ * The awareness roster is the active inbox, not every thread the environment
+ * has ever held. A thread the user has put away has nothing to announce: its
+ * session went ready long ago, so without this it resolves to "completed" and
+ * the card shows a permanent Done row (and inflates the header counts) for
+ * work that was filed away weeks earlier.
+ *
+ * Snooze is the one reversible case: it hides a thread until its wake time,
+ * but an agent blocked ON the user outranks that, matching the raised-hand
+ * rule the clients already apply to the inbox.
+ */
+function isThreadParkedForAwareness(
+  thread: ProjectThreadAwarenessInput["thread"],
+  phase: AgentAwarenessPhase,
+  now: string,
+): boolean {
+  if (thread.archivedAt !== null) return true;
+  if (thread.settledOverride === "settled") return true;
+  if (thread.snoozedUntil == null) return false;
+  const wakeAtMs = Date.parse(thread.snoozedUntil);
+  // Malformed data never hides a thread.
+  if (Number.isNaN(wakeAtMs) || wakeAtMs <= Date.parse(now)) return false;
+  return phase !== "waiting_for_approval" && phase !== "waiting_for_input";
+}
+
 export function projectThreadAwareness(
   input: ProjectThreadAwarenessInput,
 ): AgentAwarenessState | null {
   const { environmentId, project, thread } = input;
   const phase = resolveThreadAwarenessPhase(thread);
   if (!phase) {
+    return null;
+  }
+  if (isThreadParkedForAwareness(thread, phase, input.now)) {
     return null;
   }
 
@@ -74,46 +110,40 @@ export function projectThreadAwareness(
   };
 }
 
+// The widget has no vocabulary for an actionable plan prompt, so that rung
+// falls through and the thread reads by whatever it is doing underneath.
+//
+// Background work is NOT suppressed. Reaching those rungs means the turn has
+// settled while subagents, workflow runs or watch loops are still alive, and
+// suppressing them dropped the thread to "completed" — the widget and Live
+// Activity announced Done over work the app was still showing as Working.
+const AWARENESS_SUPPRESSED_KINDS: ReadonlySet<ThreadStatusKind> = new Set(["plan-ready"]);
+
 function resolveThreadAwarenessPhase(
   thread: ProjectThreadAwarenessInput["thread"],
 ): AgentAwarenessPhase | null {
-  if (thread.hasPendingApprovals) {
-    return "waiting_for_approval";
+  const kind = resolveThreadStatusKind(thread, { suppress: AWARENESS_SUPPRESSED_KINDS });
+  switch (kind) {
+    case "pending-approval":
+      return "waiting_for_approval";
+    case "awaiting-input":
+      return "waiting_for_input";
+    case "working":
+    // Background work reports as Working rather than earning a phase of its
+    // own: "running" is the one non-alerting active phase, so the card tells
+    // the truth about live work without buzzing for work nobody asked about.
+    case "background-working":
+    case "monitoring":
+      return "running";
+    case "connecting":
+      return "starting";
+    case "failed":
+      return "failed";
+    case "completed":
+      return "completed";
+    default:
+      return null;
   }
-  if (thread.hasPendingUserInput) {
-    return "waiting_for_input";
-  }
-  if (thread.session?.status === "error" || thread.latestTurn?.state === "error") {
-    return "failed";
-  }
-  if (thread.session?.status === "starting") {
-    return "starting";
-  }
-  if (thread.session?.status === "running" || thread.latestTurn?.state === "running") {
-    return "running";
-  }
-  if (thread.latestTurn?.state === "completed") {
-    return "completed";
-  }
-  // A turn that finished can still read as "interrupted" here: session
-  // teardown settles still-running turns by session status, and that write
-  // can race the turn.completed one. completedAt survives the race — a turn
-  // that has a completion timestamp finished, whatever the state column says.
-  // Without this, quick finish-then-teardown threads resolve to null
-  // persistently and get tombstoned instead of published as completed.
-  if (thread.latestTurn?.state === "interrupted" && thread.latestTurn.completedAt !== null) {
-    return "completed";
-  }
-  // Threads whose turns never produce a checkpoint (no code changes) have no
-  // materialized latestTurn in the shell at all, and the session-set
-  // projection clears latest_turn_id the moment the session settles. The
-  // session status is then the only surviving completion signal: a live
-  // session at "ready"/"idle" with nothing pending and nothing running means
-  // the agent finished and is waiting for the next prompt — Done.
-  if (thread.session?.status === "ready" || thread.session?.status === "idle") {
-    return "completed";
-  }
-  return null;
 }
 
 function headlineForPhase(phase: AgentAwarenessPhase): string {
