@@ -227,6 +227,9 @@ function describeThreadShellForAwareness(
     latestTurnCompletedAt: shell.latestTurn?.completedAt ?? null,
     hasPendingApprovals: shell.hasPendingApprovals,
     hasPendingUserInput: shell.hasPendingUserInput,
+    archivedAt: shell.archivedAt,
+    settledOverride: shell.settledOverride,
+    snoozedUntil: shell.snoozedUntil ?? null,
   };
 }
 
@@ -235,6 +238,7 @@ export function resolveAgentAwarenessRelayPublishSnapshot(input: {
   readonly threadId: ThreadId;
   readonly thread: Option.Option<OrchestrationThreadShell>;
   readonly project: Option.Option<OrchestrationProjectShell>;
+  readonly now: string;
 }): {
   readonly projectId: string | null;
   readonly state: RelayAgentActivityState | null;
@@ -261,6 +265,7 @@ export function resolveAgentAwarenessRelayPublishSnapshot(input: {
         environmentId: input.environmentId,
         project: input.project.value,
         thread: input.thread.value,
+        now: input.now,
       }),
     ),
     reason: "snapshot",
@@ -271,6 +276,7 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
   readonly environmentId: EnvironmentId;
   readonly projects: ReadonlyArray<Pick<OrchestrationProjectShell, "id" | "title">>;
   readonly threads: ReadonlyArray<OrchestrationThreadShell>;
+  readonly now: string;
 }): ReadonlyArray<ThreadId> {
   const projectById = new Map(input.projects.map((project) => [project.id, project]));
   return input.threads
@@ -284,6 +290,7 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
           environmentId: input.environmentId,
           project,
           thread,
+          now: input.now,
         }) !== null
       );
     })
@@ -414,6 +421,7 @@ export const make = Effect.gen(function* () {
       threadId,
       thread,
       project,
+      now: DateTime.formatIso(yield* DateTime.now),
     });
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
@@ -531,6 +539,7 @@ export const make = Effect.gen(function* () {
       environmentId,
       projects: snapshot.projects,
       threads: snapshot.threads,
+      now: DateTime.formatIso(yield* DateTime.now),
     });
     if (activeThreadIds.length === 0) {
       yield* Effect.logDebug("agent activity snapshot has no publishable threads");

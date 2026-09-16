@@ -29,6 +29,9 @@ function thread(
   | "updatedAt"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
+  | "archivedAt"
+  | "settledOverride"
+  | "snoozedUntil"
 > {
   return {
     id: "thread-1" as ThreadId,
@@ -39,15 +42,29 @@ function thread(
     updatedAt: NOW,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
+    archivedAt: null,
+    settledOverride: null,
+    snoozedUntil: null,
     ...overrides,
   };
 }
+
+const readySession = {
+  threadId: "thread-1" as ThreadId,
+  status: "ready" as const,
+  providerName: "Codex",
+  runtimeMode: "full-access" as const,
+  activeTurnId: null,
+  lastError: null,
+  updatedAt: NOW,
+};
 
 describe("projectThreadAwareness", () => {
   it("returns null for idle threads without an active awareness state", () => {
     expect(
       projectThreadAwareness({
         environmentId: "env-1" as EnvironmentId,
+        now: NOW,
         project,
         thread: thread(),
       }),
@@ -57,6 +74,7 @@ describe("projectThreadAwareness", () => {
   it("prioritizes approval requests over running state", () => {
     const state = projectThreadAwareness({
       environmentId: "env-1" as EnvironmentId,
+      now: NOW,
       project,
       thread: thread({
         hasPendingApprovals: true,
@@ -79,6 +97,7 @@ describe("projectThreadAwareness", () => {
   it("projects running provider sessions", () => {
     const state = projectThreadAwareness({
       environmentId: "env-1" as EnvironmentId,
+      now: NOW,
       project,
       thread: thread({
         session: {
@@ -113,6 +132,7 @@ describe("projectThreadAwareness", () => {
     };
     const state = projectThreadAwareness({
       environmentId: "env-1" as EnvironmentId,
+      now: NOW,
       project,
       thread: thread({ latestTurn: finishedTurn }),
     });
@@ -125,6 +145,7 @@ describe("projectThreadAwareness", () => {
 
     const trulyInterrupted = projectThreadAwareness({
       environmentId: "env-1" as EnvironmentId,
+      now: NOW,
       project,
       thread: thread({ latestTurn: { ...finishedTurn, completedAt: null } }),
     });
@@ -137,6 +158,7 @@ describe("projectThreadAwareness", () => {
     // session settles; the ready session is the only completion signal left.
     const state = projectThreadAwareness({
       environmentId: "env-1" as EnvironmentId,
+      now: NOW,
       project,
       thread: thread({
         session: {
@@ -154,9 +176,53 @@ describe("projectThreadAwareness", () => {
     expect(state?.phase).toBe("completed");
   });
 
+  it.each([
+    { label: "settled", overrides: { settledOverride: "settled" as const } },
+    { label: "archived", overrides: { archivedAt: NOW } },
+    { label: "snoozed", overrides: { snoozedUntil: "2026-05-22T18:00:00.000Z" } },
+  ])("keeps $label threads off the roster", ({ overrides }) => {
+    // Their sessions went ready long ago, so the completion fallback would
+    // otherwise publish a permanent Done row for work already put away.
+    expect(
+      projectThreadAwareness({
+        environmentId: "env-1" as EnvironmentId,
+        now: NOW,
+        project,
+        thread: thread({ session: readySession, ...overrides }),
+      }),
+    ).toBeNull();
+  });
+
+  it("still announces a snoozed thread that is blocked on the user", () => {
+    const state = projectThreadAwareness({
+      environmentId: "env-1" as EnvironmentId,
+      now: NOW,
+      project,
+      thread: thread({
+        snoozedUntil: "2026-05-22T18:00:00.000Z",
+        hasPendingApprovals: true,
+        session: readySession,
+      }),
+    });
+
+    expect(state?.phase).toBe("waiting_for_approval");
+  });
+
+  it("announces a snoozed thread again once its wake time has passed", () => {
+    const state = projectThreadAwareness({
+      environmentId: "env-1" as EnvironmentId,
+      now: NOW,
+      project,
+      thread: thread({ snoozedUntil: "2026-05-22T06:00:00.000Z", session: readySession }),
+    });
+
+    expect(state?.phase).toBe("completed");
+  });
+
   it("projects failures with the session error detail", () => {
     const state = projectThreadAwareness({
       environmentId: "env-1" as EnvironmentId,
+      now: NOW,
       project,
       thread: thread({
         session: {

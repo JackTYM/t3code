@@ -40,7 +40,12 @@ export interface ProjectThreadAwarenessInput {
     | "updatedAt"
     | "hasPendingApprovals"
     | "hasPendingUserInput"
+    | "archivedAt"
+    | "settledOverride"
+    | "snoozedUntil"
   >;
+  /** Resolves snooze windows. */
+  readonly now: string;
 }
 
 function buildAgentAwarenessDeepLink(input: {
@@ -50,12 +55,40 @@ function buildAgentAwarenessDeepLink(input: {
   return `/threads/${encodeURIComponent(input.environmentId)}/${encodeURIComponent(input.threadId)}`;
 }
 
+/**
+ * The awareness roster is the active inbox, not every thread the environment
+ * has ever held. A thread the user has put away has nothing to announce: its
+ * session went ready long ago, so without this it resolves to "completed" and
+ * the card shows a permanent Done row (and inflates the header counts) for
+ * work that was filed away weeks earlier.
+ *
+ * Snooze is the one reversible case: it hides a thread until its wake time,
+ * but an agent blocked ON the user outranks that, matching the raised-hand
+ * rule the clients already apply to the inbox.
+ */
+function isThreadParkedForAwareness(
+  thread: ProjectThreadAwarenessInput["thread"],
+  phase: AgentAwarenessPhase,
+  now: string,
+): boolean {
+  if (thread.archivedAt !== null) return true;
+  if (thread.settledOverride === "settled") return true;
+  if (thread.snoozedUntil == null) return false;
+  const wakeAtMs = Date.parse(thread.snoozedUntil);
+  // Malformed data never hides a thread.
+  if (Number.isNaN(wakeAtMs) || wakeAtMs <= Date.parse(now)) return false;
+  return phase !== "waiting_for_approval" && phase !== "waiting_for_input";
+}
+
 export function projectThreadAwareness(
   input: ProjectThreadAwarenessInput,
 ): AgentAwarenessState | null {
   const { environmentId, project, thread } = input;
   const phase = resolveThreadAwarenessPhase(thread);
   if (!phase) {
+    return null;
+  }
+  if (isThreadParkedForAwareness(thread, phase, input.now)) {
     return null;
   }
 

@@ -298,6 +298,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
         threadId,
         thread: Option.none(),
         project: Option.none(),
+        now: "2026-05-25T00:00:00.000Z",
       }),
     ).toEqual({
       projectId: null,
@@ -311,6 +312,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
         threadId,
         thread: Option.some(thread),
         project: Option.none(),
+        now: "2026-05-25T00:00:00.000Z",
       }),
     ).toEqual({
       projectId: "project-1",
@@ -351,6 +353,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
     expect(
       AgentAwarenessRelay.resolveAgentAwarenessRelayActiveThreadIds({
         environmentId,
+        now,
         projects: [
           {
             id: projectId,
