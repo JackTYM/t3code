@@ -113,6 +113,10 @@ export function useLocalStorage<T, E>(
 
   const subscribe = useCallback(
     (onStoreChange: () => void) => {
+      // Same guard as the read path above: this hook is reachable from
+      // components rendered without a DOM, so subscribing must be a no-op
+      // rather than a crash.
+      if (typeof window === "undefined") return () => {};
       const handleStorageChange = (event: StorageEvent) => {
         if (event.key === key) {
           onStoreChange();

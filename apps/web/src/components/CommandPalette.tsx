@@ -49,6 +49,7 @@ import {
   GitPullRequestArrowIcon,
   LinkIcon,
   MessageSquareIcon,
+  SearchIcon,
   PaletteIcon,
   SettingsIcon,
   SquarePenIcon,
@@ -99,6 +100,7 @@ import {
   resolveProjectPathForDispatch,
 } from "../lib/projectPaths";
 import { onOpenCommandPalette } from "../commandPaletteBus";
+import { openThreadFind } from "../threadFindBus";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import {
@@ -1744,6 +1746,23 @@ function OpenCommandPaletteDialog(props: {
       openOverlayMode("files");
     },
   });
+
+  if (activeThread !== null) {
+    actionItems.push({
+      kind: "action",
+      value: "action:find-in-thread",
+      searchTerms: ["find in thread", "search thread", "search conversation", "transcript", "find"],
+      title: "Find in thread",
+      icon: <SearchIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "thread.find",
+      run: async () => {
+        // Let the palette finish closing and restoring focus first, or its
+        // focus restore would take the keyboard back off the find input.
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        openThreadFind();
+      },
+    });
+  }
 
   actionItems.push({
     kind: "action",

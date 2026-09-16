@@ -1,6 +1,6 @@
 import { ArrowUpIcon, ClockIcon } from "lucide-react";
 import { ReadOnlySourcePreview } from "../files/AttachmentFilePreview";
-import { useRightPanelStore } from "~/rightPanelStore";
+import { useOpenFile } from "~/useOpenFile";
 import {
   getQuestionAnswerPreview,
   getQuestionAnswerText,
@@ -235,6 +235,8 @@ import { useOpenPrLink } from "~/lib/openPullRequestLink";
 import type { ChatMarkdownContextReference } from "../ChatMarkdown";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
+import { onOpenThreadFind } from "../../threadFindBus";
+import { TimelineFindBar } from "./TimelineFindBar";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
@@ -262,6 +264,8 @@ interface TimelineRowSharedState {
   routeThreadKey: string;
   threadRef: ScopedThreadRef | null;
   markdownCwd: string | undefined;
+  /** Opens a mentioned workspace file where the "Open files in" setting says. */
+  onOpenMentionFile: (path: string, event: { metaKey: boolean; ctrlKey: boolean }) => void;
   resolvedTheme: "light" | "dark";
   workspaceRoot: string | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
@@ -539,6 +543,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, []);
   const citationThreadRef = useMemo(() => parseScopedThreadKey(routeThreadKey), [routeThreadKey]);
   const openPullRequest = useOpenPrLink(citationThreadRef ?? undefined);
+  const openFile = useOpenFile({ threadRef: citationThreadRef, cwd: markdownCwd });
+  const onOpenMentionFile = useCallback(
+    (path: string, event: { metaKey: boolean; ctrlKey: boolean }) => {
+      openFile({ workspacePath: path, event });
+    },
+    [openFile],
+  );
   const expandCitedTurn = useCallback((turnId: TurnId) => {
     setExpandedTurnIds((current) =>
       current.has(turnId) ? current : new Set([...current, turnId]),
@@ -753,6 +764,31 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
     null,
   );
+  const [findOpen, setFindOpen] = useState(false);
+  const findRestoreFocusRef = useRef<HTMLElement | null>(null);
+  const openFind = useCallback(() => {
+    // With the bar already open, reselect the query the way a browser's own find
+    // does, rather than stacking a second one.
+    const input = timelineViewportElement?.querySelector<HTMLInputElement>(
+      "[data-timeline-find-bar] input",
+    );
+    if (input) {
+      input.focus();
+      input.select();
+      return;
+    }
+    const active = document.activeElement;
+    findRestoreFocusRef.current = active instanceof HTMLElement ? active : null;
+    setFindOpen(true);
+  }, [timelineViewportElement]);
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    const restore = findRestoreFocusRef.current;
+    findRestoreFocusRef.current = null;
+    // Closing returns the keyboard where it was without moving the transcript.
+    if (restore?.isConnected) restore.focus({ preventScroll: true });
+  }, []);
+  useEffect(() => onOpenThreadFind(openFind), [openFind]);
   const {
     target: readyCitationRequest,
     positioning: citationPositioning,
@@ -920,6 +956,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       // Keep Markdown callbacks memoized during unrelated activity updates.
       threadRef: citationThreadRef,
       markdownCwd,
+      onOpenMentionFile,
       resolvedTheme,
       workspaceRoot,
       skills,
@@ -953,6 +990,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       routeThreadKey,
       citationThreadRef,
       markdownCwd,
+      onOpenMentionFile,
       resolvedTheme,
       workspaceRoot,
       skills,
@@ -1022,12 +1060,24 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           ref={setTimelineViewportElement}
           className="relative h-full min-h-0"
           data-assistant-citation-viewport="true"
+          // Marks the keyboard scope for `thread.find`, so Cmd/Ctrl+F is only
+          // claimed here and stays the browser's own find elsewhere.
+          data-thread-transcript="true"
         >
           {onCiteAssistantText && citationThreadRef ? (
             <AssistantSelectionToolbar
               viewport={timelineViewportElement}
               threadRef={citationThreadRef}
               onCite={onCiteAssistantText}
+            />
+          ) : null}
+          {findOpen ? (
+            <TimelineFindBar
+              rows={rows}
+              listRef={listRef}
+              viewport={timelineViewportElement}
+              onManualNavigation={onManualNavigation}
+              onClose={closeFind}
             />
           ) : null}
           <LegendList<MessagesTimelineRow>
@@ -2810,9 +2860,8 @@ function UserMessageMentionChip(props: {
               "cursor-pointer focus-visible:outline-2",
             )}
             data-markdown-copy={props.copyMarkdown}
-            onClick={() => {
-              if (ctx.threadRef)
-                useRightPanelStore.getState().openFile(ctx.threadRef, props.record.path);
+            onClick={(event) => {
+              ctx.onOpenMentionFile(props.record.path, event);
             }}
           >
             <PierreEntryIcon

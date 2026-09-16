@@ -28,6 +28,7 @@ import { useCodeViewFileReveal } from "./diffs/useCodeViewFileReveal";
 import { useOpenInPreferredEditor } from "../editorPreferences";
 import { type DraftId } from "../composerDraftStore";
 import { openDiffFilePrimaryAction } from "../diffFileActions";
+import { useOpenFile } from "../useOpenFile";
 import { useCheckpointDiff } from "~/lib/checkpointDiffState";
 import { cn } from "~/lib/utils";
 import { selectThreadDiffPanelSelection, useDiffPanelStore } from "../diffPanelStore";
@@ -156,6 +157,7 @@ export default function DiffPanel({
     activeThread?.environmentId ?? null,
     serverConfig?.availableEditors ?? [],
   );
+  const openFileInPreferredTarget = useOpenFile({ threadRef: routeThreadRef, cwd: activeCwd });
   const getDiffFileContents = useAtomCommand(reviewEnvironment.diffFileContents);
   const gitStatusQuery = useEnvironmentQuery(
     activeThread !== null && activeThread !== undefined && activeCwd != null
@@ -482,12 +484,14 @@ export default function DiffPanel({
   );
 
   const openDiffFile = useCallback(
-    (filePath: string) => {
+    (filePath: string, event?: { metaKey: boolean; ctrlKey: boolean }) => {
       openDiffFilePrimaryAction({
         threadRef: routeThreadRef,
         filePath,
         activeCwd,
         repositoryRoot: activeRepositoryRoot,
+        openFile: openFileInPreferredTarget,
+        ...(event ? { event } : {}),
         openInEditor: (targetPath) => {
           void (async () => {
             const result = await openInPreferredEditor(targetPath);
@@ -507,7 +511,13 @@ export default function DiffPanel({
         },
       });
     },
-    [activeCwd, activeRepositoryRoot, openInPreferredEditor, routeThreadRef],
+    [
+      activeCwd,
+      activeRepositoryRoot,
+      openFileInPreferredTarget,
+      openInPreferredEditor,
+      routeThreadRef,
+    ],
   );
   const toggleDiffFileCollapsed = useCallback(
     (fileKey: string) => {
@@ -958,9 +968,10 @@ export default function DiffPanel({
                         node instanceof HTMLElement && node.hasAttribute("data-title"),
                     );
                     const filePath = title?.textContent?.trim();
-                    // The filename remains the explicit "open in editor" affordance.
+                    // The filename remains the primary open affordance; where it
+                    // opens follows the "Open files in" setting.
                     if (filePath) {
-                      openDiffFile(filePath);
+                      openDiffFile(filePath, event);
                       return;
                     }
                     const header = composedPath.find(

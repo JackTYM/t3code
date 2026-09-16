@@ -75,7 +75,12 @@ Join modifiers and a key with `+`, such as `mod+shift+d` or `ctrl+l`.
 ## When conditions
 
 Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`,
-`previewOpen`, and `modelPickerOpen`. Unknown keys evaluate to `false`.
+`previewOpen`, `modelPickerOpen`, and `threadTranscriptFocus`. Unknown keys
+evaluate to `false`.
+
+`threadTranscriptFocus` is true while you are reading a thread and the keyboard
+is not in the composer, a dialog, the terminal, or a side panel. Find in thread
+uses it so that Command+F still opens your browser's own find everywhere else.
 
 Combine keys with `!` for not, `&&` for and, `||` for or, and parentheses:
 

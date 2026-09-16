@@ -621,6 +621,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmQuit !== DEFAULT_UNIFIED_SETTINGS.confirmQuit ? ["Quit shortcut"] : []),
       ...(isTextGenerationModelDirty ? ["Text generation model"] : []),
       ...getChangedBrowserSettingLabels(settings),
+      ...(settings.fileOpenTarget !== DEFAULT_UNIFIED_SETTINGS.fileOpenTarget
+        ? ["Open files in"]
+        : []),
       ...(settings.enableAgentBrowserAccess !== DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess
         ? ["Agent browser access"]
         : []),
@@ -634,6 +637,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.browserRecordingFrameRate,
       settings.browserLinkTarget,
       settings.browserAutoShowFloatingPreview,
+      settings.fileOpenTarget,
       settings.appearanceContrast,
       settings.diffColorScheme,
       settings.enableAgentBrowserAccess,
@@ -793,6 +797,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       browserDefaultAppearance: DEFAULT_UNIFIED_SETTINGS.browserDefaultAppearance,
       browserRecordingFrameRate: DEFAULT_UNIFIED_SETTINGS.browserRecordingFrameRate,
       browserLinkTarget: DEFAULT_UNIFIED_SETTINGS.browserLinkTarget,
+      fileOpenTarget: DEFAULT_UNIFIED_SETTINGS.fileOpenTarget,
       browserAutoShowFloatingPreview: DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview,
       // Re-granted like any other default. The confirmation dialog lists it by
       // name, so a user restoring defaults is told the agent regains access

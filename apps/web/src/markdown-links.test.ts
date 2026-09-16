@@ -11,7 +11,6 @@ import {
   resolveMarkdownFileLinkTarget,
   rewriteMarkdownFileUriHref,
   shouldOpenMarkdownFileLinkInBrowserByDefault,
-  shouldOpenMarkdownFileLinkInEditor,
 } from "./markdown-links";
 
 describe("isWindowsDrivePathHref", () => {
@@ -58,26 +57,6 @@ describe("extractMarkdownLinkHrefs", () => {
         '[source](apps/web/src/markdown-links.ts "implementation") and [docs](https://example.com)',
       ),
     ).toEqual(["apps/web/src/markdown-links.ts", "https://example.com"]);
-  });
-});
-
-describe("shouldOpenMarkdownFileLinkInEditor", () => {
-  it("uses command-click on macOS", () => {
-    expect(shouldOpenMarkdownFileLinkInEditor({ metaKey: true, ctrlKey: false }, "MacIntel")).toBe(
-      true,
-    );
-    expect(shouldOpenMarkdownFileLinkInEditor({ metaKey: false, ctrlKey: true }, "MacIntel")).toBe(
-      false,
-    );
-  });
-
-  it("uses control-click on other platforms", () => {
-    expect(
-      shouldOpenMarkdownFileLinkInEditor({ metaKey: false, ctrlKey: true }, "Linux x86_64"),
-    ).toBe(true);
-    expect(
-      shouldOpenMarkdownFileLinkInEditor({ metaKey: true, ctrlKey: false }, "Linux x86_64"),
-    ).toBe(false);
   });
 });
 

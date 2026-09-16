@@ -556,6 +556,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["links default browser in-app browser external open"],
   },
   {
+    id: "file-open-target",
+    title: "Open files in",
+    to: "/settings/integrations",
+    searchTerms: ["files default editor file manager finder explorer panel reveal open"],
+  },
+  {
     id: "browser-auto-show-floating-preview",
     title: "Auto-show floating preview",
     to: "/settings/integrations",

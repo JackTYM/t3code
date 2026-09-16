@@ -280,6 +280,19 @@ export const BrowserLinkTarget = Schema.Literals(["system", "app"]);
 export type BrowserLinkTarget = typeof BrowserLinkTarget.Type;
 export const DEFAULT_BROWSER_LINK_TARGET: BrowserLinkTarget = "system";
 
+/**
+ * Where a clicked file goes: T3's files panel, the preferred editor, or the
+ * file manager. "panel" is the default because that is what every file link
+ * did before the setting existed.
+ *
+ * The two non-panel targets run through `shell.openInEditor`, so they act on
+ * the machine hosting the server. Clients that cannot reach it — a remote
+ * connection, mobile — fall back to the panel rather than failing.
+ */
+export const FileOpenTarget = Schema.Literals(["panel", "editor", "file-manager"]);
+export type FileOpenTarget = typeof FileOpenTarget.Type;
+export const DEFAULT_FILE_OPEN_TARGET: FileOpenTarget = "panel";
+
 export const LoadBalancingWeights = Schema.Record(
   TrimmedNonEmptyString,
   Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
@@ -323,6 +336,14 @@ export const ClientSettingsSchema = Schema.Struct({
    */
   browserLinkTarget: BrowserLinkTarget.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_LINK_TARGET)),
+  ),
+  /**
+   * Where files clicked in a thread, a diff, or the file browser open. Only
+   * clients that can run shell actions on the server honour the non-panel
+   * targets; the rest fall back to the panel.
+   */
+  fileOpenTarget: FileOpenTarget.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_FILE_OPEN_TARGET)),
   ),
   /**
    * Whether an agent using a preview pops the floating mini player into
@@ -1459,6 +1480,7 @@ export const ClientSettingsPatch = Schema.Struct({
   browserDefaultAppearance: Schema.optionalKey(PreviewAppearancePreference),
   browserRecordingFrameRate: Schema.optionalKey(BrowserRecordingFrameRate),
   browserLinkTarget: Schema.optionalKey(BrowserLinkTarget),
+  fileOpenTarget: Schema.optionalKey(FileOpenTarget),
   browserAutoShowFloatingPreview: Schema.optionalKey(Schema.Boolean),
   browserProfiles: Schema.optionalKey(Schema.Array(BrowserProfile)),
   browserDefaultProfileId: Schema.optionalKey(BrowserProfileId),
