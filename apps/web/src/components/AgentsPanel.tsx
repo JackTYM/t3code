@@ -3,7 +3,9 @@
  * The chat carries one expandable row per spawn batch and links here.
  *
  * Visualization rules (from live-test feedback):
- * - Spawn order is stable. Activity and completion update rows in place.
+ * - Live agents pin to the top in stable spawn order, so rows the user is
+ *   watching update in place and never jump. Settled agents sort below them by
+ *   when they ended, putting the most recently finished work nearest the top.
  * - Agent rows reserve three fixed lines for identity, activity, and metrics;
  *   changing data must never change their height.
  * - Workflow expansion is presentation state. A live run stays expanded when
