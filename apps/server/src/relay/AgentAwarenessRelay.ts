@@ -104,7 +104,7 @@ const RELAY_AGENT_ACTIVITY_PUBLISH_TIMEOUT = "30 seconds";
  * Stands in for "what the relay holds is unknown". Real identities are `"null"`
  * or JSON, so this can never compare equal to one and the dedupe always misses.
  */
-export const PUBLISH_FAILED_IDENTITY = "publish-failed";
+const PUBLISH_FAILED_IDENTITY = "publish-failed";
 
 export function agentAwarenessPublishIdentity(state: RelayAgentActivityState | null): string {
   if (state === null) {

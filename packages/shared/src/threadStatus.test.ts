@@ -124,6 +124,20 @@ describe("resolveThreadStatusKind", () => {
     ).toBe("working");
   });
 
+  // The mirror of the case above, and the one that decides whether a thread
+  // whose session died mid-turn still alerts: the turn row keeps reading
+  // "running" forever, so an errored session has to outrank working.
+  it("reports a failed session even while its turn row still reads running", () => {
+    expect(
+      resolveThreadStatusKind(
+        thread({
+          session: { ...runningSession, status: "error" as const },
+          latestTurn: { ...settledTurn, state: "running", completedAt: null },
+        }),
+      ),
+    ).toBe("failed");
+  });
+
   it("falls through a suppressed rung instead of stopping the walk", () => {
     const planReady = thread({
       interactionMode: "plan" as OrchestrationThreadShell["interactionMode"],

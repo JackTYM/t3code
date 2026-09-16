@@ -104,6 +104,11 @@ export function resolveThreadStatusKind(
     // so the session is still "running" while the agent waits. It has to
     // outrank working or it would never be visible at all.
     rung("awaiting-input", hasBlockingUserInput(thread)) ??
+    // An errored session is not working, whatever its latest turn row says: a
+    // session that dies mid-turn leaves that row reading "running" forever.
+    // A turn error under a live session is the opposite case and stays below
+    // working, because the session really is still running.
+    rung("failed", thread.session?.status === "error") ??
     rung(
       "working",
       thread.session?.status === "running" || thread.latestTurn?.state === "running",
@@ -113,7 +118,7 @@ export function resolveThreadStatusKind(
     // show, but reporting it over a live run is the lie that made a working
     // thread read as "needs input".
     rung("awaiting-input", thread.hasPendingUserInput) ??
-    rung("failed", thread.session?.status === "error" || thread.latestTurn?.state === "error") ??
+    rung("failed", thread.latestTurn?.state === "error") ??
     // An actionable plan prompt outranks lingering background work: it needs
     // the user's decision, while liveness merely reports.
     rung(
