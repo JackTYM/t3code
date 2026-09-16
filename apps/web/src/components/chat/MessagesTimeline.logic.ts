@@ -338,6 +338,13 @@ export type MessagesTimelineRow =
       turnId?: TurnId | null;
       groupId: string;
       hiddenCount: number;
+      /**
+       * Ids of the entries this summary stands in for. The entries themselves
+       * stay out of the row model until the group expands, so without these a
+       * caller holding an activity id has no way to tell which summary is
+       * hiding it.
+       */
+      hiddenEntryIds: ReadonlyArray<string>;
       expanded: boolean;
       summary: string;
       summaryKind: ToolGroupSummaryKind;
@@ -1201,6 +1208,7 @@ export function deriveMessagesTimelineRows(input: {
             turnId: timelineEntry.entry.turnId ?? null,
             groupId,
             hiddenCount: visibleGroupedEntries.length,
+            hiddenEntryIds: visibleGroupedEntries.map((entry) => entry.id),
             expanded,
             summary: usesSingleToolCallLabel
               ? singleToolCallLabel(singleEntry)
@@ -1694,4 +1702,95 @@ export function messagesTimelineFindStatus(
   if (query.trim().length === 0) return null;
   if (matchCount === 0) return "No matches";
   return `${position + 1}/${matchCount}`;
+}
+
+/**
+ * Where a server-side search hit lives, in terms the client can act on.
+ *
+ * `messageId` and `activityId` are mutually exclusive -- the server sets
+ * whichever kind of row matched. `turnId` is what lets a hit inside a folded
+ * turn be found at all, since nothing belonging to that turn is in the row
+ * model while the fold is closed.
+ */
+export interface TimelineFindAnchor {
+  readonly messageId?: string | null;
+  readonly activityId?: string | null;
+  readonly turnId?: TurnId | null;
+}
+
+/**
+ * The single next step toward revealing an anchor. Resolution is one step at a
+ * time on purpose: expanding a fold or loading a page re-derives the rows, and
+ * what the anchor needs next can only be known from the rows that result. A
+ * hit inside a collapsed group inside a folded turn takes two expansions, and
+ * neither is visible until the one before it happens.
+ */
+export type TimelineFindNavigation =
+  | { readonly kind: "scroll"; readonly rowIndex: number }
+  | { readonly kind: "expand-turn"; readonly turnId: TurnId; readonly rowIndex: number }
+  | { readonly kind: "expand-group"; readonly groupId: string; readonly rowIndex: number }
+  | { readonly kind: "load-earlier" };
+
+function rowRendersAnchor(row: MessagesTimelineRow, anchor: TimelineFindAnchor): boolean {
+  if (anchor.messageId) {
+    // Deliberately not `assistant-meta`, which repeats the same message and
+    // would make one hit resolve to two rows.
+    return row.kind === "message" && row.message.id === anchor.messageId;
+  }
+  if (!anchor.activityId) return false;
+  switch (row.kind) {
+    case "work":
+      return row.groupedEntries.some((entry) => entry.id === anchor.activityId);
+    case "work-live":
+      return (
+        row.entry.id === anchor.activityId ||
+        row.groupedEntries.some((entry) => entry.id === anchor.activityId)
+      );
+    default:
+      return false;
+  }
+}
+
+/**
+ * Resolve an anchor against the rows currently derived.
+ *
+ * Falling through to `load-earlier` is the answer for any hit the loaded window
+ * does not account for, which is the common case for a cross-thread result or
+ * anything far enough back in a long thread.
+ */
+export function resolveTimelineFindNavigation(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  anchor: TimelineFindAnchor,
+): TimelineFindNavigation {
+  const rendered = rows.findIndex((row) => rowRendersAnchor(row, anchor));
+  if (rendered >= 0) return { kind: "scroll", rowIndex: rendered };
+
+  if (anchor.activityId) {
+    const collapsedGroup = rows.findIndex(
+      (row) =>
+        row.kind === "work-toggle" &&
+        !row.expanded &&
+        row.hiddenEntryIds.includes(anchor.activityId as string),
+    );
+    if (collapsedGroup >= 0) {
+      const row = rows[collapsedGroup];
+      if (row?.kind === "work-toggle") {
+        return { kind: "expand-group", groupId: row.groupId, rowIndex: collapsedGroup };
+      }
+    }
+  }
+
+  if (anchor.turnId) {
+    const foldedTurn = rows.findIndex(
+      (row) => row.kind === "turn-fold" && !row.expanded && row.turnId === anchor.turnId,
+    );
+    if (foldedTurn >= 0) {
+      const row = rows[foldedTurn];
+      if (row?.kind === "turn-fold") {
+        return { kind: "expand-turn", turnId: row.turnId, rowIndex: foldedTurn };
+      }
+    }
+  }
+
+  return { kind: "load-earlier" };
 }

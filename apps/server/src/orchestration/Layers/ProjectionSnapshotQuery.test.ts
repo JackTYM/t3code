@@ -2363,6 +2363,415 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       );
     }),
   );
+
+  it.effect(
+    "searches a thread's whole history, including activity text the timeline only shows collapsed",
+    () =>
+      Effect.gen(function* () {
+        const snapshotQuery = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+
+        yield* sql`
+          INSERT INTO projection_projects (
+            project_id,
+            title,
+            workspace_root,
+            default_model_selection_json,
+            scripts_json,
+            created_at,
+            updated_at,
+            deleted_at
+          )
+          VALUES (
+            'project-deep',
+            'Deep Search',
+            '/tmp/project-deep',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            '[]',
+            '2026-06-01T00:00:00.000Z',
+            '2026-06-01T00:00:01.000Z',
+            NULL
+          )
+        `;
+
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id,
+            project_id,
+            title,
+            model_selection_json,
+            runtime_mode,
+            interaction_mode,
+            branch,
+            worktree_path,
+            latest_turn_id,
+            latest_user_message_at,
+            pending_approval_count,
+            pending_user_input_count,
+            has_actionable_proposed_plan,
+            created_at,
+            updated_at,
+            archived_at,
+            deleted_at
+          )
+          VALUES
+            (
+              'thread-deep',
+              'project-deep',
+              'Deep thread',
+              '{"provider":"codex","model":"gpt-5-codex"}',
+              'full-access',
+              'default',
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              0, 0, 0,
+              '2026-06-01T00:00:02.000Z',
+              '2026-06-01T00:00:03.000Z',
+              NULL,
+              NULL
+            ),
+            (
+              'thread-neighbour',
+              'project-deep',
+              'Neighbour thread',
+              '{"provider":"codex","model":"gpt-5-codex"}',
+              'full-access',
+              'default',
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              0, 0, 0,
+              '2026-06-01T00:00:04.000Z',
+              '2026-06-01T00:00:05.000Z',
+              NULL,
+              NULL
+            ),
+            (
+              'thread-archived',
+              'project-deep',
+              'Archived thread',
+              '{"provider":"codex","model":"gpt-5-codex"}',
+              'full-access',
+              'default',
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              0, 0, 0,
+              '2026-06-01T00:00:06.000Z',
+              '2026-06-01T00:00:07.000Z',
+              '2026-06-01T00:00:08.000Z',
+              NULL
+            ),
+            (
+              'thread-deleted',
+              'project-deep',
+              'Deleted thread',
+              '{"provider":"codex","model":"gpt-5-codex"}',
+              'full-access',
+              'default',
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              0, 0, 0,
+              '2026-06-01T00:00:09.000Z',
+              '2026-06-01T00:00:10.000Z',
+              NULL,
+              '2026-06-01T00:00:11.000Z'
+            )
+        `;
+
+        // The oldest message sits behind every later turn: a client holding the
+        // default window has never loaded it.
+        yield* sql`
+          INSERT INTO projection_thread_messages (
+            message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+          )
+          VALUES
+            (
+              'deep-ancient',
+              'thread-deep',
+              'turn-ancient',
+              'user',
+              'The very first ask mentioned quasar alignment.',
+              0,
+              '2026-06-01T00:01:00.000Z',
+              '2026-06-01T00:01:00.000Z'
+            ),
+            (
+              'deep-streaming',
+              'thread-deep',
+              'turn-recent',
+              'assistant',
+              'Still typing about quasar alignment right now.',
+              1,
+              '2026-06-01T00:09:00.000Z',
+              '2026-06-01T00:09:00.000Z'
+            ),
+            (
+              'deep-superseded',
+              'thread-deep',
+              'turn-recent',
+              'assistant',
+              'A superseded draft about quasar alignment.',
+              0,
+              '2026-06-01T00:09:30.000Z',
+              '2026-06-01T00:09:30.000Z'
+            ),
+            (
+              'neighbour-message',
+              'thread-neighbour',
+              NULL,
+              'user',
+              'Neighbour also discusses quasar alignment.',
+              0,
+              '2026-06-01T00:02:00.000Z',
+              '2026-06-01T00:02:00.000Z'
+            ),
+            (
+              'archived-message',
+              'thread-archived',
+              NULL,
+              'user',
+              'Archived mention of quasar alignment.',
+              0,
+              '2026-06-01T00:03:00.000Z',
+              '2026-06-01T00:03:00.000Z'
+            ),
+            (
+              'deleted-message',
+              'thread-deleted',
+              NULL,
+              'user',
+              'Deleted mention of quasar alignment.',
+              0,
+              '2026-06-01T00:04:00.000Z',
+              '2026-06-01T00:04:00.000Z'
+            )
+        `;
+
+        // Each of these is reachable in the UI only by expanding something: the
+        // tool group they belong to renders as a one-line summary until then.
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at, sequence
+          )
+          VALUES
+            (
+              'activity-summary',
+              'thread-deep',
+              'turn-middle',
+              'tool',
+              'tool.completed',
+              'Ran quasar alignment check',
+              '{"detail":"unrelated output"}',
+              '2026-06-01T00:05:00.000Z',
+              10
+            ),
+            (
+              'activity-detail',
+              'thread-deep',
+              'turn-middle',
+              'tool',
+              'tool.completed',
+              'Ran a command',
+              '{"detail":"stdout mentioned quasar alignment on line 4"}',
+              '2026-06-01T00:06:00.000Z',
+              11
+            ),
+            (
+              'activity-title',
+              'thread-deep',
+              'turn-middle',
+              'tool',
+              'tool.completed',
+              'Read a file',
+              '{"title":"quasar alignment notes.md","detail":"nothing to see"}',
+              '2026-06-01T00:07:00.000Z',
+              12
+            ),
+            (
+              'activity-payload-only',
+              'thread-deep',
+              'turn-middle',
+              'tool',
+              'tool.completed',
+              'Opaque tool call',
+              '{"data":{"input":{"blob":"quasar alignment"}}}',
+              '2026-06-01T00:08:00.000Z',
+              13
+            ),
+            (
+              'activity-transcript',
+              'thread-deep',
+              'turn-middle',
+              'info',
+              'agent.transcript',
+              'Subagent noted quasar alignment',
+              '{"taskId":"task-1"}',
+              '2026-06-01T00:08:30.000Z',
+              14
+            )
+        `;
+
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_files_json
+          )
+          VALUES (
+            'thread-deep',
+            'turn-recent',
+            'deep-ancient',
+            'deep-final',
+            'completed',
+            '2026-06-01T00:09:00.000Z',
+            '2026-06-01T00:09:00.000Z',
+            '2026-06-01T00:09:40.000Z',
+            '[]'
+          )
+        `;
+
+        const scoped = yield* snapshotQuery.searchThreads({
+          query: "quasar alignment",
+          threadId: ThreadId.make("thread-deep"),
+          includeActivityMatches: true,
+          limit: 50,
+        });
+
+        // Chronological, every match its own row, and nothing from the
+        // neighbouring thread even though it says the same words.
+        assert.deepStrictEqual(
+          scoped.matches.map((match) => [match.messageId ?? match.activityId, match.source]),
+          [
+            [asMessageId("deep-ancient"), "user"],
+            [asEventId("activity-summary"), "activity"],
+            [asEventId("activity-detail"), "activity"],
+            [asEventId("activity-title"), "activity"],
+            [asMessageId("deep-streaming"), "assistant"],
+            [asMessageId("deep-superseded"), "assistant"],
+          ],
+        );
+        assert.strictEqual(scoped.totalMatchCount, 6);
+        assert.deepStrictEqual(
+          scoped.matches.map((match) => match.threadMatchCount),
+          [6, 6, 6, 6, 6, 6],
+        );
+
+        // The anchors a client needs to page to an unloaded match and expand
+        // the fold hiding it.
+        const ancient = scoped.matches[0];
+        assert.strictEqual(ancient?.turnId, asTurnId("turn-ancient"));
+        assert.strictEqual(ancient?.activityId, null);
+        assert.strictEqual(ancient?.messageCreatedAt, "2026-06-01T00:01:00.000Z");
+        assert.strictEqual(scoped.matches[1]?.turnId, asTurnId("turn-middle"));
+        assert.strictEqual(scoped.matches[1]?.messageId, null);
+
+        // The snippet quotes whichever field actually matched.
+        assert.match(scoped.matches[2]?.snippet ?? "", /stdout mentioned quasar alignment/);
+        assert.match(scoped.matches[3]?.snippet ?? "", /quasar alignment notes\.md/);
+
+        // Opting out of activities leaves only the message rows.
+        const messagesOnly = yield* snapshotQuery.searchThreads({
+          query: "quasar alignment",
+          threadId: ThreadId.make("thread-deep"),
+        });
+        assert.deepStrictEqual(
+          messagesOnly.matches.map((match) => match.messageId),
+          [
+            asMessageId("deep-ancient"),
+            asMessageId("deep-streaming"),
+            asMessageId("deep-superseded"),
+          ],
+        );
+
+        // Unscoped keeps its one-row-per-thread shape, so the neighbour appears
+        // exactly once and the archived and deleted threads not at all.
+        const unscoped = yield* snapshotQuery.searchThreads({
+          query: "quasar alignment",
+          includeActivityMatches: true,
+        });
+        assert.deepStrictEqual(
+          [...new Set(unscoped.matches.map((match) => match.threadId))].sort(),
+          [ThreadId.make("thread-deep"), ThreadId.make("thread-neighbour")],
+        );
+        assert.strictEqual(unscoped.matches.length, 2);
+      }),
+  );
+
+  it.effect("finds a match buried far below the loaded activity window", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json,
+          scripts_json, created_at, updated_at, deleted_at
+        )
+        VALUES (
+          'project-window', 'Window', '/tmp/project-window',
+          '{"provider":"codex","model":"gpt-5-codex"}', '[]',
+          '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:01.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode,
+          interaction_mode, branch, worktree_path, latest_turn_id,
+          latest_user_message_at, pending_approval_count, pending_user_input_count,
+          has_actionable_proposed_plan, created_at, updated_at, archived_at, deleted_at
+        )
+        VALUES (
+          'thread-window', 'project-window', 'Window thread',
+          '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+          NULL, NULL, NULL, NULL, 0, 0, 0,
+          '2026-07-01T00:00:02.000Z', '2026-07-01T00:00:03.000Z', NULL, NULL
+        )
+      `;
+
+      // THREAD_DETAIL_ACTIVITY_LIMIT is 500, so the needle at sequence 0 is
+      // comfortably outside anything a client has loaded.
+      const activityCount = 600;
+      yield* Effect.forEach(
+        Array.from({ length: activityCount }, (_unused, index) => index),
+        (index) =>
+          sql`
+            INSERT INTO projection_thread_activities (
+              activity_id, thread_id, turn_id, tone, kind, summary,
+              payload_json, created_at, sequence
+            )
+            VALUES (
+              ${`window-activity-${index}`},
+              'thread-window',
+              'turn-window',
+              'tool',
+              'tool.completed',
+              ${index === 0 ? "Buried pulsar cadence reading" : `Routine step ${index}`},
+              '{}',
+              ${`2026-07-01T01:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`},
+              ${index}
+            )
+          `,
+        { discard: true },
+      );
+
+      const found = yield* snapshotQuery.searchThreads({
+        query: "pulsar cadence",
+        threadId: ThreadId.make("thread-window"),
+        includeActivityMatches: true,
+      });
+      assert.deepStrictEqual(
+        found.matches.map((match) => match.activityId),
+        [asEventId("window-activity-0")],
+      );
+      assert.strictEqual(found.totalMatchCount, 1);
+    }),
+  );
 });
 
 it.effect(

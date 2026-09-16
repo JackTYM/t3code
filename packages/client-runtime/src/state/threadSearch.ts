@@ -18,17 +18,30 @@ export interface ThreadSearchResultsState {
 }
 
 const ThreadSearchKey = Schema.fromJsonString(
-  Schema.Tuple([Schema.Array(EnvironmentId), OrchestrationSearchThreadsInput.fields.query]),
+  Schema.Tuple([
+    Schema.Array(EnvironmentId),
+    OrchestrationSearchThreadsInput.fields.query,
+    Schema.Boolean,
+  ]),
 );
 const decodeThreadSearchKey = Schema.decodeUnknownOption(ThreadSearchKey);
 
+/**
+ * `includeActivityMatches` is part of the key, not just the request, because
+ * the two surfaces want different answers to the same words. The thread
+ * switcher only renders message matches, so a thread whose sole hit is a tool
+ * call would disappear from it; the sidebar wants exactly those hits. Sharing
+ * one atom between them would hand whichever asked first to the other.
+ */
 export function makeThreadSearchKey(
   environmentIds: ReadonlyArray<EnvironmentId>,
   query: string,
+  includeActivityMatches = false,
 ): string {
   return JSON.stringify([
     [...environmentIds].sort((left, right) => left.localeCompare(right)),
     query,
+    includeActivityMatches,
   ]);
 }
 
@@ -51,6 +64,7 @@ export function createThreadSearchResultsAtomFamily<E>(options: {
   readonly getSearchAtom: (
     environmentId: EnvironmentId,
     query: string,
+    includeActivityMatches: boolean,
   ) => Atom.Atom<AsyncResult.AsyncResult<OrchestrationSearchThreadsResult, E>>;
   readonly labelPrefix: string;
 }) {
@@ -61,12 +75,12 @@ export function createThreadSearchResultsAtomFamily<E>(options: {
         return { matches: [], isLoading: false };
       }
 
-      const [environmentIds, query] = parsedKey.value;
+      const [environmentIds, query, includeActivityMatches] = parsedKey.value;
       const matches: EnvironmentThreadSearchMatch[] = [];
       let isLoading = false;
 
       for (const environmentId of environmentIds) {
-        const result = get(options.getSearchAtom(environmentId, query));
+        const result = get(options.getSearchAtom(environmentId, query, includeActivityMatches));
         isLoading ||= result.waiting;
         const value = Option.getOrNull(AsyncResult.value(result));
         if (value !== null) {

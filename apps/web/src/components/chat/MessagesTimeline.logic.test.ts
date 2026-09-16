@@ -32,6 +32,7 @@ import {
   messagesTimelineRowSearchText,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveTimelineFindNavigation,
   resolveWorkGroupScrollIndex,
   shouldFollowWorkGroupAppend,
   shouldPreserveAssistantLineBreaks,
@@ -3237,6 +3238,7 @@ describe("computeStableMessagesTimelineRows", () => {
       createdAt: "2026-01-01T00:00:00Z",
       groupId: "work-group:1",
       hiddenCount: 1,
+      hiddenEntryIds: [],
       expanded: false,
       summary: "Used Browser",
       summaryKind: "other",
@@ -3565,6 +3567,7 @@ describe("in-thread find", () => {
           createdAt: time,
           groupId: "group",
           hiddenCount: 4,
+          hiddenEntryIds: [],
           expanded: false,
           summary: "Searched 4 files",
           summaryKind: "mixed",
@@ -3762,6 +3765,155 @@ describe("in-thread find", () => {
       expect(initialMessagesTimelineMatch([0, 2, 4], 3)).toBe(2);
       expect(initialMessagesTimelineMatch([0, 2, 4], 9)).toBe(0);
       expect(initialMessagesTimelineMatch([], 3)).toBe(0);
+    });
+  });
+});
+
+describe("resolveTimelineFindNavigation", () => {
+  const time = "2026-01-01T00:00:00Z";
+
+  const messageRow = (id: string): MessagesTimelineRow => ({
+    kind: "message",
+    id,
+    createdAt: time,
+    message: {
+      id: MessageId.make(id),
+      role: "assistant",
+      text: "body",
+      turnId: null,
+      createdAt: time,
+      updatedAt: time,
+      streaming: false,
+    },
+    durationStart: time,
+    showAssistantMeta: false,
+    showAssistantCopyButton: false,
+    assistantCopyStreaming: false,
+  });
+
+  const entry = (id: string): WorkLogEntry => ({
+    id,
+    createdAt: time,
+    label: "Ran a tool",
+    tone: "tool",
+  });
+
+  const collapsedGroupRow = (
+    groupId: string,
+    hidden: ReadonlyArray<string>,
+  ): MessagesTimelineRow => ({
+    kind: "work-toggle",
+    id: `work-toggle:${groupId}`,
+    createdAt: time,
+    groupId,
+    hiddenCount: hidden.length,
+    hiddenEntryIds: hidden,
+    expanded: false,
+    summary: `Ran ${hidden.length} tools`,
+    summaryKind: "mixed",
+    hasFailure: false,
+  });
+
+  const foldRow = (turnId: string): MessagesTimelineRow => ({
+    kind: "turn-fold",
+    id: `turn-fold:${turnId}`,
+    createdAt: time,
+    turnId: TurnId.make(turnId),
+    label: "8 steps",
+    expanded: false,
+  });
+
+  it("scrolls straight to a message already rendered", () => {
+    const rows = [messageRow("m1"), messageRow("m2")];
+    expect(resolveTimelineFindNavigation(rows, { messageId: "m2" })).toEqual({
+      kind: "scroll",
+      rowIndex: 1,
+    });
+  });
+
+  it("resolves an activity to the work row that renders it", () => {
+    const rows: MessagesTimelineRow[] = [
+      messageRow("m1"),
+      {
+        kind: "work",
+        id: "work-1",
+        createdAt: time,
+        groupedEntries: [entry("a1"), entry("a2")],
+        isExpandedToolGroup: true,
+      },
+    ];
+    expect(resolveTimelineFindNavigation(rows, { activityId: "a2" })).toEqual({
+      kind: "scroll",
+      rowIndex: 1,
+    });
+  });
+
+  it("expands the collapsed group standing in for a hidden activity", () => {
+    const rows = [messageRow("m1"), collapsedGroupRow("group-7", ["a4", "a5"])];
+    expect(
+      resolveTimelineFindNavigation(rows, { activityId: "a5", turnId: TurnId.make("turn-1") }),
+    ).toEqual({ kind: "expand-group", groupId: "group-7", rowIndex: 1 });
+  });
+
+  it("expands the folded turn when nothing of it is in the row model", () => {
+    const rows = [messageRow("m1"), foldRow("turn-9")];
+    expect(
+      resolveTimelineFindNavigation(rows, { activityId: "a9", turnId: TurnId.make("turn-9") }),
+    ).toEqual({ kind: "expand-turn", turnId: TurnId.make("turn-9"), rowIndex: 1 });
+  });
+
+  it("prefers the collapsed group over the fold, so each step reveals the next", () => {
+    // A fold and a group can both be open questions at once. Expanding the
+    // group is the narrower move and is what the anchor actually needs.
+    const rows = [foldRow("turn-9"), collapsedGroupRow("group-7", ["a9"])];
+    expect(
+      resolveTimelineFindNavigation(rows, { activityId: "a9", turnId: TurnId.make("turn-9") }),
+    ).toEqual({ kind: "expand-group", groupId: "group-7", rowIndex: 1 });
+  });
+
+  it("asks for older history when the hit is outside the loaded window", () => {
+    const rows = [messageRow("m1")];
+    expect(
+      resolveTimelineFindNavigation(rows, {
+        messageId: "m-ancient",
+        turnId: TurnId.make("turn-ancient"),
+      }),
+    ).toEqual({ kind: "load-earlier" });
+  });
+
+  it("does not resolve a message hit onto its assistant-meta twin", () => {
+    const rows: MessagesTimelineRow[] = [
+      {
+        kind: "assistant-meta",
+        id: "meta-m1",
+        createdAt: time,
+        message: {
+          id: MessageId.make("m1"),
+          role: "assistant",
+          text: "body",
+          turnId: null,
+          createdAt: time,
+          updatedAt: time,
+          streaming: false,
+        },
+        showAssistantCopyButton: false,
+        assistantCopyStreaming: false,
+      },
+      messageRow("m1"),
+    ];
+    expect(resolveTimelineFindNavigation(rows, { messageId: "m1" })).toEqual({
+      kind: "scroll",
+      rowIndex: 1,
+    });
+  });
+
+  it("ignores an already expanded group, whose entries are rendered rows", () => {
+    const expanded: MessagesTimelineRow = {
+      ...collapsedGroupRow("group-7", ["a4"]),
+      expanded: true,
+    } as MessagesTimelineRow;
+    expect(resolveTimelineFindNavigation([expanded], { activityId: "a4" })).toEqual({
+      kind: "load-earlier",
     });
   });
 });
