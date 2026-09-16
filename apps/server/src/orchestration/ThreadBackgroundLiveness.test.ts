@@ -227,3 +227,79 @@ describe("ThreadBackgroundLiveness", () => {
     expect(a.getThreadBackgroundLiveness("t")).toBeNull();
   });
 });
+
+describe("ThreadBackgroundLiveness elapsed start", () => {
+  const start = (
+    liveness: ReturnType<typeof ThreadBackgroundLiveness.make>,
+    taskId: string,
+    occurredAt: string,
+  ) =>
+    liveness.recordTaskLiveness({
+      threadId: "thread",
+      taskId,
+      taskType: "subagent",
+      status: "running",
+      kind: "started",
+      occurredAt,
+    });
+
+  it("stamps the stretch once, not each task", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    start(liveness, "task-1", "2026-05-22T12:00:00.000Z");
+    start(liveness, "task-2", "2026-05-22T12:05:00.000Z");
+
+    // A second agent joining must not restart the clock.
+    expect(liveness.getThreadBackgroundLivenessState("thread")).toEqual({
+      liveness: "working",
+      since: "2026-05-22T12:00:00.000Z",
+    });
+  });
+
+  it("starts a new stretch when background work resumes after going quiet", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    start(liveness, "task-1", "2026-05-22T12:00:00.000Z");
+    liveness.recordTaskLiveness({
+      threadId: "thread",
+      taskId: "task-1",
+      taskType: "subagent",
+      status: "completed",
+      kind: "completed",
+      occurredAt: "2026-05-22T12:01:00.000Z",
+    });
+    expect(liveness.getThreadBackgroundLivenessState("thread")).toEqual({
+      liveness: null,
+      since: null,
+    });
+
+    start(liveness, "task-2", "2026-05-22T12:30:00.000Z");
+    expect(liveness.getThreadBackgroundLivenessState("thread")).toEqual({
+      liveness: "working",
+      since: "2026-05-22T12:30:00.000Z",
+    });
+  });
+
+  it("reports no start for a thread with no live background work", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    // What every thread looks like after a restart: the registry is empty, so
+    // there is no elapsed time to show rather than a made-up one.
+    expect(liveness.getThreadBackgroundLivenessState("thread")).toEqual({
+      liveness: null,
+      since: null,
+    });
+  });
+
+  it("reports liveness without a start when the stretch had no timestamp", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    liveness.recordTaskLiveness({
+      threadId: "thread",
+      taskId: "task-1",
+      taskType: "subagent",
+      status: "running",
+      kind: "started",
+    });
+    expect(liveness.getThreadBackgroundLivenessState("thread")).toEqual({
+      liveness: "working",
+      since: null,
+    });
+  });
+});

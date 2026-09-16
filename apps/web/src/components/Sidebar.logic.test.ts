@@ -1893,6 +1893,44 @@ describe("resolveWorkingStartedAt", () => {
     ).toBe("2026-03-09T10:02:00.000Z");
   });
 
+  it("measures background work from its own start, not from the settled turn", () => {
+    // session.updatedAt is the moment the turn ENDED, so using it here made
+    // the label count how long ago the agent finished and present it as time
+    // spent working.
+    expect(
+      resolveWorkingStartedAt({
+        latestTurn: makeLatestTurn(),
+        session: { ...session, status: "ready", activeTurnId: null as never },
+        backgroundLiveness: "working",
+        backgroundLivenessSince: "2026-03-09T09:30:00.000Z",
+      }),
+    ).toBe("2026-03-09T09:30:00.000Z");
+  });
+
+  it("shows no elapsed time for background work with no substantiated start", () => {
+    // The liveness registry is in-memory, so a restart leaves no start. Falling
+    // back to the session transition is the exact bug being fixed.
+    expect(
+      resolveWorkingStartedAt({
+        latestTurn: makeLatestTurn(),
+        session: { ...session, status: "ready", activeTurnId: null as never },
+        backgroundLiveness: "working",
+        backgroundLivenessSince: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps measuring the turn while the session is still running", () => {
+    expect(
+      resolveWorkingStartedAt({
+        latestTurn: makeLatestTurn({ completedAt: null }),
+        session,
+        backgroundLiveness: "working",
+        backgroundLivenessSince: "2026-03-09T09:30:00.000Z",
+      }),
+    ).toBe("2026-03-09T10:00:00.000Z");
+  });
+
   it("skips a malformed startedAt instead of returning it", () => {
     expect(
       resolveWorkingStartedAt({

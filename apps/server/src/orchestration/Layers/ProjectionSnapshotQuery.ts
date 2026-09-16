@@ -493,6 +493,17 @@ function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: st
 
 const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
+
+  // The registry is in-memory, so after a restart there is neither liveness
+  // nor a start. Both fields come from one read so a shell can never carry a
+  // liveness without its start, or a start without its liveness.
+  const backgroundLivenessFields = (threadId: string) => {
+    const state = threadBackgroundLiveness.getThreadBackgroundLivenessState(threadId);
+    return {
+      backgroundLiveness: state.liveness,
+      backgroundLivenessSince: state.since,
+    };
+  };
   const threadPlanProgress = yield* ThreadPlanProgressService;
   const sql = yield* SqlClient.SqlClient;
   const repositoryIdentityResolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
@@ -2785,9 +2796,7 @@ pending_approval_requests AS (
                         hasBlockingUserInput:
                           row.pendingUserInputCount > row.pendingAsyncUserInputCount,
                         hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
-                        backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
-                          row.threadId,
-                        ),
+                        ...backgroundLivenessFields(row.threadId),
                         planProgress: threadPlanProgress.getThreadPlanProgress(row.threadId),
                       } satisfies OrchestrationThreadShell)
                     : Result.failVoid,
@@ -2949,9 +2958,7 @@ pending_approval_requests AS (
                   hasPendingUserInput: row.pendingUserInputCount > 0,
                   hasBlockingUserInput: row.pendingUserInputCount > row.pendingAsyncUserInputCount,
                   hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
-                  backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
-                    row.threadId,
-                  ),
+                  ...backgroundLivenessFields(row.threadId),
                   planProgress: threadPlanProgress.getThreadPlanProgress(row.threadId),
                 })),
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
@@ -3307,9 +3314,7 @@ pending_approval_requests AS (
         hasBlockingUserInput:
           threadRow.value.pendingUserInputCount > threadRow.value.pendingAsyncUserInputCount,
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
-        backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
-          threadRow.value.threadId,
-        ),
+        ...backgroundLivenessFields(threadRow.value.threadId),
         planProgress: threadPlanProgress.getThreadPlanProgress(threadRow.value.threadId),
       } satisfies OrchestrationThreadShell);
     });

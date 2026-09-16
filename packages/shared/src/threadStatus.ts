@@ -124,11 +124,12 @@ export function resolveThreadStatusKind(
     ) ??
     // Reaching these rungs means the session is not running, so the turn has
     // settled and the work still alive is background (subagent fleets,
-    // workflow runs, watch loops). That is a different claim from "the agent
-    // is mid-turn": here the user is usually the one being waited on, and the
-    // elapsed time belongs to the background agent, not to a turn. Surfaces
-    // may still render both as "Working", but the ladder keeps them apart so
-    // the distinction is available rather than flattened away.
+    // workflow runs, watch loops). Nothing is outstanding from the user here
+    // — a question or approval would have matched further up — so this is not
+    // a request for their attention, it is work continuing after the turn.
+    // Surfaces may still render it as "Working", but the ladder keeps the two
+    // apart because they are different claims and, in particular, their
+    // elapsed times measure different things.
     rung("background-working", thread.backgroundLiveness === "working") ??
     rung("monitoring", thread.backgroundLiveness === "monitoring") ??
     rung("completed", isThreadCompleted(thread))

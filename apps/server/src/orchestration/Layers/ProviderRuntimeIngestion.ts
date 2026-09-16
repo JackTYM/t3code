@@ -2160,6 +2160,7 @@ const make = Effect.gen(function* () {
             taskType: payload.taskType,
             status: payload.status,
             agentId: payload.agentId,
+            occurredAt: event.createdAt,
             kind:
               event.type === "task.started"
                 ? "started"

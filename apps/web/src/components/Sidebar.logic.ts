@@ -967,13 +967,26 @@ export function sortSettledThreadsForSidebar<
 /** The timestamp a working thread's elapsed label counts from: the running
     turn's start (request time until adoption), falling back to the session's
     last transition when the turn projection lags behind. Malformed
-    timestamps fall through to the next candidate, not just missing ones. */
+    timestamps fall through to the next candidate, not just missing ones.
+
+    Background work is measured from its own start instead. The session
+    timestamp would be the moment the turn settled, so the label counted how
+    long ago the agent finished and presented it as time spent working.
+    Returns null when that start is unknown — the registry is in-memory, so a
+    restart leaves live-looking work with no substantiated start, and no
+    elapsed time is better than one measuring the wrong thing. */
 export function resolveWorkingStartedAt(
-  thread: Pick<SidebarThreadSummary, "latestTurn" | "session">,
+  thread: Pick<
+    SidebarThreadSummary,
+    "latestTurn" | "session" | "backgroundLiveness" | "backgroundLivenessSince"
+  >,
 ): string | null {
   const turn = thread.latestTurn;
   if (turn && turn.completedAt === null) {
     return firstValidTimestamp(turn.startedAt, turn.requestedAt, thread.session?.updatedAt);
+  }
+  if (thread.session?.status !== "running" && thread.backgroundLiveness != null) {
+    return firstValidTimestamp(thread.backgroundLivenessSince);
   }
   return firstValidTimestamp(thread.session?.updatedAt);
 }
