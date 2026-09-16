@@ -1,4 +1,5 @@
 import {
+  AGENT_TRANSCRIPT_ACTIVITY_KIND,
   ApprovalRequestId,
   CommandId,
   MessageId,
@@ -801,6 +802,28 @@ export function runtimeEventToActivities(
               : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
             ...taskLinkageActivityFields(event.payload as Record<string, unknown>),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "task.transcript": {
+      const firstText = event.payload.blocks.find((block) => block.type === "text")?.text;
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          // Distinct kind so every default thread-detail read path and the
+          // live thread-detail filter can exclude it by kind alone. A fleet's
+          // narration must not reach clients that never opened an agent view.
+          kind: AGENT_TRANSCRIPT_ACTIVITY_KIND,
+          summary: firstText ? truncateDetail(firstText, 120) : "Agent narration",
+          payload: {
+            taskId: event.payload.taskId,
+            blocks: event.payload.blocks,
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

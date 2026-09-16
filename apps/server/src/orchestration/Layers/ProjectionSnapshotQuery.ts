@@ -30,6 +30,7 @@ import {
   ProjectId,
   ThreadLinkedPullRequest,
   ThreadTitleState,
+  AGENT_TRANSCRIPT_ACTIVITY_KIND,
   ThreadId,
   ThreadPullRequestSnapshot,
   ThreadPullRequestStack,
@@ -95,6 +96,9 @@ const decodeAgentSessionImportSource = Schema.decodeUnknownOption(AgentSessionIm
 // activity window. Applying the limit in SQL avoids decoding an unbounded
 // payload_json set before the projector can enforce that invariant.
 const THREAD_DETAIL_ACTIVITY_LIMIT = 500;
+// Bounds one agent's retained narration. A long-running agent must not grow an
+// unbounded set; newest-first selection keeps the most recent window.
+const AGENT_TRANSCRIPT_LIMIT = 200;
 // Snapshot payloads are decoded and projected in small sequential batches so
 // one client read does not retain the raw payloads for the full activity window.
 const THREAD_DETAIL_ACTIVITY_PAYLOAD_BATCH_SIZE = 25;
@@ -1403,6 +1407,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             created_at
           FROM projection_thread_activities
           WHERE thread_id = ${threadId}
+            AND kind <> ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
           ORDER BY
             sequence DESC,
             created_at DESC,
@@ -1484,6 +1489,59 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
+  const listAgentTranscriptRows = SqlSchema.findAll({
+    Request: Schema.Struct({ threadId: ThreadId, taskId: Schema.String }),
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId, taskId }) => sql`
+      SELECT
+        activity_id AS "activityId",
+        thread_id AS "threadId",
+        turn_id AS "turnId",
+        tone,
+        kind,
+        summary,
+        payload_json AS "payload",
+        sequence,
+        created_at AS "createdAt"
+      FROM (
+        SELECT
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND kind = ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
+          AND json_extract(payload_json, '$.taskId') = ${taskId}
+        ORDER BY
+          sequence DESC,
+          created_at DESC,
+          activity_id DESC
+        LIMIT ${AGENT_TRANSCRIPT_LIMIT}
+      ) AS recent_transcript
+      ORDER BY
+        sequence ASC,
+        created_at ASC,
+        activity_id ASC
+    `,
+  });
+
+  const listAgentTranscript: ProjectionSnapshotQueryShape["listAgentTranscript"] = (input) =>
+    listAgentTranscriptRows(input).pipe(
+      Effect.map((rows) => rows.map(mapThreadActivityRow)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listAgentTranscript:query",
+          "ProjectionSnapshotQuery.listAgentTranscript:decodeRow",
+        ),
+      ),
+    );
+
   const listThreadActivityIdsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadActivityIdRowSchema,
@@ -1492,6 +1550,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT activity_id AS "activityId"
         FROM projection_thread_activities
         WHERE thread_id = ${threadId}
+          AND kind <> ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
         ORDER BY
           sequence DESC,
           created_at DESC,
@@ -1905,6 +1964,7 @@ pending_approval_requests AS (
             created_at
           FROM projection_thread_activities
           WHERE thread_id = ${threadId}
+            AND kind <> ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
             AND (
               turn_id IN (
                 SELECT turn_id FROM projection_turns
@@ -1952,6 +2012,7 @@ pending_approval_requests AS (
         SELECT activity_id AS "activityId"
         FROM projection_thread_activities
         WHERE thread_id = ${threadId}
+          AND kind <> ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
           AND (
             turn_id IN (
               SELECT turn_id FROM projection_turns
@@ -3727,6 +3788,7 @@ pending_approval_requests AS (
     getCommandReadModel,
     getUserInputActivity,
     listActivitiesByKind,
+    listAgentTranscript,
     getSnapshot,
     getShellSnapshot,
     getArchivedShellSnapshot,

@@ -93,6 +93,17 @@ export interface ProjectionSnapshotQueryShape {
   ) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
 
   /**
+   * Read one subagent's own narration. These rows are stamped with their
+   * owning taskId and excluded from every default thread-detail read, so this
+   * scoped query is the only way they reach a client — and only a client that
+   * opened that agent's view asks for them.
+   */
+  readonly listAgentTranscript: (input: {
+    readonly threadId: ThreadId;
+    readonly taskId: string;
+  }) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
+  /**
    * Read the lightweight command snapshot used to bootstrap the in-memory
    * orchestration engine without hydrating message/activity/checkpoint bodies.
    */

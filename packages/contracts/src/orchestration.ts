@@ -1910,6 +1910,19 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
 });
 
 /**
+ * Activity kind carrying one subagent's own narration, stamped with the
+ * owning taskId in its payload.
+ *
+ * These rows are deliberately invisible to the thread transcript: a fleet's
+ * narration is many times the parent's token stream, so they are excluded from
+ * every default thread-detail read, from the live thread-detail stream filter,
+ * and from the projector's retained activity window. They reach a client only
+ * through the scoped (threadId, taskId) transcript query, and only when that
+ * agent's view is open.
+ */
+export const AGENT_TRANSCRIPT_ACTIVITY_KIND = "agent.transcript";
+
+/**
  * Which client connection dispatched the command that produced an event.
  * Stamped by the orchestration engine on client-dispatched commands; absent on
  * provider/server-originated events and on commands from clients too old to
