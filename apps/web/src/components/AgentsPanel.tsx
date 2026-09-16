@@ -138,7 +138,10 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
   );
 }
 
-/** Flat, non-interactive agent status line. No unfold. */
+/**
+ * Flat agent status line. It never unfolds in place — an agent with a readable
+ * transcript opens the detail view instead, so the row keeps its fixed height.
+ */
 function AgentRow({
   agent,
   onOpen,
