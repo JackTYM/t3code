@@ -110,6 +110,38 @@ describe("projectThreadAwareness", () => {
     });
   });
 
+  // The settled turn used to drop the thread to "completed", so the widget
+  // and Live Activity announced Done over subagents/workflows that were still
+  // running and that the app itself was showing as Working.
+  it("projects a settled turn with live background work as running", () => {
+    const finishedTurn = {
+      turnId: "turn-1" as TurnId,
+      state: "completed" as const,
+      requestedAt: NOW,
+      startedAt: NOW,
+      completedAt: NOW,
+      assistantMessageId: null,
+    };
+    for (const backgroundLiveness of ["working", "monitoring"] as const) {
+      const state = projectThreadAwareness({
+        environmentId: "env-1" as EnvironmentId,
+        now: NOW,
+        project,
+        thread: thread({ latestTurn: finishedTurn, backgroundLiveness }),
+      });
+      expect(state?.phase).toBe("running");
+    }
+
+    // Nothing alive behind the settled turn still reads as Done.
+    const settled = projectThreadAwareness({
+      environmentId: "env-1" as EnvironmentId,
+      now: NOW,
+      project,
+      thread: thread({ latestTurn: finishedTurn, backgroundLiveness: null }),
+    });
+    expect(settled?.phase).toBe("completed");
+  });
+
   it("projects completed turns as completed even when teardown settled them as interrupted", () => {
     const finishedTurn = {
       turnId: "turn-1" as TurnId,

@@ -110,13 +110,14 @@ export function projectThreadAwareness(
   };
 }
 
-// The widget has no vocabulary for plans or background work, so those rungs
-// fall through and the thread keeps reading as Done, exactly as before.
-const AWARENESS_SUPPRESSED_KINDS: ReadonlySet<ThreadStatusKind> = new Set([
-  "plan-ready",
-  "background-working",
-  "monitoring",
-]);
+// The widget has no vocabulary for an actionable plan prompt, so that rung
+// falls through and the thread reads by whatever it is doing underneath.
+//
+// Background work is NOT suppressed. Reaching those rungs means the turn has
+// settled while subagents, workflow runs or watch loops are still alive, and
+// suppressing them dropped the thread to "completed" — the widget and Live
+// Activity announced Done over work the app was still showing as Working.
+const AWARENESS_SUPPRESSED_KINDS: ReadonlySet<ThreadStatusKind> = new Set(["plan-ready"]);
 
 function resolveThreadAwarenessPhase(
   thread: ProjectThreadAwarenessInput["thread"],
@@ -128,6 +129,11 @@ function resolveThreadAwarenessPhase(
     case "awaiting-input":
       return "waiting_for_input";
     case "working":
+    // Background work reports as Working rather than earning a phase of its
+    // own: "running" is the one non-alerting active phase, so the card tells
+    // the truth about live work without buzzing for work nobody asked about.
+    case "background-working":
+    case "monitoring":
       return "running";
     case "connecting":
       return "starting";
