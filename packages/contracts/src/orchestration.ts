@@ -872,6 +872,14 @@ export const OrchestrationThreadShell = Schema.Struct({
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
+  /**
+   * Whether any open question actually blocks the agent. Async questions
+   * (`responseMode: "message"`) are answered by sending an ordinary message
+   * and the agent keeps working, so they must not outrank a live run in the
+   * status ladder. Optional so pre-split servers still decode; absent means
+   * every pending question blocks, which is what those servers reported.
+   */
+  hasBlockingUserInput: Schema.optional(Schema.Boolean),
   hasActionableProposedPlan: Schema.Boolean,
   /**
    * Native background work alive after the turn settles: "working" while
@@ -879,6 +887,13 @@ export const OrchestrationThreadShell = Schema.Struct({
    * live work. Optional so old servers/clients interop; absent = none.
    */
   backgroundLiveness: Schema.optional(Schema.NullOr(Schema.Literals(["working", "monitoring"]))),
+  /**
+   * When the current stretch of background work began, for the elapsed label.
+   * Absent whenever nothing is live and after a server restart, since the
+   * registry is in-memory: surfaces must then show no elapsed time rather
+   * than fall back to a session timestamp, which measures the wrong thing.
+   */
+  backgroundLivenessSince: Schema.optional(Schema.NullOr(IsoDateTime)),
   /**
    * Current plan step while a turn runs, for the Working indicators
    * (sidebar row, in-chat working line). Cleared when the turn settles —

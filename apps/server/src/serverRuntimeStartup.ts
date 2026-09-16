@@ -831,6 +831,71 @@ export const reconcileWorktreeSetups = Effect.gen(function* () {
   ),
 );
 
+/**
+ * Close user-input questions whose answer can no longer reach the provider.
+ *
+ * A blocking question is answered through a callback the adapter holds in
+ * memory (see ClaudeAdapter's `pendingUserInputs`), so no process restart can
+ * honour one raised before it — responding only ever yields the "Stale pending
+ * user-input request" failure. The projection counted those requests forever,
+ * which pinned the thread to "Awaiting Input" even while the agent worked.
+ *
+ * Async questions (`responseMode: "message"`) are answered by sending an
+ * ordinary message, so they survive restarts and are deliberately left open.
+ */
+export const reconcilePendingUserInput = Effect.gen(function* () {
+  const crypto = yield* Crypto.Crypto;
+  const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+  const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+
+  const openRequests = yield* query.listOpenUserInputRequests();
+  const orphaned = openRequests.filter((request) => request.responseMode !== "message");
+  if (orphaned.length === 0) return;
+
+  const dismissedAt = DateTime.formatIso(yield* DateTime.now);
+  yield* Effect.logInfo("dismissing user-input requests orphaned by a restart", {
+    count: orphaned.length,
+  });
+
+  for (const request of orphaned) {
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make(yield* crypto.randomUUIDv4),
+        threadId: request.threadId,
+        activity: {
+          // Deterministic: a request can only be orphaned once, and a repeated
+          // sweep must not append a second resolution.
+          id: EventId.make(`startup:user-input-resolved:${request.requestId}`),
+          tone: "info",
+          kind: "user-input.resolved",
+          summary: "Question dismissed after a restart",
+          payload: { requestId: request.requestId },
+          turnId: request.turnId === null ? null : TurnId.make(request.turnId),
+          createdAt: dismissedAt,
+        },
+        createdAt: dismissedAt,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("failed to dismiss an orphaned user-input request", {
+                threadId: request.threadId,
+                requestId: request.requestId,
+                cause,
+              }),
+        ),
+      );
+  }
+}).pipe(
+  Effect.catchCause((cause) =>
+    Cause.hasInterrupts(cause)
+      ? Effect.failCause(cause)
+      : Effect.logWarning("pending user-input startup reconciliation failed", { cause }),
+  ),
+);
+
 interface StartupOptions {
   readonly activate?: Effect.Effect<void>;
   readonly awaitAuxiliaryParked?: Effect.Effect<void>;
@@ -971,6 +1036,7 @@ export const make = (options?: StartupOptions) =>
 
       yield* runStartupPhase("provider-sessions.reconcile", reconcileProviderSessions);
       yield* runStartupPhase("worktree-setups.reconcile", reconcileWorktreeSetups);
+      yield* runStartupPhase("pending-user-input.reconcile", reconcilePendingUserInput);
 
       yield* Effect.logDebug("startup phase: syncing clean projects");
       yield* runStartupPhase("projects.auto-pull", syncAutoPullProjects);

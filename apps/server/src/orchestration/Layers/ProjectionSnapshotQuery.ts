@@ -147,6 +147,12 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
 const ProjectionThreadActivityIdRowSchema = Schema.Struct({
   activityId: ProjectionThreadActivity.fields.activityId,
 });
+const ProjectionOpenUserInputRequestRowSchema = Schema.Struct({
+  threadId: ThreadId,
+  requestId: Schema.String,
+  turnId: Schema.NullOr(Schema.String),
+  responseMode: Schema.NullOr(Schema.String),
+});
 const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
 const ProjectionThreadRuntimeContextDbRowSchema = Schema.Struct({
   titleState: Schema.NullOr(Schema.fromJsonString(ThreadTitleState)),
@@ -491,6 +497,17 @@ function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: st
 
 const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
+
+  // The registry is in-memory, so after a restart there is neither liveness
+  // nor a start. Both fields come from one read so a shell can never carry a
+  // liveness without its start, or a start without its liveness.
+  const backgroundLivenessFields = (threadId: string) => {
+    const state = threadBackgroundLiveness.getThreadBackgroundLivenessState(threadId);
+    return {
+      backgroundLiveness: state.liveness,
+      backgroundLivenessSince: state.since,
+    };
+  };
   const threadPlanProgress = yield* ThreadPlanProgressService;
   const sql = yield* SqlClient.SqlClient;
   const repositoryIdentityResolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
@@ -591,6 +608,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          pending_async_user_input_count AS "pendingAsyncUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           deleted_at AS "deletedAt"
         FROM projection_threads
@@ -632,6 +650,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          pending_async_user_input_count AS "pendingAsyncUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           deleted_at AS "deletedAt"
         FROM projection_threads
@@ -675,6 +694,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          pending_async_user_input_count AS "pendingAsyncUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           deleted_at AS "deletedAt"
         FROM projection_threads
@@ -1237,6 +1257,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          pending_async_user_input_count AS "pendingAsyncUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           deleted_at AS "deletedAt"
         FROM projection_threads
@@ -1539,6 +1560,69 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         toPersistenceSqlOrDecodeError(
           "ProjectionSnapshotQuery.listAgentTranscript:query",
           "ProjectionSnapshotQuery.listAgentTranscript:decodeRow",
+        ),
+      ),
+    );
+
+  // Mirrors derivePendingUserInputCountFromActivities: the newest lifecycle
+  // row per requestId decides, and a stale-failure counts as a resolution.
+  // Scoped to threads the summary already flags, so the window stays small.
+  const listOpenUserInputRequestRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionOpenUserInputRequestRowSchema,
+    execute: () => sql`
+      WITH lifecycle AS (
+        SELECT
+          activity.thread_id AS thread_id,
+          activity.turn_id AS turn_id,
+          activity.kind AS kind,
+          json_extract(activity.payload_json, '$.requestId') AS request_id,
+          json_extract(activity.payload_json, '$.responseMode') AS response_mode,
+          ROW_NUMBER() OVER (
+            PARTITION BY activity.thread_id, json_extract(activity.payload_json, '$.requestId')
+            ORDER BY activity.created_at DESC, activity.activity_id DESC
+          ) AS request_order
+        FROM projection_thread_activities AS activity
+        JOIN projection_threads AS thread ON thread.thread_id = activity.thread_id
+        WHERE thread.pending_user_input_count > 0
+          AND thread.deleted_at IS NULL
+          AND thread.archived_at IS NULL
+          AND json_extract(activity.payload_json, '$.requestId') IS NOT NULL
+          AND (
+            activity.kind IN ('user-input.requested', 'user-input.resolved')
+            OR (
+              activity.kind = 'provider.user-input.respond.failed'
+              AND (
+                lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                  LIKE '%stale pending user-input request%'
+                OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                  LIKE '%unknown pending user-input request%'
+                OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                  LIKE '%unknown pending user input request%'
+                OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                  LIKE '%unknown pending codex user input request%'
+              )
+            )
+          )
+      )
+      SELECT
+        thread_id AS "threadId",
+        request_id AS "requestId",
+        turn_id AS "turnId",
+        response_mode AS "responseMode"
+      FROM lifecycle
+      WHERE request_order = 1
+        AND kind = 'user-input.requested'
+      ORDER BY thread_id ASC, request_id ASC
+    `,
+  });
+
+  const listOpenUserInputRequests: ProjectionSnapshotQueryShape["listOpenUserInputRequests"] = () =>
+    listOpenUserInputRequestRows(undefined).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listOpenUserInputRequests:query",
+          "ProjectionSnapshotQuery.listOpenUserInputRequests:decodeRow",
         ),
       ),
     );
@@ -2780,10 +2864,10 @@ pending_approval_requests AS (
                         latestUserMessageAt: row.latestUserMessageAt,
                         hasPendingApprovals: row.pendingApprovalCount > 0,
                         hasPendingUserInput: row.pendingUserInputCount > 0,
+                        hasBlockingUserInput:
+                          row.pendingUserInputCount > row.pendingAsyncUserInputCount,
                         hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
-                        backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
-                          row.threadId,
-                        ),
+                        ...backgroundLivenessFields(row.threadId),
                         planProgress: threadPlanProgress.getThreadPlanProgress(row.threadId),
                       } satisfies OrchestrationThreadShell)
                     : Result.failVoid,
@@ -2943,10 +3027,9 @@ pending_approval_requests AS (
                   latestUserMessageAt: row.latestUserMessageAt,
                   hasPendingApprovals: row.pendingApprovalCount > 0,
                   hasPendingUserInput: row.pendingUserInputCount > 0,
+                  hasBlockingUserInput: row.pendingUserInputCount > row.pendingAsyncUserInputCount,
                   hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
-                  backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
-                    row.threadId,
-                  ),
+                  ...backgroundLivenessFields(row.threadId),
                   planProgress: threadPlanProgress.getThreadPlanProgress(row.threadId),
                 })),
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
@@ -3299,10 +3382,10 @@ pending_approval_requests AS (
         latestUserMessageAt: threadRow.value.latestUserMessageAt,
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
+        hasBlockingUserInput:
+          threadRow.value.pendingUserInputCount > threadRow.value.pendingAsyncUserInputCount,
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
-        backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
-          threadRow.value.threadId,
-        ),
+        ...backgroundLivenessFields(threadRow.value.threadId),
         planProgress: threadPlanProgress.getThreadPlanProgress(threadRow.value.threadId),
       } satisfies OrchestrationThreadShell);
     });
@@ -3799,6 +3882,7 @@ pending_approval_requests AS (
     getUserInputActivity,
     listActivitiesByKind,
     listAgentTranscript,
+    listOpenUserInputRequests,
     getSnapshot,
     getShellSnapshot,
     getArchivedShellSnapshot,

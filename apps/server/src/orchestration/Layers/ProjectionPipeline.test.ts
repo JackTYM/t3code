@@ -3191,6 +3191,160 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("counts async questions separately from the ones that block the agent", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-async-input-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-async-input"),
+        occurredAt: "2026-02-26T13:00:00.000Z",
+        commandId: CommandId.make("cmd-async-input-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-async-input-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-async-input"),
+          title: "Project Async Input",
+          workspaceRoot: "/tmp/project-async-input",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-02-26T13:00:00.000Z",
+          updatedAt: "2026-02-26T13:00:00.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-async-input-2"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-async-input"),
+        occurredAt: "2026-02-26T13:00:01.000Z",
+        commandId: CommandId.make("cmd-async-input-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-async-input-2"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-async-input"),
+          projectId: ProjectId.make("project-async-input"),
+          title: "Thread Async Input",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-02-26T13:00:01.000Z",
+          updatedAt: "2026-02-26T13:00:01.000Z",
+        },
+      });
+
+      const askQuestion = (input: {
+        readonly eventId: string;
+        readonly requestId: string;
+        readonly asyncQuestion: boolean;
+        readonly occurredAt: string;
+      }) =>
+        appendAndProject({
+          type: "thread.activity-appended",
+          eventId: EventId.make(input.eventId),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-async-input"),
+          occurredAt: input.occurredAt,
+          commandId: CommandId.make(`cmd-${input.eventId}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-${input.eventId}`),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-async-input"),
+            activity: {
+              id: EventId.make(`activity-${input.eventId}`),
+              tone: "info",
+              kind: "user-input.requested",
+              summary: "User input requested",
+              payload: {
+                requestId: input.requestId,
+                ...(input.asyncQuestion ? { responseMode: "message" } : {}),
+              },
+              turnId: null,
+              createdAt: input.occurredAt,
+            },
+          },
+        });
+
+      const readCounts = sql<{
+        readonly pendingUserInputCount: number;
+        readonly pendingAsyncUserInputCount: number;
+      }>`
+        SELECT
+          pending_user_input_count AS "pendingUserInputCount",
+          pending_async_user_input_count AS "pendingAsyncUserInputCount"
+        FROM projection_threads
+        WHERE thread_id = 'thread-async-input'
+      `;
+
+      // A Codex async question: the agent asked and carried on.
+      yield* askQuestion({
+        eventId: "evt-async-input-3",
+        requestId: "req-async",
+        asyncQuestion: true,
+        occurredAt: "2026-02-26T13:00:02.000Z",
+      });
+      assert.deepEqual(yield* readCounts, [
+        { pendingUserInputCount: 1, pendingAsyncUserInputCount: 1 },
+      ]);
+
+      // A native callback question: the agent is blocked on the answer.
+      yield* askQuestion({
+        eventId: "evt-async-input-4",
+        requestId: "req-blocking",
+        asyncQuestion: false,
+        occurredAt: "2026-02-26T13:00:03.000Z",
+      });
+      assert.deepEqual(yield* readCounts, [
+        { pendingUserInputCount: 2, pendingAsyncUserInputCount: 1 },
+      ]);
+
+      // Answering the blocking one leaves only work the agent is not waiting on.
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-async-input-5"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-async-input"),
+        occurredAt: "2026-02-26T13:00:04.000Z",
+        commandId: CommandId.make("cmd-async-input-5"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-async-input-5"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-async-input"),
+          activity: {
+            id: EventId.make("activity-async-input-resolved"),
+            tone: "info",
+            kind: "user-input.resolved",
+            summary: "User input submitted",
+            payload: { requestId: "req-blocking" },
+            turnId: null,
+            createdAt: "2026-02-26T13:00:04.000Z",
+          },
+        },
+      });
+      assert.deepEqual(yield* readCounts, [
+        { pendingUserInputCount: 1, pendingAsyncUserInputCount: 1 },
+      ]);
+    }),
+  );
+
   it.effect("maintains shell summaries without decoding message or plan bodies", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
