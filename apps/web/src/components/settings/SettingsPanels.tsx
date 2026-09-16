@@ -572,6 +572,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.proactivePanelsEnabled !== DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled
         ? ["Proactive panels"]
         : []),
+      ...(settings.planModeEnabled !== DEFAULT_UNIFIED_SETTINGS.planModeEnabled
+        ? ["Plan mode"]
+        : []),
       ...(settings.showSkillsInSlashMenu !== DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu
         ? ["Show skills in slash menu"]
         : []),
@@ -750,6 +753,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       diffLayout: DEFAULT_UNIFIED_SETTINGS.diffLayout,
       proactivePanelsEnabled: DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled,
+      planModeEnabled: DEFAULT_UNIFIED_SETTINGS.planModeEnabled,
       showSkillsInSlashMenu: DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu,
       composerCollapseOnScroll: DEFAULT_UNIFIED_SETTINGS.composerCollapseOnScroll,
       followUpBehavior: DEFAULT_UNIFIED_SETTINGS.followUpBehavior,
@@ -1996,7 +2000,6 @@ function AutoSettleDaysInput({
 // The legacy rows sit behind the fold, so a settings-search jump has to
 // expand the section before its target can mount and scroll.
 const LEGACY_FEATURE_TARGET_IDS: ReadonlySet<string> = new Set([
-  "legacy-plan-mode",
   "legacy-context-window-indicator",
   "legacy-sidebar",
 ]);
@@ -2039,19 +2042,6 @@ function LegacyFeaturesSection() {
         </CollapsibleTrigger>
         <CollapsiblePanel>
           <div className="relative overflow-visible rounded-xl border border-border/60 bg-card/40 text-foreground shadow-xs/5 [&>*+*]:border-t [&>*+*]:border-border/50 [&>[data-slot=settings-row]]:rounded-none">
-            <SettingsRow
-              {...searchableSetting("legacy-plan-mode")}
-              description="Restore Build/Plan, /plan, /default, and Shift+Tab. Off uses build mode."
-              control={
-                <Switch
-                  checked={settings.planModeEnabled}
-                  onCheckedChange={(checked) => {
-                    updateSettings({ planModeEnabled: Boolean(checked) });
-                  }}
-                  aria-label="Plan mode (legacy)"
-                />
-              }
-            />
             <SettingsRow
               {...searchableSetting("legacy-context-window-indicator")}
               description="Shows context window usage as a circular indicator in the composer."
@@ -2537,6 +2527,30 @@ export function GeneralSettingsPanel() {
                 updateSettings({ proactivePanelsEnabled: Boolean(checked) })
               }
               aria-label="Proactive panels"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("plan-mode")}
+          description="Let the agent research and propose a plan before it edits anything. Switch with the composer's Build/Plan toggle, Shift+Tab, or /plan and /default. Available on providers that support it."
+          resetAction={
+            settings.planModeEnabled !== DEFAULT_UNIFIED_SETTINGS.planModeEnabled ? (
+              <SettingResetButton
+                label="plan mode"
+                onClick={() =>
+                  updateSettings({ planModeEnabled: DEFAULT_UNIFIED_SETTINGS.planModeEnabled })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.planModeEnabled}
+              onCheckedChange={(checked) => {
+                updateSettings({ planModeEnabled: Boolean(checked) });
+              }}
+              aria-label="Plan mode"
             />
           }
         />

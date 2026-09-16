@@ -6,17 +6,14 @@ import { resolveLegacyPlanModeEnabled } from "./legacy-plan-mode";
 
 /**
  * Mobile preferences are device-local, matching the desktop client setting.
- * Keep the legacy composer mode hidden until the preference has loaded and is
- * explicitly enabled.
+ * Plan mode is on unless this device opted out, so an unresolved store reads as
+ * enabled rather than clamping the composer to build while it loads.
  */
-export function useLegacyPlanModeState(): { readonly enabled: boolean; readonly loaded: boolean } {
+export function useLegacyPlanModeState(): boolean {
   const preferences = useAtomValue(mobilePreferencesAtom);
-  const loaded = AsyncResult.isSuccess(preferences);
-  return {
-    enabled: resolveLegacyPlanModeEnabled({
-      loaded,
-      preference: loaded ? preferences.value.planModeEnabled : undefined,
-    }),
-    loaded,
-  };
+  return resolveLegacyPlanModeEnabled({
+    preference: AsyncResult.isSuccess(preferences)
+      ? preferences.value.planModeEnabled
+      : undefined,
+  });
 }

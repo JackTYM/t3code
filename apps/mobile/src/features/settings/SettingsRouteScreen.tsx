@@ -47,6 +47,7 @@ import {
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
 } from "@t3tools/contracts";
 import { supportsSharedSettingsSync } from "@t3tools/client-runtime/state/shared-settings";
+import { useLegacyPlanModeState } from "../threads/use-legacy-plan-mode-enabled";
 import { useThreadListV2Enabled } from "../threads/use-thread-list-v2-enabled";
 import {
   type AppUpdateCheckState,
@@ -594,6 +595,24 @@ function ConfiguredSettingsRouteScreen() {
   );
 }
 
+/**
+ * Plan mode is on unless this device opts out. The value comes from the same
+ * resolver the composer uses, so the switch cannot disagree with the behavior.
+ */
+function PlanModeSettingsRow() {
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const planModeEnabled = useLegacyPlanModeState();
+
+  return (
+    <SettingsSwitchRow
+      icon="hammer"
+      label="Plan Mode"
+      value={planModeEnabled}
+      onValueChange={(value) => savePreferences({ planModeEnabled: value })}
+    />
+  );
+}
+
 function GeneralSettingsSection() {
   return (
     <SettingsSection title="General">
@@ -601,6 +620,7 @@ function GeneralSettingsSection() {
       {Platform.OS === "ios" ? (
         <SettingsRow icon="keyboard" label="Keyboard" target="SettingsKeyboard" />
       ) : null}
+      <PlanModeSettingsRow />
       <AutoSettleSettingsRows />
       <SettingsRow icon="chart.bar.xaxis" label="Usage" target="SettingsUsage" />
     </SettingsSection>
@@ -726,16 +746,13 @@ function AutoSettleSettingsRows() {
 }
 
 /**
- * Device-local legacy toggles. Mobile has no client-settings sync, so this is
- * the counterpart of web's Settings → General → Legacy features backed by
+ * Device-local legacy toggles. Mobile has no client-settings sync, so these are
+ * the counterpart of web's Settings → General → Legacy features, backed by
  * mobile preferences.
  */
 function LegacySettingsSection() {
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
-  const preferences = useAtomValue(mobilePreferencesAtom);
   const threadListV2Enabled = useThreadListV2Enabled();
-  const planModeEnabled =
-    AsyncResult.isSuccess(preferences) && preferences.value.planModeEnabled === true;
 
   return (
     <View className="gap-3">
@@ -746,16 +763,9 @@ function LegacySettingsSection() {
           value={!threadListV2Enabled}
           onValueChange={(value) => savePreferences({ legacyThreadListEnabled: value })}
         />
-        <SettingsSwitchRow
-          icon="hammer"
-          label="Plan Mode"
-          value={planModeEnabled}
-          onValueChange={(value) => savePreferences({ planModeEnabled: value })}
-        />
       </SettingsSection>
       <Text className="px-2 text-sm text-foreground-muted">
-        Opt into retired interfaces kept for compatibility. Plan Mode restores the Build/Plan
-        control; otherwise every task runs in Build mode.
+        Opt into retired interfaces kept for compatibility.
       </Text>
     </View>
   );

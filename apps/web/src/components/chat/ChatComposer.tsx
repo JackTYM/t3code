@@ -962,6 +962,7 @@ import type { ContextWindowSnapshot } from "../../lib/contextWindow";
 import {
   formatProviderSkillDisplayName,
   getProviderSlashCommandsForSlashMenu,
+  withInteractionModeCommandPrecedence,
   getProviderSkillsForSlashMenu,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
@@ -2322,10 +2323,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         selectedProviderSkills,
         settings.showSkillsInSlashMenu,
       );
-      const providerSlashCommandItems = getProviderSlashCommandsForSlashMenu(
-        selectedProviderSlashCommands,
-        slashMenuSkills,
-      ).map((command) => ({
+      const providerSlashCommandItems = withInteractionModeCommandPrecedence(
+        getProviderSlashCommandsForSlashMenu(selectedProviderSlashCommands, slashMenuSkills),
+        planModeUiEnabled,
+      )
+        .map((command) => ({
         id: `provider-slash-command:${selectedProvider}:${command.name}`,
         type: "provider-slash-command" as const,
         provider: selectedProvider,

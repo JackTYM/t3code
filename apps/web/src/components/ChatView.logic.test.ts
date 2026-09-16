@@ -11,6 +11,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { Atom, AsyncResult } from "effect/unstable/reactivity";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -1683,7 +1684,7 @@ describe("resolveComposerInteractionMode", () => {
     ).toEqual({ enabled: true, interactionMode: "plan" });
   });
 
-  it("resets a restored plan draft when the beta setting is off", () => {
+  it("resets a restored plan draft when the setting is off", () => {
     expect(
       resolveComposerInteractionMode({
         planModeEnabled: false,
@@ -1701,6 +1702,79 @@ describe("resolveComposerInteractionMode", () => {
         interactionMode: "plan",
       }),
     ).toEqual({ enabled: false, interactionMode: "default" });
+  });
+
+  // Mirrors `showInteractionModeToggle` on each adapter under
+  // apps/server/src/provider/Layers. Plan mode reaches exactly the three
+  // providers that opt in; the rest keep their own native behavior.
+  const PROVIDER_TOGGLE_SUPPORT = [
+    { provider: "claude", showInteractionModeToggle: true },
+    { provider: "codex", showInteractionModeToggle: true },
+    { provider: "cursor", showInteractionModeToggle: true },
+    { provider: "grok", showInteractionModeToggle: false },
+    { provider: "antigravity", showInteractionModeToggle: false },
+    { provider: "opencode", showInteractionModeToggle: false },
+  ] as const;
+
+  it.each(PROVIDER_TOGGLE_SUPPORT)(
+    "with the setting on, $provider follows its adapter toggle flag",
+    ({ showInteractionModeToggle }) => {
+      expect(
+        resolveComposerInteractionMode({
+          planModeEnabled: true,
+          provider: { showInteractionModeToggle },
+          interactionMode: "plan",
+        }),
+      ).toEqual(
+        showInteractionModeToggle
+          ? { enabled: true, interactionMode: "plan" }
+          : { enabled: false, interactionMode: "default" },
+      );
+    },
+  );
+
+  it.each(PROVIDER_TOGGLE_SUPPORT)(
+    "with the setting off, $provider gets no plan mode at all",
+    ({ showInteractionModeToggle }) => {
+      expect(
+        resolveComposerInteractionMode({
+          planModeEnabled: false,
+          provider: { showInteractionModeToggle },
+          interactionMode: "plan",
+        }),
+      ).toEqual({ enabled: false, interactionMode: "default" });
+    },
+  );
+
+  // Clients render with DEFAULT_CLIENT_SETTINGS before persisted settings
+  // arrive over the wire. While the default was `false` the clamp below turned
+  // every restored plan thread into a build thread for that window, so a send
+  // landing early ran as build without the user ever asking. Reading the real
+  // default here (rather than a literal `true`) makes this fail if the schema
+  // default is ever flipped back.
+  it("does not clamp a persisted plan thread before client settings hydrate", () => {
+    expect(
+      resolveComposerInteractionMode({
+        planModeEnabled: DEFAULT_CLIENT_SETTINGS.planModeEnabled,
+        provider: { showInteractionModeToggle: true },
+        interactionMode: "plan",
+      }),
+    ).toEqual({ enabled: true, interactionMode: "plan" });
+  });
+
+  it("keeps a persisted plan thread in plan mode once settings hydrate", () => {
+    // The hydrated value for a user who never touched the setting is the same
+    // default, so reopening a plan thread must survive the pre- to
+    // post-hydration transition without a transient build frame.
+    for (const planModeEnabled of [DEFAULT_CLIENT_SETTINGS.planModeEnabled, true]) {
+      expect(
+        resolveComposerInteractionMode({
+          planModeEnabled,
+          provider: { showInteractionModeToggle: true },
+          interactionMode: "plan",
+        }),
+      ).toEqual({ enabled: true, interactionMode: "plan" });
+    }
   });
 });
 

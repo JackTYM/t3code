@@ -229,8 +229,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const threads = useThreadShells();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const groupingSettings = useMobileProjectGroupingSettings();
-  const { enabled: legacyPlanModeEnabled, loaded: planModePreferenceLoaded } =
-    useLegacyPlanModeState();
+  const legacyPlanModeEnabled = useLegacyPlanModeState();
   const projectScopes = useMemo(
     () =>
       sortHomeProjectScopes({
@@ -996,10 +995,8 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         modelSelection: draftModelSelection,
         runtimeMode: draft.runtimeMode ?? defaultRuntimeMode,
         interactionMode: resolvePendingTaskInteractionMode({
-          preferenceLoaded: planModePreferenceLoaded,
           planModeEnabled: legacyPlanModeEnabled,
           draftInteractionMode: draft.interactionMode,
-          queuedInteractionMode: editingPendingTask?.interactionMode,
           provider: selectedEnvironmentServerConfig?.providers.find(
             (candidate) => candidate.instanceId === draftModelSelection.instanceId,
           ),
@@ -1038,7 +1035,6 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       selectedProject,
       selectedProjectDraftKey,
       legacyPlanModeEnabled,
-      planModePreferenceLoaded,
       startFromOrigin,
       workspaceMode,
     ],

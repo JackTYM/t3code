@@ -151,6 +151,22 @@ Provider commands must start the message to run. T3 Code commands such as
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it. Web and desktop also offer compaction from the context meter.
 
+## Plan before building
+
+Plan mode has the agent research your request and propose an approach before it
+changes any files. Read the plan, then switch back to build to carry it out.
+
+Switch with the composer's Build/Plan control, with Shift+Tab while the composer
+has focus, or with the `/plan` and `/default` commands. `/plan` on its own just
+switches mode; to switch and send in one step, start the message with `/plan`
+followed by your request.
+
+Plan mode is available on Claude, Codex, and Cursor. Grok and OpenCode do not
+offer it, and Antigravity uses its own `/plan` instead — see
+[Antigravity](./providers-antigravity.md). To turn plan mode off everywhere, use
+**Settings → General → Plan mode**; threads then always run in build mode and
+`/plan` is sent as ordinary message text.
+
 ## Context in your message
 
 Context you attach lands where your cursor is, as a chip inside your text: a terminal excerpt,
