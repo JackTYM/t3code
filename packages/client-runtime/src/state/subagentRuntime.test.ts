@@ -164,6 +164,59 @@ describe("foldSubagentActivities", () => {
     expect(agent.error).toBe("boom");
   });
 
+  // The provider's stream watchdog fails a subagent that goes quiet for 600s,
+  // which a long single tool call does routinely. The orchestrator relaunches
+  // it seconds later, but every task.progress after that carries no status, so
+  // if the relaunch does not reopen the run nothing else can: the panel shows
+  // a dead agent, with a frozen timer, while the work is demonstrably running.
+  it("a relaunch after the stream watchdog gives up reopens the run", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "t-relaunch",
+        taskType: "local_agent",
+        toolUseId: "toolu_first",
+        title: "Autoresearch cycle 65",
+      }),
+      activity("task.completed", {
+        taskId: "t-relaunch",
+        status: "failed",
+        detail: "Agent stalled: no progress for 600s (stream watchdog did not recover)",
+      }),
+      activity("task.started", {
+        taskId: "t-relaunch",
+        taskType: "local_agent",
+        toolUseId: "toolu_second",
+        title: "Autoresearch cycle 65",
+      }),
+      activity("task.progress", { taskId: "t-relaunch", lastToolName: "Bash" }),
+    ]);
+    expect(agents).toHaveLength(1);
+    const agent = agents[0]!;
+    expect(agent.status).toBe("running");
+    expect(agent.activationCount).toBe(2);
+    // The previous run's failure must not sit on a live card.
+    expect(agent.error).toBeNull();
+    expect(agent.completedAt).toBeNull();
+  });
+
+  it("a repeat of the same launching tool call stays terminal", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "t-dup",
+        taskType: "local_agent",
+        toolUseId: "toolu_only",
+      }),
+      activity("task.completed", { taskId: "t-dup", status: "failed", summary: "boom" }),
+      activity("task.started", {
+        taskId: "t-dup",
+        taskType: "local_agent",
+        toolUseId: "toolu_only",
+      }),
+    ]);
+    expect(agents[0]!.status).toBe("failed");
+    expect(agents[0]!.activationCount).toBe(1);
+  });
+
   it("duplicate terminal events are idempotent (timestamps do not slide)", () => {
     const agents = fold([
       activity("task.started", { taskId: "task-3", taskType: "local_agent" }),
