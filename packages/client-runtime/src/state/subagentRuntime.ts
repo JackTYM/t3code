@@ -308,6 +308,12 @@ interface MutableAgent {
   startedAt: string | null;
   completedAt: string | null;
   updatedAt: string;
+  /**
+   * The tool call that launched the current activation. Internal to the fold:
+   * it is what separates a relaunch of a settled task from a duplicate row for
+   * the one that already ran.
+   */
+  launchToolUseId: string | null;
 }
 
 function kindFromPayload(
@@ -365,6 +371,7 @@ function getOrCreate(
     startedAt: null,
     completedAt: null,
     updatedAt: at,
+    launchToolUseId: null,
   };
   agents.set(id, created);
   return created;
@@ -538,6 +545,7 @@ export function foldSubagentActivities(
         if (isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
+        const startToolUseId = asString(payload.toolUseId);
         // Order-robustness: a start row arriving after a terminal state is a
         // late/out-of-order delivery and only fills metadata — it must not
         // reopen the run. Reactivation comes exclusively from explicit
@@ -551,7 +559,24 @@ export function foldSubagentActivities(
           agent.status = "running";
         } else if (agent.status === "idle") {
           applyStatus(agent, "running", at);
+        } else if (
+          isTerminalSubagentStatus(agent.status) &&
+          startToolUseId !== undefined &&
+          agent.launchToolUseId !== null &&
+          startToolUseId !== agent.launchToolUseId
+        ) {
+          // A relaunch, not a duplicate. The guard above is right that a
+          // repeated start row must not reopen a settled run, but it cannot
+          // tell the two apart on its own, and being wrong here strands the
+          // agent: a restart emits task.started, and every task.progress after
+          // it carries no status, so nothing else in this fold can reactivate
+          // it. The launching tool call is the discriminator — a relaunch is a
+          // new invocation and carries a new id, while a duplicate of the run
+          // that already settled repeats the old one. Timestamps cannot do
+          // this job; a re-delivered row is stamped later just like a relaunch.
+          applyStatus(agent, "running", at);
         }
+        if (startToolUseId !== undefined) agent.launchToolUseId = startToolUseId;
         const detail = asString(payload.detail);
         if (detail && agent.title === agent.id) agent.title = detail;
         agent.updatedAt = at;
