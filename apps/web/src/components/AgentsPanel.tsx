@@ -423,7 +423,12 @@ function AgentTranscriptView({
             <p className="text-xs text-destructive-foreground">Could not load this transcript.</p>
           ) : entries.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              {result._tag === "Success" ? "No narration captured for this agent." : "Loading…"}
+              {result._tag === "Success"
+                ? // Narration is forwarded by the running provider session, so an
+                  // agent that was already in flight when the session started has
+                  // none — an empty panel there is accurate, not a failure.
+                  "No narration captured. Agents already running when this session started do not stream their output."
+                : "Loading…"}
             </p>
           ) : (
             entries.map((entry) => (

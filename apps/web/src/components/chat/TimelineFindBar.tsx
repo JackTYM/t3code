@@ -7,20 +7,84 @@ import { Input } from "../ui/input";
 import {
   buildMessagesTimelineSearchIndex,
   findMessagesTimelineMatches,
+  findSubstringOffsets,
   initialMessagesTimelineMatch,
   messagesTimelineFindStatus,
   stepMessagesTimelineMatch,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 
-/** Matches the minimap jump so a match lands clear of the top fade. */
-const FIND_SCROLL_VIEW_OFFSET = 24;
+/**
+ * The bar floats over the top of the timeline, so the destination has to clear
+ * its full height (top-2 plus the control row) or the match lands underneath
+ * the thing that found it.
+ */
+const FIND_SCROLL_VIEW_OFFSET = 56;
 const FIND_TARGET_CLASS = "timeline-find-target";
+const FIND_HIGHLIGHT_NAME = "timeline-find-match";
+
+/**
+ * The CSS Custom Highlight API paints ranges without touching the DOM or the
+ * React tree, which is the only reason substring highlighting is affordable
+ * here: wrapping matches in elements would mean re-rendering timeline rows on
+ * every keystroke. Browsers without it keep the row ring alone.
+ */
+function highlightRegistry(): HighlightRegistry | null {
+  return typeof CSS !== "undefined" && "highlights" in CSS ? CSS.highlights : null;
+}
 
 function clearFindTarget(viewport: HTMLElement | null) {
+  highlightRegistry()?.delete(FIND_HIGHLIGHT_NAME);
   viewport
     ?.querySelectorAll(`.${FIND_TARGET_CLASS}`)
     .forEach((element) => element.classList.remove(FIND_TARGET_CLASS));
+}
+
+/** Paint every occurrence of the query inside the destination row. */
+function highlightMatchesInRow(row: Element, query: string) {
+  const registry = highlightRegistry();
+  if (registry === null || query.length === 0) return;
+  const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+  const ranges: Range[] = [];
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const text = node.nodeValue;
+    if (text === null) continue;
+    for (const offset of findSubstringOffsets(text, query)) {
+      const range = document.createRange();
+      range.setStart(node, offset);
+      range.setEnd(node, offset + query.length);
+      ranges.push(range);
+    }
+  }
+  if (ranges.length === 0) return;
+  registry.set(FIND_HIGHLIGHT_NAME, new Highlight(...ranges));
+}
+
+/**
+ * Keeps the painted ranges attached to the row they describe.
+ *
+ * Ranges are live, so they go blank the moment their text nodes are replaced —
+ * and the virtualizer re-commits rows right after a long jump settles, which
+ * is exactly when find is used. Streaming into the destination row does the
+ * same thing. Repainting from a viewport observer covers both, including the
+ * case where the row element itself is swapped, and costs one walk of one row
+ * per frame in which the timeline actually changed.
+ */
+function observeFindTarget(viewport: HTMLElement, rowId: string, query: string): MutationObserver {
+  const selector = `[data-timeline-row-id="${CSS.escape(rowId)}"]`;
+  let frame: number | null = null;
+  const observer = new MutationObserver(() => {
+    if (frame !== null) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      const row = viewport.querySelector(selector);
+      if (row === null) return;
+      row.classList.add(FIND_TARGET_CLASS);
+      highlightMatchesInRow(row, query);
+    });
+  });
+  observer.observe(viewport, { childList: true, subtree: true, characterData: true });
+  return observer;
 }
 
 export interface TimelineFindBarProps {
@@ -54,6 +118,7 @@ export function TimelineFindBar({
     readonly position: number;
   }>({ query: "", matches: [], position: 0 });
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const observerRef = useRef<MutationObserver | null>(null);
   // Where the reader was when this query started, so a new query lands forward
   // of their position rather than jumping to the top of the thread.
   const anchorRowIndexRef = useRef(0);
@@ -62,7 +127,7 @@ export function TimelineFindBar({
   const searchIndex = useMemo(() => buildMessagesTimelineSearchIndex(rows), [rows]);
 
   const revealRow = useCallback(
-    (rowIndex: number) => {
+    (rowIndex: number, query: string) => {
       anchorRowIndexRef.current = rowIndex;
       const rowId = rows[rowIndex]?.id;
       onManualNavigation();
@@ -72,10 +137,15 @@ export function TimelineFindBar({
           // The row only exists in the DOM once the virtualizer has placed it.
           requestAnimationFrame(() => {
             clearFindTarget(viewport);
-            if (rowId === undefined) return;
-            viewport
-              ?.querySelector(`[data-timeline-row-id="${CSS.escape(rowId)}"]`)
-              ?.classList.add(FIND_TARGET_CLASS);
+            observerRef.current?.disconnect();
+            observerRef.current = null;
+            if (rowId === undefined || viewport === null) return;
+            const row = viewport.querySelector(`[data-timeline-row-id="${CSS.escape(rowId)}"]`);
+            if (row !== null) {
+              row.classList.add(FIND_TARGET_CLASS);
+              highlightMatchesInRow(row, query);
+            }
+            observerRef.current = observeFindTarget(viewport, rowId, query);
           });
         });
     },
@@ -87,7 +157,14 @@ export function TimelineFindBar({
   }, []);
 
   // Drop the flash when the bar unmounts; closing must leave the scroll alone.
-  useEffect(() => () => clearFindTarget(viewport), [viewport]);
+  useEffect(
+    () => () => {
+      observerRef.current?.disconnect();
+      observerRef.current = null;
+      clearFindTarget(viewport);
+    },
+    [viewport],
+  );
 
   const runQuery = useCallback(
     (query: string) => {
@@ -96,10 +173,12 @@ export function TimelineFindBar({
       setFind({ query, matches, position });
       const rowIndex = matches[position];
       if (rowIndex === undefined) {
+        observerRef.current?.disconnect();
+        observerRef.current = null;
         clearFindTarget(viewport);
         return;
       }
-      revealRow(rowIndex);
+      revealRow(rowIndex, query);
     },
     [revealRow, searchIndex, viewport],
   );
@@ -109,7 +188,7 @@ export function TimelineFindBar({
       if (find.matches.length === 0) return;
       const position = stepMessagesTimelineMatch(find.matches.length, find.position, direction);
       setFind({ ...find, position });
-      revealRow(find.matches[position]!);
+      revealRow(find.matches[position]!, find.query);
     },
     [find, revealRow],
   );

@@ -26,6 +26,7 @@ import {
   deriveMessagesTimelineRows,
   deriveMessagesTimelineRowsWithState,
   findMessagesTimelineMatches,
+  findSubstringOffsets,
   initialMessagesTimelineMatch,
   liveWorkEntryLabel,
   messagesTimelineFindStatus,
@@ -3733,6 +3734,18 @@ describe("in-thread find", () => {
       const index = buildMessagesTimelineSearchIndex(rows);
       expect(index.map((entry) => entry.rowIndex)).toEqual([0, 2, 3, 4]);
       expect(findMessagesTimelineMatches(index, "splines")).toEqual([0, 2, 4]);
+    });
+
+    it("locates every occurrence in a string so all of them can be painted", () => {
+      expect(findSubstringOffsets("Plan the plan, then PLAN again", "plan")).toEqual([0, 9, 20]);
+    });
+
+    it("does not report overlapping occurrences twice", () => {
+      expect(findSubstringOffsets("aaaa", "aa")).toEqual([0, 2]);
+    });
+
+    it("returns nothing for an empty query so an empty bar highlights nothing", () => {
+      expect(findSubstringOffsets("anything", "")).toEqual([]);
     });
 
     it("matches case-insensitively and distinguishes blank from zero matches", () => {
