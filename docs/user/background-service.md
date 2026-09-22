@@ -1,7 +1,13 @@
 # Running T3 Code in the background
 
-On Linux and macOS, T3 Code can run as a service for your user so you do not need
-to keep a terminal open.
+T3 Code can run as a service for your user so you do not need to keep a
+terminal open. It uses systemd on Linux, launchd on macOS, and Task Scheduler
+on Windows, and never needs administrator rights on any of them.
+
+On Windows the server runs through a small generated script so it has no
+console window; closing a terminal therefore cannot stop it. Manage it with the
+commands below rather than through the Task Scheduler UI, so the registration
+and the files T3 Code writes stay in step.
 
 ## Manage the service
 
