@@ -689,7 +689,14 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
         plan.unitPath.endsWith(path.join("AppData", "Local", "t3code", "t3code-service.vbs")),
       ).toBe(true);
       const taskPath = plan.unitPath.replace(/\.vbs$/, ".xml");
-      expect(yield* fs.readFileString(taskPath)).toContain("<Command>wscript.exe</Command>");
+      // Decoded as UTF-16LE on purpose: schtasks parses the file as UTF-16, so
+      // a readable UTF-8 document here would mean the install is broken.
+      const taskBytes = yield* fs.readFile(taskPath);
+      expect(taskBytes[0]).toBe(0xff);
+      expect(taskBytes[1]).toBe(0xfe);
+      expect(Buffer.from(taskBytes).toString("utf16le")).toContain(
+        "<Command>wscript.exe</Command>",
+      );
 
       expect(yield* service.status).toMatchObject({ current: true, installedVersion: "1.2.3" });
       expect(commands.filter((command) => command.startsWith("schtasks "))).toEqual([
@@ -903,6 +910,7 @@ it("round-trips a base directory containing a quote", () => {
 it("overrides the Task Scheduler defaults that would stop a long-running server", () => {
   const xml = BootService.renderBootServiceTaskXml(windowsPlan, {
     shimPath: windowsPlan.unitPath,
+    triggerUserId: "EXAMPLE\\dev",
   });
   // Without these a task is killed after three days, refuses to start on
   // battery, stops when the machine goes onto battery, and starts a second
@@ -913,11 +921,35 @@ it("overrides the Task Scheduler defaults that would stop a long-running server"
   expect(xml).toContain("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>");
 });
 
-it("writes the task document with the BOM schtasks requires, pointing at the shim", () => {
+// Found on a real Windows host: a LogonTrigger with no UserId means "when ANY
+// user logs on", which is a machine-wide change. schtasks refuses it with
+// "Access is denied" from a normal terminal even for an account in
+// Administrators, because UAC splits that token until explicitly elevated.
+// Scoping the trigger is what keeps install working without elevation.
+it("scopes the logon trigger to one user so registration needs no elevation", () => {
   const xml = BootService.renderBootServiceTaskXml(windowsPlan, {
     shimPath: windowsPlan.unitPath,
+    triggerUserId: "EXAMPLE\\dev",
   });
-  expect(xml.startsWith("\uFEFF<?xml")).toBe(true);
+  expect(xml).toContain("<UserId>EXAMPLE\\dev</UserId>");
+});
+
+it("declares UTF-16, which is the encoding schtasks parses the file as", () => {
+  const xml = BootService.renderBootServiceTaskXml(windowsPlan, {
+    shimPath: windowsPlan.unitPath,
+    triggerUserId: "EXAMPLE\\dev",
+  });
+  // A real host rejected the previous UTF-8 document as "malformed ...
+  // incorrect document syntax"; the declaration and the bytes must agree.
+  expect(xml.startsWith('<?xml version="1.0" encoding="UTF-16"?>')).toBe(true);
+  expect(xml).not.toContain("UTF-8");
+});
+
+it("points the task at the shim rather than at the server directly", () => {
+  const xml = BootService.renderBootServiceTaskXml(windowsPlan, {
+    shimPath: windowsPlan.unitPath,
+    triggerUserId: "EXAMPLE\\dev",
+  });
   expect(xml).toContain("<Command>wscript.exe</Command>");
   expect(xml).toContain("t3code-service.vbs");
   // The task must never launch the server directly, or the console window and

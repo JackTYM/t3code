@@ -5,9 +5,10 @@ terminal open. It uses systemd on Linux, launchd on macOS, and Task Scheduler
 on Windows, and never needs administrator rights on any of them.
 
 On Windows the server runs through a small generated script so it has no
-console window; closing a terminal therefore cannot stop it. Manage it with the
-commands below rather than through the Task Scheduler UI, so the registration
-and the files T3 Code writes stay in step.
+console window; closing a terminal therefore cannot stop it. The scheduled task
+is registered for your account alone, which is what keeps it installable from a
+normal terminal. Manage it with the commands below rather than through the Task
+Scheduler UI, so the registration and the files T3 Code writes stay in step.
 
 ## Manage the service
 

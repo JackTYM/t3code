@@ -119,15 +119,17 @@ function escapeXml(value: string): string {
  * `ExecutionTimeLimit`, refuse to start and then stop on battery, and start a
  * second copy on a second logon.
  *
- * Written with a BOM: `schtasks /create /xml` rejects a BOM-less UTF-8
- * document as malformed.
+ * The caller writes this as UTF-16LE with a byte-order mark. `schtasks
+ * /create /xml` parses the file as UTF-16 and rejects UTF-8 — with or without
+ * a BOM — as "malformed ... incorrect document syntax", so the declaration and
+ * the bytes on disk have to agree.
  */
 export function renderBootServiceTaskXml(
   plan: BootServicePlan,
-  options: { readonly shimPath: string },
+  options: { readonly shimPath: string; readonly triggerUserId: string | undefined },
 ): string {
   return [
-    '\uFEFF<?xml version="1.0" encoding="UTF-8"?>',
+    '<?xml version="1.0" encoding="UTF-16"?>',
     '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
     "  <RegistrationInfo>",
     "    <Description>T3 Code server</Description>",
@@ -135,6 +137,14 @@ export function renderBootServiceTaskXml(
     "  <Triggers>",
     "    <LogonTrigger>",
     "      <Enabled>true</Enabled>",
+    // Scoping the trigger to one user is what keeps this registerable without
+    // elevation. A LogonTrigger with no UserId means "when ANY user logs on",
+    // which is a machine-wide change and is refused with "Access is denied"
+    // from a normal terminal — including for an account in Administrators,
+    // whose token is split by UAC until it is explicitly elevated.
+    ...(options.triggerUserId === undefined
+      ? []
+      : [`      <UserId>${escapeXml(options.triggerUserId)}</UserId>`]),
     "    </LogonTrigger>",
     "  </Triggers>",
     "  <Principals>",
@@ -348,9 +358,12 @@ export interface BootServiceManager {
    * documents — the shim that runs and the registration XML that points at it
    * — while install, uninstall and status keep working on one unit path.
    */
-  readonly extraFiles?: (
-    plan: BootServicePlan,
-  ) => ReadonlyArray<{ readonly path: string; readonly contents: string }>;
+  readonly extraFiles?: (plan: BootServicePlan) => ReadonlyArray<{
+    readonly path: string;
+    readonly contents: string;
+    /** Defaults to utf8. utf16le is written little-endian with a BOM. */
+    readonly encoding?: "utf8" | "utf16le";
+  }>;
   /** Before rewriting files, when a unit is already installed. */
   readonly stop: ReadonlyArray<BootServiceStep>;
   /** After files are written. The last entry starts the service. */
@@ -519,6 +532,7 @@ function launchdManager(input: {
 function schtasksManager(input: {
   readonly path: Path.Path;
   readonly homeDir: string;
+  readonly triggerUserId: string | undefined;
 }): BootServiceManager {
   const directory = input.path.join(input.homeDir, "AppData", "Local", BOOT_SERVICE_NAME);
   const unitPath = input.path.join(directory, BOOT_SERVICE_SHIM_FILE);
@@ -531,7 +545,14 @@ function schtasksManager(input: {
     unitPath,
     render: renderBootServiceShim,
     extraFiles: (plan) => [
-      { path: taskPath, contents: renderBootServiceTaskXml(plan, { shimPath: unitPath }) },
+      {
+        path: taskPath,
+        contents: renderBootServiceTaskXml(plan, {
+          shimPath: unitPath,
+          triggerUserId: input.triggerUserId,
+        }),
+        encoding: "utf16le",
+      },
     ],
     // /end stops the running instance without deregistering. Optional: it
     // exits non-zero when the task exists but nothing is running, which is a
@@ -595,6 +616,7 @@ function selectBootServiceManager(input: {
   readonly uid: number | undefined;
   readonly path: Path.Path;
   readonly environmentPath: string;
+  readonly triggerUserId: string | undefined;
 }): BootServiceManager | undefined {
   if (input.homeDir === "") {
     return undefined;
@@ -603,7 +625,11 @@ function selectBootServiceManager(input: {
     return systemdManager({ path: input.path, homeDir: input.homeDir });
   }
   if (input.platform === "win32") {
-    return schtasksManager({ path: input.path, homeDir: input.homeDir });
+    return schtasksManager({
+      path: input.path,
+      homeDir: input.homeDir,
+      triggerUserId: input.triggerUserId,
+    });
   }
   if (input.platform === "darwin" && input.uid !== undefined) {
     return launchdManager({
@@ -776,7 +802,20 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   const releaseBaseUrl = Option.getOrUndefined(
     yield* Config.string(CLI_RELEASE_BASE_URL_ENV).pipe(Config.option),
   );
-  const homeDir = yield* Config.string("HOME").pipe(Config.withDefault(""));
+  // Windows sets USERPROFILE, not HOME. Without this the manager selector saw
+  // an empty home and reported the platform unsupported, so `service status`
+  // printed "unavailable on this machine" directly above a line listing
+  // Windows as supported.
+  const homeDir = yield* Config.string("HOME").pipe(
+    Config.orElse(() => Config.string("USERPROFILE")),
+    Config.withDefault(""),
+  );
+  // Identity for the logon trigger below. Domain-qualified when Windows says
+  // so, because a bare name does not resolve on a domain-joined machine.
+  const userName = yield* Config.string("USERNAME").pipe(Config.withDefault(""));
+  const userDomain = yield* Config.string("USERDOMAIN").pipe(Config.withDefault(""));
+  const triggerUserId =
+    userName === "" ? undefined : userDomain === "" ? userName : `${userDomain}\\${userName}`;
   const installerPath = yield* Config.string("PATH").pipe(Config.withDefault(""));
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -809,19 +848,30 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     uid,
     path,
     environmentPath,
+    triggerUserId,
   });
   const unitPath = detectedManager?.unitPath ?? "";
   const logPath = path.join(input.logsDir, "boot-service.log");
   const statePath = path.join(input.baseDir, "runtime", SERVICE_STATE_FILE);
   const restartPendingPath = path.join(input.baseDir, "runtime", SERVICE_RESTART_PENDING_FILE);
   const runtimePaths = pinnedRuntimePaths(path, input.baseDir, input.cliVersion, platform);
-  const writeDurably = (filePath: string, contents: string) =>
+  const writeDurably = (
+    filePath: string,
+    contents: string,
+    encoding: "utf8" | "utf16le" = "utf8",
+  ) =>
     Effect.scoped(
       Effect.gen(function* () {
         const directory = path.dirname(filePath);
         yield* fs.makeDirectory(directory, { recursive: true });
         const tempPath = yield* fs.makeTempFileScoped({ directory, prefix: ".service-write-" });
-        yield* fs.writeFileString(tempPath, contents, { mode: 0o600 });
+        // UTF-16 goes out as bytes: the BOM plus little-endian code units are
+        // what schtasks parses, and a string write would encode them as UTF-8.
+        yield* encoding === "utf16le"
+          ? fs.writeFile(tempPath, new Uint8Array(Buffer.from(`\uFEFF${contents}`, "utf16le")), {
+              mode: 0o600,
+            })
+          : fs.writeFileString(tempPath, contents, { mode: 0o600 });
         // Opened read-write: Windows refuses to flush a handle without write access.
         yield* (yield* fs.open(tempPath, { flag: "r+" })).sync;
         yield* fs.rename(tempPath, filePath);
@@ -1099,7 +1149,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
       // document pointing at a shim that does not exist yet.
       yield* Effect.forEach(
         manager.extraFiles?.(plan) ?? [],
-        (file) => writeDurably(file.path, file.contents),
+        (file) => writeDurably(file.path, file.contents, file.encoding),
         { discard: true },
       );
 
