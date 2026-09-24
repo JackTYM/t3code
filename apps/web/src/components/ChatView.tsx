@@ -1499,6 +1499,7 @@ export default function ChatView(props: ChatViewProps) {
   const openTerminal = useAtomCommand(terminalEnvironment.open, "terminal open");
   const writeTerminal = useAtomCommand(terminalEnvironment.write, "terminal write");
   const closeTerminalMutation = useAtomCommand(terminalEnvironment.close, "terminal close");
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, "thread session stop");
   const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
   const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
@@ -6652,6 +6653,22 @@ export default function ChatView(props: ChatViewProps) {
         event.preventDefault();
         event.stopPropagation();
         if (!event.repeat) copyActiveThreadReference();
+        return;
+      }
+
+      // Distinct from `thread.stop`, which interrupts the turn. This ends the
+      // provider process; the next message starts one that re-reads MCP
+      // servers, provider settings and binaries.
+      if (command === "thread.session.stop") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.repeat) return;
+        const session = activeThread?.session;
+        if (!activeThreadRef || !session || session.status === "stopped") return;
+        void stopThreadSession({
+          environmentId: activeThreadRef.environmentId,
+          input: { threadId: activeThreadRef.threadId },
+        });
         return;
       }
 

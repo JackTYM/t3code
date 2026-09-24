@@ -19,6 +19,7 @@ export type ThreadActionMenuId =
   | "rename"
   | "regenerate-title"
   | "mark-unread"
+  | "stop-session"
   | "copy"
   | "copy-path"
   | "copy-branch"
@@ -35,6 +36,8 @@ export interface ThreadActionMenuState {
   readonly isRegeneratingTitle: boolean;
   /** Archive rejects a thread with an active turn, so disable it here rather than let the action fail. */
   readonly isRunning: boolean;
+  /** A provider process is bound to this thread, so there is something to stop. */
+  readonly hasLiveSession: boolean;
   readonly supports: {
     readonly settlement: boolean;
     readonly snooze: boolean;
@@ -123,6 +126,20 @@ export function buildThreadActionMenuItems(
         { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
       ],
     },
+    // Sessions read MCP servers, provider settings and binaries at spawn, so
+    // ending the process is how a thread picks up changes to any of them. It
+    // sits away from the lifecycle actions above because it changes nothing
+    // the user can see until their next message.
+    ...(state.hasLiveSession
+      ? [
+          {
+            id: "stop-session" as const,
+            label: "Stop session",
+            icon: "refresh-cw",
+            separatorBefore: true,
+          },
+        ]
+      : []),
     { id: "project-settings", label: "Project settings", icon: "settings" },
     // Archive removes the thread from the sidebar while keeping its
     // conversation under Settings > Archived threads — distinct from Settle

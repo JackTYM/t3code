@@ -43,6 +43,10 @@ const THREAD_KEYBINDING_COMMANDS = [
   "thread.settle",
   "thread.pin",
   "thread.find",
+  // Distinct from `thread.stop`, which interrupts the running turn. This ends
+  // the provider process itself; the next message starts a fresh one. Ships
+  // unbound by default — it is a rare action and the modifier space is full.
+  "thread.session.stop",
   ...THREAD_JUMP_KEYBINDING_COMMANDS,
 ] as const;
 export type ThreadKeybindingCommand = (typeof THREAD_KEYBINDING_COMMANDS)[number];

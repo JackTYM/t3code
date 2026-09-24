@@ -2168,6 +2168,7 @@ export default function Sidebar() {
     archiveThread,
     deleteThread,
   } = useThreadActions();
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, "thread session stop");
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -4101,6 +4102,7 @@ export default function Sidebar() {
               isRegeneratingTitle,
               isRunning:
                 thread.session?.status === "running" && thread.session.activeTurnId != null,
+              hasLiveSession: thread.session != null && thread.session.status !== "stopped",
               supports: {
                 settlement: supportsSettlement,
                 snooze: supportsSnooze,
@@ -4194,6 +4196,12 @@ export default function Sidebar() {
           }
           case "mark-unread":
             markThreadUnread(threadKey, thread.latestTurn?.completedAt);
+            return;
+          case "stop-session":
+            await stopThreadSession({
+              environmentId: thread.environmentId,
+              input: { threadId: thread.id },
+            });
             return;
           case "copy-path":
             if (!threadWorkspacePath) {
