@@ -6663,8 +6663,9 @@ export default function ChatView(props: ChatViewProps) {
         event.preventDefault();
         event.stopPropagation();
         if (event.repeat) return;
-        const session = activeThread?.session;
-        if (!activeThreadRef || !session || session.status === "stopped") return;
+        if (!activeThreadRef || derivePhase(activeThread?.session ?? null) === "disconnected") {
+          return;
+        }
         void stopThreadSession({
           environmentId: activeThreadRef.environmentId,
           input: { threadId: activeThreadRef.threadId },

@@ -135,6 +135,7 @@ import { vcsEnvironment } from "../state/vcs";
 import { threadEnvironment } from "../state/threads";
 import { useThreadSearch } from "../state/queries";
 import { useEnvironmentQuery } from "../state/query";
+import { derivePhase } from "../session-logic";
 import { useAtomCommand } from "../state/use-atom-command";
 import {
   buildThreadRouteParams,
@@ -4102,7 +4103,7 @@ export default function Sidebar() {
               isRegeneratingTitle,
               isRunning:
                 thread.session?.status === "running" && thread.session.activeTurnId != null,
-              hasLiveSession: thread.session != null && thread.session.status !== "stopped",
+              hasLiveSession: derivePhase(thread.session ?? null) !== "disconnected",
               supports: {
                 settlement: supportsSettlement,
                 snooze: supportsSnooze,
