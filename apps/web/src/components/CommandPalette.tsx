@@ -50,6 +50,7 @@ import {
   LinkIcon,
   MessageSquareIcon,
   SearchIcon,
+  SquarePowerIcon,
   PaletteIcon,
   SettingsIcon,
   SquarePenIcon,
@@ -82,6 +83,7 @@ import { filesystemEnvironment } from "../state/filesystem";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { sourceControlEnvironment } from "../state/sourceControl";
+import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
@@ -632,6 +634,7 @@ function OpenCommandPaletteDialog(props: {
   const isActionsOnly = deferredQuery.startsWith(">");
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const clientSettings = useClientSettings();
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, "thread session stop");
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
@@ -1760,6 +1763,27 @@ function OpenCommandPaletteDialog(props: {
         // focus restore would take the keyboard back off the find input.
         await new Promise((resolve) => requestAnimationFrame(resolve));
         openThreadFind();
+      },
+    });
+  }
+
+  // Ending the provider process is how a thread picks up MCP servers, provider
+  // settings and binaries that changed after it started: sessions read those at
+  // spawn, and T3 starts one lazily on the next message.
+  if (activeThread !== null && activeThread.session && activeThread.session.status !== "stopped") {
+    actionItems.push({
+      kind: "action",
+      value: "action:stop-thread-session",
+      searchTerms: ["stop session", "restart session", "reload mcp", "provider process", "respawn"],
+      title: "Stop session",
+      description: "Ends the provider process. Your next message starts a fresh one.",
+      icon: <SquarePowerIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "thread.session.stop",
+      run: async () => {
+        await stopThreadSession({
+          environmentId: activeThread.environmentId,
+          input: { threadId: activeThread.id },
+        });
       },
     });
   }

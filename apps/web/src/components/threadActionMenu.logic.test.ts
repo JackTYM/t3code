@@ -10,6 +10,7 @@ const baseState: ThreadActionMenuState = {
   canSnoozeNow: true,
   isRegeneratingTitle: false,
   isRunning: false,
+  hasLiveSession: false,
   supports: { settlement: true, snooze: true, pinning: true, titleRegeneration: true },
   snoozePresets: [
     { id: "hour", label: "In 1 hour", whenLabel: "3:00 PM", snoozedUntil: "2026-08-07T15:00:00Z" },
@@ -105,5 +106,23 @@ describe("buildThreadActionMenuItems", () => {
       (item) => item.id === "archive",
     );
     expect(archiveItem?.disabled).toBe(true);
+  });
+});
+
+describe("stop session", () => {
+  it("is absent when no provider process is bound to the thread", () => {
+    expect(ids(baseState)).not.toContain("stop-session");
+  });
+
+  it("appears once a session exists, since that is what there is to stop", () => {
+    expect(ids({ ...baseState, hasLiveSession: true })).toContain("stop-session");
+  });
+
+  // It is not a lifecycle action and changes nothing visible until the next
+  // message, so it stays out of the settle/snooze/pin group at the top.
+  it("sits below the lifecycle actions", () => {
+    const order = ids({ ...baseState, hasLiveSession: true });
+    expect(order.indexOf("stop-session")).toBeGreaterThan(order.indexOf("settle"));
+    expect(order.indexOf("stop-session")).toBeGreaterThan(order.indexOf("rename"));
   });
 });

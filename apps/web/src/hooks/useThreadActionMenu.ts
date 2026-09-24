@@ -91,6 +91,7 @@ export function useThreadActionMenu(input: {
     archiveThread,
     deleteThread,
   } = useThreadActions();
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, "thread session stop");
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -146,6 +147,7 @@ export function useThreadActionMenu(input: {
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
           isRegeneratingTitle,
           isRunning: thread.session?.status === "running" && thread.session.activeTurnId != null,
+          hasLiveSession: thread.session != null && thread.session.status !== "stopped",
           supports,
           snoozePresets,
         });
@@ -256,6 +258,12 @@ export function useThreadActionMenu(input: {
             return;
           case "mark-unread":
             markThreadUnread(scopedThreadKey(threadRef), thread.latestTurn?.completedAt);
+            return;
+          case "stop-session":
+            await stopThreadSession({
+              environmentId: threadRef.environmentId,
+              input: { threadId: threadRef.threadId },
+            });
             return;
           case "copy-path": {
             const workspacePath = thread.worktreePath ?? projectCwd;
