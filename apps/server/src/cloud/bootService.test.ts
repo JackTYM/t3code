@@ -708,6 +708,15 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       // runner's 60s default would cancel it and let the delete race a
       // still-running task.
       expect(timeouts.get("schtasks /end /tn \\t3code")).toEqual(Duration.seconds(120));
+      // Ordering is the whole fix: Task Scheduler kills only wscript.exe and
+      // leaves the cmd/server chain orphaned with nothing left to match on, so
+      // the tree kill has to run before /end rather than after it.
+      const treeKillIndex = commands.findIndex((command) => command.startsWith("powershell "));
+      const endIndex = commands.findIndex((command) => command.startsWith("schtasks /end"));
+      expect(treeKillIndex).toBeGreaterThanOrEqual(0);
+      expect(treeKillIndex).toBeLessThan(endIndex);
+      // Scoped to our own shim so it can never reach an unrelated wscript.
+      expect(commands[treeKillIndex]).toContain("t3code-service.vbs");
       expect((yield* service.status).installed).toBe(false);
       // Both documents go, or a reinstall registers a task pointing at nothing.
       expect(yield* fs.exists(taskPath)).toBe(false);

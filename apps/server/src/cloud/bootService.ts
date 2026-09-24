@@ -534,6 +534,35 @@ function launchdManager(input: {
  * rights. A Startup-folder shortcut does neither, and a real Windows service
  * would run in session 0, away from the user session the agent CLIs expect.
  */
+/**
+ * Ends the shim's whole process tree.
+ *
+ * Task Scheduler terminates only the process it launched — `wscript.exe` —
+ * and does not cascade to the `cmd`/server chain spawned beneath it, so
+ * `schtasks /end` reported success while the server ran on. Verified on a
+ * Windows host: `taskkill /T` walks that tree where `/end` will not.
+ *
+ * Matched on the shim file name rather than the image name so it can never
+ * reach an unrelated `wscript.exe`. Two T3 homes on one machine would collide
+ * here, but they already share the single global task name, so this adds no
+ * constraint that was not there.
+ */
+const SHIM_TREE_KILL_STEP: BootServiceStep = {
+  step: "stopping the server process tree",
+  command: "powershell",
+  args: [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    // Single quotes throughout: the whole script is one argv element, and
+    // nested double quotes do not survive Windows argument escaping intact.
+    `Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'wscript.exe' -and $_.CommandLine -like '*${BOOT_SERVICE_SHIM_FILE}*' } | ForEach-Object { taskkill /T /F /PID $_.ProcessId }`,
+  ],
+  // Nothing running is a fine state to proceed from.
+  optional: true,
+  timeout: STOP_STEP_TIMEOUT,
+};
+
 function schtasksManager(input: {
   readonly path: Path.Path;
   readonly homeDir: string;
@@ -562,7 +591,10 @@ function schtasksManager(input: {
     // /end stops the running instance without deregistering. Optional: it
     // exits non-zero when the task exists but nothing is running, which is a
     // fine state to proceed from.
+    // Order matters: /end kills wscript first and leaves the rest orphaned
+    // with nothing left to match on, so the tree kill has to come first.
     stop: [
+      SHIM_TREE_KILL_STEP,
       {
         step: "stopping the running scheduled task",
         command: "schtasks",
@@ -594,6 +626,7 @@ function schtasksManager(input: {
       },
     ],
     deactivate: [
+      SHIM_TREE_KILL_STEP,
       {
         step: "stopping the service",
         command: "schtasks",
