@@ -18,6 +18,7 @@ import {
 } from "../components/threadActionMenu.logic";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { threadEnvironment } from "../state/threads";
+import { derivePhase } from "../session-logic";
 import { useAtomCommand } from "../state/use-atom-command";
 import {
   readEnvironmentSupportsPinning,
@@ -147,7 +148,7 @@ export function useThreadActionMenu(input: {
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
           isRegeneratingTitle,
           isRunning: thread.session?.status === "running" && thread.session.activeTurnId != null,
-          hasLiveSession: thread.session != null && thread.session.status !== "stopped",
+          hasLiveSession: derivePhase(thread.session ?? null) !== "disconnected",
           supports,
           snoozePresets,
         });

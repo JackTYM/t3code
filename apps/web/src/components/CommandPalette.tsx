@@ -84,6 +84,7 @@ import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { threadEnvironment } from "../state/threads";
+import { derivePhase } from "../session-logic";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
@@ -1770,7 +1771,9 @@ function OpenCommandPaletteDialog(props: {
   // Ending the provider process is how a thread picks up MCP servers, provider
   // settings and binaries that changed after it started: sessions read those at
   // spawn, and T3 starts one lazily on the next message.
-  if (activeThread !== null && activeThread.session && activeThread.session.status !== "stopped") {
+  // Same set derivePhase calls "disconnected": stopped, interrupted and
+  // errored sessions all have no process left to stop.
+  if (activeThread !== null && derivePhase(activeThread.session ?? null) !== "disconnected") {
     actionItems.push({
       kind: "action",
       value: "action:stop-thread-session",
