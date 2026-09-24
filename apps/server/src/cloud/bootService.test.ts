@@ -678,11 +678,50 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
     }),
   );
 
-  it.effect("fails closed on Windows", () =>
+  it.effect("installs, reports current state, and uninstalls on Windows", () =>
     Effect.gen(function* () {
-      const { service } = yield* makeHarness("win32");
-      expect((yield* service.status).supported).toBe(false);
-      expect((yield* service.install().pipe(Effect.flip))._tag).toBe("BootServiceUnsupportedError");
+      const { service, fs, commands, timeouts } = yield* makeHarness("win32");
+      const path = yield* Path.Path;
+      const plan = yield* service.install();
+
+      // The shim is the unit; the registration document sits beside it.
+      expect(
+        plan.unitPath.endsWith(path.join("AppData", "Local", "t3code", "t3code-service.vbs")),
+      ).toBe(true);
+      const taskPath = plan.unitPath.replace(/\.vbs$/, ".xml");
+      // Decoded as UTF-16LE on purpose: schtasks parses the file as UTF-16, so
+      // a readable UTF-8 document here would mean the install is broken.
+      const taskBytes = yield* fs.readFile(taskPath);
+      expect(taskBytes[0]).toBe(0xff);
+      expect(taskBytes[1]).toBe(0xfe);
+      expect(Buffer.from(taskBytes).toString("utf16le")).toContain(
+        "<Command>wscript.exe</Command>",
+      );
+
+      expect(yield* service.status).toMatchObject({ current: true, installedVersion: "1.2.3" });
+      expect(commands.filter((command) => command.startsWith("schtasks "))).toEqual([
+        `schtasks /create /tn \\t3code /xml ${taskPath} /f`,
+        "schtasks /run /tn \\t3code",
+      ]);
+      expect(yield* service.uninstall).toBe(true);
+      // /end can block while the server drains, like a launchd bootout; the
+      // runner's 60s default would cancel it and let the delete race a
+      // still-running task.
+      expect(timeouts.get("schtasks /end /tn \\t3code")).toEqual(Duration.seconds(120));
+      // Ordering is the whole fix: Task Scheduler kills only wscript.exe and
+      // leaves the cmd/server chain orphaned with nothing left to match on, so
+      // the tree kill has to run before /end rather than after it.
+      const treeKillIndex = commands.findIndex((command) => command.startsWith("powershell "));
+      const endIndex = commands.findIndex((command) => command.startsWith("schtasks /end"));
+      expect(treeKillIndex).toBeGreaterThanOrEqual(0);
+      expect(treeKillIndex).toBeLessThan(endIndex);
+      // Scoped to our own shim so it can never reach an unrelated wscript.
+      expect(commands[treeKillIndex]).toContain("t3code-service.vbs");
+      expect((yield* service.status).installed).toBe(false);
+      // Both documents go, or a reinstall registers a task pointing at nothing.
+      expect(yield* fs.exists(taskPath)).toBe(false);
+      expect(commands.some((command) => command.startsWith("systemctl "))).toBe(false);
+      expect(commands.some((command) => command.startsWith("launchctl "))).toBe(false);
     }),
   );
 
@@ -834,4 +873,100 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       }
     }),
   );
+});
+
+// The rest of the Windows path is two rendered documents. The schtasks calls
+// themselves are covered above with a stubbed runner; what they cannot check
+// is what the documents say, and every line below is a Task Scheduler default
+// that would otherwise break a long-running server.
+const windowsPlan: BootService.BootServicePlan = {
+  program: ["C:\\Users\\dev\\.local\\bin\\t3.exe"],
+  baseDir: "C:\\Users\\dev\\.t3",
+  logPath: "C:\\Users\\dev\\.t3\\logs\\service.log",
+  unitPath: "C:\\Users\\dev\\AppData\\Local\\t3code\\t3code-service.vbs",
+};
+
+/** Undo VBScript literal escaping to recover the command cmd.exe receives. */
+function shimCommandOf(shim: string): string {
+  const line = shim.split("\n").find((entry) => entry.startsWith("shell.Run "));
+  if (line === undefined) throw new Error("shim has no Run line");
+  return line.slice('shell.Run "'.length, line.lastIndexOf('", 0, True')).replaceAll('""', '"');
+}
+
+it("runs the server hidden, appending output to the log", () => {
+  const shim = BootService.renderBootServiceShim(windowsPlan);
+  // Window style 0 is the whole reason the shim exists: a console task leaves
+  // a window on screen that closing would kill the server.
+  //
+  // Blocking (True) is what keeps the server inside the task. Found on a real
+  // host: returning immediately let wscript.exe exit and orphan the server, so
+  // `schtasks /end` reported success while it kept running, and an uninstall
+  // left it alive untracked.
+  expect(shim).toContain(", 0, True");
+  expect(shimCommandOf(shim)).toBe(
+    'cmd /c ""C:\\Users\\dev\\.local\\bin\\t3.exe" "serve" >> "C:\\Users\\dev\\.t3\\logs\\service.log" 2>&1"',
+  );
+});
+
+it("round-trips the base directory back out of the shim", () => {
+  expect(BootService.bootServiceBaseDirOf(BootService.renderBootServiceShim(windowsPlan))).toBe(
+    "C:\\Users\\dev\\.t3",
+  );
+});
+
+it("round-trips a base directory containing a quote", () => {
+  const quoted = { ...windowsPlan, baseDir: 'C:\\Users\\de"v\\.t3' };
+  expect(BootService.bootServiceBaseDirOf(BootService.renderBootServiceShim(quoted))).toBe(
+    'C:\\Users\\de"v\\.t3',
+  );
+});
+
+it("overrides the Task Scheduler defaults that would stop a long-running server", () => {
+  const xml = BootService.renderBootServiceTaskXml(windowsPlan, {
+    shimPath: windowsPlan.unitPath,
+    triggerUserId: "EXAMPLE\\dev",
+  });
+  // Without these a task is killed after three days, refuses to start on
+  // battery, stops when the machine goes onto battery, and starts a second
+  // copy at the next logon.
+  expect(xml).toContain("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>");
+  expect(xml).toContain("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>");
+  expect(xml).toContain("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>");
+  expect(xml).toContain("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>");
+});
+
+// Found on a real Windows host: a LogonTrigger with no UserId means "when ANY
+// user logs on", which is a machine-wide change. schtasks refuses it with
+// "Access is denied" from a normal terminal even for an account in
+// Administrators, because UAC splits that token until explicitly elevated.
+// Scoping the trigger is what keeps install working without elevation.
+it("scopes the logon trigger to one user so registration needs no elevation", () => {
+  const xml = BootService.renderBootServiceTaskXml(windowsPlan, {
+    shimPath: windowsPlan.unitPath,
+    triggerUserId: "EXAMPLE\\dev",
+  });
+  expect(xml).toContain("<UserId>EXAMPLE\\dev</UserId>");
+});
+
+it("declares UTF-16, which is the encoding schtasks parses the file as", () => {
+  const xml = BootService.renderBootServiceTaskXml(windowsPlan, {
+    shimPath: windowsPlan.unitPath,
+    triggerUserId: "EXAMPLE\\dev",
+  });
+  // A real host rejected the previous UTF-8 document as "malformed ...
+  // incorrect document syntax"; the declaration and the bytes must agree.
+  expect(xml.startsWith('<?xml version="1.0" encoding="UTF-16"?>')).toBe(true);
+  expect(xml).not.toContain("UTF-8");
+});
+
+it("points the task at the shim rather than at the server directly", () => {
+  const xml = BootService.renderBootServiceTaskXml(windowsPlan, {
+    shimPath: windowsPlan.unitPath,
+    triggerUserId: "EXAMPLE\\dev",
+  });
+  expect(xml).toContain("<Command>wscript.exe</Command>");
+  expect(xml).toContain("t3code-service.vbs");
+  // The task must never launch the server directly, or the console window and
+  // the missing log redirection both come back.
+  expect(xml).not.toContain("t3.exe");
 });
