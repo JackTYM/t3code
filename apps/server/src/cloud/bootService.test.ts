@@ -881,14 +881,19 @@ const windowsPlan: BootService.BootServicePlan = {
 function shimCommandOf(shim: string): string {
   const line = shim.split("\n").find((entry) => entry.startsWith("shell.Run "));
   if (line === undefined) throw new Error("shim has no Run line");
-  return line.slice('shell.Run "'.length, line.lastIndexOf('", 0, False')).replaceAll('""', '"');
+  return line.slice('shell.Run "'.length, line.lastIndexOf('", 0, True')).replaceAll('""', '"');
 }
 
 it("runs the server hidden, appending output to the log", () => {
   const shim = BootService.renderBootServiceShim(windowsPlan);
   // Window style 0 is the whole reason the shim exists: a console task leaves
   // a window on screen that closing would kill the server.
-  expect(shim).toContain(", 0, False");
+  //
+  // Blocking (True) is what keeps the server inside the task. Found on a real
+  // host: returning immediately let wscript.exe exit and orphan the server, so
+  // `schtasks /end` reported success while it kept running, and an uninstall
+  // left it alive untracked.
+  expect(shim).toContain(", 0, True");
   expect(shimCommandOf(shim)).toBe(
     'cmd /c ""C:\\Users\\dev\\.local\\bin\\t3.exe" "serve" >> "C:\\Users\\dev\\.t3\\logs\\service.log" 2>&1"',
   );
