@@ -287,6 +287,11 @@ const config: ExpoConfig = {
       foregroundImage: variant.assets.androidAdaptiveForeground,
       monochromeImage: variant.assets.androidMonochromeIcon,
     },
+    // Capturing an attachment needs CAMERA; the photo picker does not, which is
+    // why this list starts here. Declared explicitly rather than through the
+    // expo-image-picker plugin, whose iOS half would rewrite the committed
+    // Info.plist strings.
+    permissions: ["android.permission.CAMERA"],
     // Opts into OnBackInvokedCallback-based back dispatch (Android 13+).
     // JS back handling survives it via react-native's Android 16 shim plus
     // withAndroidPredictiveBackCompat on Android 13-15.
