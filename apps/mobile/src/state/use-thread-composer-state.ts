@@ -36,6 +36,7 @@ import {
   createPastedTextComposerAttachment,
   pasteComposerClipboard,
   pickComposerFiles,
+  captureComposerMedia,
   pickComposerMedia,
   removePersistedComposerAttachmentFile,
 } from "../lib/composerImages";
@@ -498,35 +499,46 @@ export function useThreadComposerState() {
     [selectedThreadShell],
   );
 
-  const onPickDraftMedia = useCallback(async () => {
-    if (!selectedThreadShell) {
-      return;
-    }
+  // The library and the camera differ only in which picker runs; everything
+  // around it — slot counting, insertion point, the error alert — is the same.
+  const addDraftMedia = useCallback(
+    async (pick: typeof pickComposerMedia) => {
+      if (!selectedThreadShell) {
+        return;
+      }
 
-    const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
-    const insertion = captureComposerDraftInsertion(threadKey);
-    const capabilities = selectedEnvironmentRuntime?.serverConfig?.environment.capabilities;
-    const result = await pickComposerMedia({
-      existingCount: countComposerDraftAttachmentsAfterSelection(threadKey, insertion),
-      maxVideoBytes:
-        capabilities?.attachmentUploads === true
-          ? capabilities.fileAttachments?.maxUploadBytes
-          : undefined,
-    });
-    const rejectedCount = appendComposerDraftAttachments(threadKey, result.attachments, {
-      appendReference: true,
-      insertion,
-    });
-    const problems = [
-      ...(result.error ? [result.error] : []),
-      ...(rejectedCount > 0
-        ? [`You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} attachments per message.`]
-        : []),
-    ];
-    if (problems.length > 0) {
-      Alert.alert("Could not attach photo or video", problems.join("\n\n"));
-    }
-  }, [composerDrafts, selectedEnvironmentRuntime?.serverConfig, selectedThreadShell]);
+      const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
+      const insertion = captureComposerDraftInsertion(threadKey);
+      const capabilities = selectedEnvironmentRuntime?.serverConfig?.environment.capabilities;
+      const result = await pick({
+        existingCount: countComposerDraftAttachmentsAfterSelection(threadKey, insertion),
+        maxVideoBytes:
+          capabilities?.attachmentUploads === true
+            ? capabilities.fileAttachments?.maxUploadBytes
+            : undefined,
+      });
+      const rejectedCount = appendComposerDraftAttachments(threadKey, result.attachments, {
+        appendReference: true,
+        insertion,
+      });
+      const problems = [
+        ...(result.error ? [result.error] : []),
+        ...(rejectedCount > 0
+          ? [`You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} attachments per message.`]
+          : []),
+      ];
+      if (problems.length > 0) {
+        Alert.alert("Could not attach photo or video", problems.join("\n\n"));
+      }
+    },
+    [composerDrafts, selectedEnvironmentRuntime?.serverConfig, selectedThreadShell],
+  );
+
+  const onPickDraftMedia = useCallback(() => addDraftMedia(pickComposerMedia), [addDraftMedia]);
+  const onCaptureDraftMedia = useCallback(
+    () => addDraftMedia(captureComposerMedia),
+    [addDraftMedia],
+  );
 
   const onPickDraftFiles = useCallback(async () => {
     if (!selectedThreadShell) {
@@ -810,6 +822,7 @@ export function useThreadComposerState() {
     runtimeMode,
     interactionMode,
     onChangeDraftMessage,
+    onCaptureDraftMedia,
     onPickDraftMedia,
     onPickDraftFiles,
     onPasteIntoDraft,

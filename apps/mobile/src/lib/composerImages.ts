@@ -23,6 +23,7 @@ import { videoMimeType } from "@t3tools/shared/video";
 import { beginForegroundHandoff } from "./foreground-handoff";
 import { uuidv4 } from "./uuid";
 import { writeFileAtomically } from "./atomic-file";
+import type { ImagePickerAsset } from "expo-image-picker";
 
 export interface DraftComposerImageAttachment extends Omit<UploadChatImageAttachment, "dataUrl"> {
   readonly id: string;
@@ -466,10 +467,30 @@ export async function pickComposerMedia(input: {
     };
   }
 
+  return await collectPickedAssets(result.assets, {
+    remainingSlots,
+    ...(input.maxVideoBytes === undefined ? {} : { maxVideoBytes: input.maxVideoBytes }),
+  });
+}
+
+/**
+ * Turns picker assets into attachments. Shared by the library and the camera so
+ * the size caps, HEIC rendering and video handling cannot drift apart — the two
+ * pickers return the same asset shape, and only the way they were obtained
+ * differs.
+ */
+async function collectPickedAssets(
+  assets: ReadonlyArray<ImagePickerAsset>,
+  input: { readonly remainingSlots: number; readonly maxVideoBytes?: number },
+): Promise<{
+  readonly attachments: ReadonlyArray<DraftComposerAttachment>;
+  readonly error: string | null;
+}> {
+  const remainingSlots = input.remainingSlots;
   const attachments: DraftComposerAttachment[] = [];
   let error: string | null = null;
 
-  for (const asset of result.assets) {
+  for (const asset of assets) {
     if (attachments.length >= remainingSlots) {
       error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} attachments per message.`;
       break;
@@ -739,4 +760,80 @@ export async function convertPastedImagesToAttachments(input: {
   }
 
   return results;
+}
+
+/**
+ * Capture straight from the camera rather than picking an existing file.
+ *
+ * Kept separate from `pickComposerMedia` because the camera is a different
+ * permission and a different failure mode — denied access needs its own message
+ * rather than a generic "could not open" — but the assets it returns are
+ * identical, so everything after capture is shared.
+ */
+export async function captureComposerMedia(input: {
+  readonly existingCount: number;
+  readonly maxVideoBytes?: number;
+}): Promise<{
+  readonly attachments: ReadonlyArray<DraftComposerAttachment>;
+  readonly error: string | null;
+}> {
+  const remainingSlots = PROVIDER_SEND_TURN_MAX_ATTACHMENTS - input.existingCount;
+  if (remainingSlots <= 0) {
+    return {
+      attachments: [],
+      error: `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} attachments per message.`,
+    };
+  }
+
+  let imagePicker: Awaited<ReturnType<typeof loadImagePicker>>;
+  try {
+    imagePicker = await loadImagePicker();
+  } catch (error) {
+    return {
+      attachments: [],
+      error: error instanceof Error ? error.message : "The camera is unavailable right now.",
+    };
+  }
+
+  // Asked for explicitly so a refusal can say so. Launching without this leaves
+  // the user staring at a sheet that dismisses itself with no explanation.
+  const permission = await imagePicker.requestCameraPermissionsAsync();
+  if (!permission.granted) {
+    return {
+      attachments: [],
+      error: permission.canAskAgain
+        ? "Camera access is needed to take a photo."
+        : "Camera access is off for T3 Code. Turn it on in Settings to take a photo.",
+    };
+  }
+
+  // Same guard as the library picker: the camera activity reports the app as
+  // backgrounded on Android, and a restart mid-capture loses the shot.
+  const endHandoff = beginForegroundHandoff();
+  let result: Awaited<ReturnType<typeof imagePicker.launchCameraAsync>>;
+  try {
+    result = await imagePicker.launchCameraAsync({
+      mediaTypes: input.maxVideoBytes === undefined ? ["images"] : ["images", "videos"],
+      // Same reasoning as the library path: decoding to base64 here stalls the
+      // composer for seconds on a full-resolution capture.
+      base64: false,
+      quality: 1,
+    });
+  } catch (error) {
+    return {
+      attachments: [],
+      error: error instanceof Error ? error.message : "Could not open the camera.",
+    };
+  } finally {
+    endHandoff();
+  }
+
+  if (result.canceled) {
+    return { attachments: [], error: null };
+  }
+
+  return await collectPickedAssets(result.assets, {
+    remainingSlots,
+    ...(input.maxVideoBytes === undefined ? {} : { maxVideoBytes: input.maxVideoBytes }),
+  });
 }

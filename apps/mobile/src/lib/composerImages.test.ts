@@ -12,6 +12,14 @@ const clipboard = vi.hoisted(() => ({
 
 vi.mock("expo-clipboard", () => clipboard);
 
+const imagePicker = vi.hoisted(() => ({
+  requestCameraPermissionsAsync: vi.fn(),
+  launchCameraAsync: vi.fn(),
+  launchImageLibraryAsync: vi.fn(),
+}));
+
+vi.mock("expo-image-picker", () => imagePicker);
+
 vi.mock("expo-file-system", () => ({
   File: class {
     readonly uri: string;
@@ -325,5 +333,51 @@ describe("composerAttachmentInlineUri", () => {
         fileUri: "file:///notes.txt",
       } as never),
     ).toBeUndefined();
+  });
+});
+
+// The camera is the one part of capture that is not shared with the library
+// picker: a refusal has to say so, because iOS dismisses the sheet with no
+// explanation of its own.
+describe("camera capture permissions", () => {
+  beforeEach(() => {
+    imagePicker.requestCameraPermissionsAsync.mockReset();
+    imagePicker.launchCameraAsync.mockReset();
+  });
+
+  it("explains a refusal that can still be granted", async () => {
+    imagePicker.requestCameraPermissionsAsync.mockResolvedValue({
+      granted: false,
+      canAskAgain: true,
+    });
+    const { captureComposerMedia } = await import("./composerImages");
+
+    const result = await captureComposerMedia({ existingCount: 0 });
+    expect(result.attachments).toEqual([]);
+    expect(result.error).toBe("Camera access is needed to take a photo.");
+    expect(imagePicker.launchCameraAsync).not.toHaveBeenCalled();
+  });
+
+  it("points at Settings once iOS will no longer ask", async () => {
+    imagePicker.requestCameraPermissionsAsync.mockResolvedValue({
+      granted: false,
+      canAskAgain: false,
+    });
+    const { captureComposerMedia } = await import("./composerImages");
+
+    const result = await captureComposerMedia({ existingCount: 0 });
+    expect(result.error).toContain("Settings");
+    expect(imagePicker.launchCameraAsync).not.toHaveBeenCalled();
+  });
+
+  it("does not open the camera when the message is already full", async () => {
+    const { captureComposerMedia } = await import("./composerImages");
+
+    const result = await captureComposerMedia({
+      existingCount: PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+    });
+    expect(result.error).toContain("up to");
+    // Checked before the permission prompt, so a full message never asks.
+    expect(imagePicker.requestCameraPermissionsAsync).not.toHaveBeenCalled();
   });
 });
