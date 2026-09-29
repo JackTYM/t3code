@@ -362,7 +362,8 @@ const config: ExpoConfig = {
     [
       "expo-audio",
       {
-        microphonePermission: "Allow T3 Code to use your microphone for voice input.",
+        microphonePermission:
+          "Allow T3 Code to use your microphone for voice input and to record audio when you attach a video.",
         recordAudioAndroid: false,
         enableBackgroundPlayback: false,
         enableBackgroundRecording: false,
@@ -371,7 +372,11 @@ const config: ExpoConfig = {
     [
       "expo-camera",
       {
-        cameraPermission: "Allow T3 Code to access your camera so you can scan pairing QR codes.",
+        // Names both uses: QR pairing and capturing an attachment. A purpose
+        // string that covers only one of them is the kind of mismatch App
+        // Review rejects.
+        cameraPermission:
+          "Allow T3 Code to use your camera to scan pairing QR codes and to take photos or videos to attach to a message.",
         microphonePermission: false,
         barcodeScannerEnabled: true,
         recordAudioAndroid: false,
