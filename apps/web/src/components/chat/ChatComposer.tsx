@@ -1,5 +1,6 @@
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { runtimeModeConfig, runtimeModeOptions } from "./runtimeModeConfig";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { useOpenFile } from "~/useOpenFile";
 import { AttachmentFilePreview } from "../files/AttachmentFilePreview";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
@@ -2303,6 +2304,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           label: "/model",
           description: "Switch response model for this thread",
         },
+        {
+          id: "slash:mcp",
+          type: "slash-command",
+          command: "mcp",
+          label: "/mcp",
+          description: "See and repair this session's MCP servers",
+        },
         ...(planModeUiEnabled
           ? ([
               {
@@ -3550,6 +3558,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           if (applied) {
             setComposerHighlightedItemId(null);
             setIsComposerModelPickerOpen(true);
+          }
+          return;
+        }
+        if (item.command === "mcp") {
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+            focusEditorAfterReplace: false,
+          });
+          if (applied) {
+            setComposerHighlightedItemId(null);
+          }
+          if (routeKind === "server") {
+            useRightPanelStore.getState().open(routeThreadRef, "mcp");
           }
           return;
         }

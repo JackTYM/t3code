@@ -23,6 +23,7 @@ import {
   Files,
   GitPullRequest,
   GitPullRequestArrow,
+  Plug,
   Globe2,
   Plus,
   TerminalSquare,
@@ -630,6 +631,8 @@ function surfaceTitle(
       return "Pull requests";
     case "agents":
       return "Agents";
+    case "mcp":
+      return "MCP";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -715,6 +718,8 @@ function SurfaceIcon({
       return <GitPullRequestArrow className="size-3 shrink-0" />;
     case "agents":
       return <Bot className="size-3 shrink-0" />;
+    case "mcp":
+      return <Plug className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />

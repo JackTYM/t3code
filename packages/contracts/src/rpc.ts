@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   ProviderAuthCancelInput,
   ProviderAuthCompleteInput,
@@ -105,6 +105,9 @@ import {
   ProviderUploadFeedbackError,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
+  ProviderMcpActionFailedError,
+  ProviderMcpServerList,
+  ProviderMcpUnsupportedError,
 } from "./provider.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
@@ -342,6 +345,9 @@ export const WS_METHODS = {
   previewClose: "preview.close",
   previewList: "preview.list",
   previewReportStatus: "preview.reportStatus",
+  mcpList: "mcp.list",
+  mcpReconnect: "mcp.reconnect",
+  mcpSetEnabled: "mcp.setEnabled",
   previewAutomationConnect: "previewAutomation.connect",
   previewAutomationRespond: "previewAutomation.respond",
   previewAutomationFocusHost: "previewAutomation.focusHost",
@@ -1154,6 +1160,28 @@ const WsPreviewReportStatusRpc = Rpc.make(WS_METHODS.previewReportStatus, {
   error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
 });
 
+const McpThreadPayload = Schema.Struct({ threadId: ThreadId });
+
+const WsMcpListRpc = Rpc.make(WS_METHODS.mcpList, {
+  payload: McpThreadPayload,
+  success: ProviderMcpServerList,
+  error: Schema.Union([ProviderMcpUnsupportedError, EnvironmentAuthorizationError]),
+});
+
+const WsMcpReconnectRpc = Rpc.make(WS_METHODS.mcpReconnect, {
+  payload: Schema.Struct({ threadId: ThreadId, serverName: TrimmedNonEmptyString }),
+  error: Schema.Union([ProviderMcpActionFailedError, EnvironmentAuthorizationError]),
+});
+
+const WsMcpSetEnabledRpc = Rpc.make(WS_METHODS.mcpSetEnabled, {
+  payload: Schema.Struct({
+    threadId: ThreadId,
+    serverName: TrimmedNonEmptyString,
+    enabled: Schema.Boolean,
+  }),
+  error: Schema.Union([ProviderMcpActionFailedError, EnvironmentAuthorizationError]),
+});
+
 const WsPreviewAutomationConnectRpc = Rpc.make(WS_METHODS.previewAutomationConnect, {
   payload: PreviewAutomationHost,
   success: PreviewAutomationStreamEvent,
@@ -1485,6 +1513,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewCloseRpc,
   WsPreviewListRpc,
   WsPreviewReportStatusRpc,
+  WsMcpListRpc,
+  WsMcpReconnectRpc,
+  WsMcpSetEnabledRpc,
   WsPreviewAutomationConnectRpc,
   WsPreviewAutomationRespondRpc,
   WsPreviewAutomationFocusHostRpc,

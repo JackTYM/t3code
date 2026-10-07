@@ -119,6 +119,11 @@ const startupDependencies = Layer.mergeAll(
     respondToUserInput: () => Effect.die("unused"),
     stopSession: () => Effect.die("unused"),
     listSessions: () => Effect.succeed([]),
+    // MCP management is unused by this test; a thread with no servers is
+    // the honest stub rather than a die().
+    listMcpServers: () => Effect.succeed({ servers: [], supported: false }),
+    reconnectMcpServer: () => Effect.void,
+    setMcpServerEnabled: () => Effect.void,
     getCapabilities: () => Effect.die("unused"),
     assertConversationRollbackSupported: () => Effect.die("unused"),
     getInstanceInfo: () => Effect.die("unused"),
