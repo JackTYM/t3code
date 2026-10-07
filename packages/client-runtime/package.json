@@ -143,6 +143,10 @@
       "types": "./src/state/deviceHubAccess.ts",
       "default": "./src/state/deviceHubAccess.ts"
     },
+    "./state/mcp": {
+      "types": "./src/state/mcp.ts",
+      "default": "./src/state/mcp.ts"
+    },
     "./state/preview": {
       "types": "./src/state/preview.ts",
       "default": "./src/state/preview.ts"
