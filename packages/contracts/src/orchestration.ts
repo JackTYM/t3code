@@ -36,6 +36,7 @@ export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getWorkflowScript: "orchestration.getWorkflowScript",
   getAgentTranscript: "orchestration.getAgentTranscript",
+  getItemOutput: "orchestration.getItemOutput",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
@@ -1968,6 +1969,16 @@ export type AgentTranscriptEntry = typeof AgentTranscriptEntry.Type;
 export const ITEM_OUTPUT_ACTIVITY_KIND = "item.output";
 
 /**
+ * How many chunks one row retains. Newest-first selection keeps the tail, which
+ * is the part worth reading when a command printed more than this.
+ *
+ * Shared because the read and the `truncated` flag derived from it have to
+ * agree: a reader told nothing was dropped when it was shows a command's
+ * middle as if it were the whole.
+ */
+export const ITEM_OUTPUT_CHUNK_LIMIT = 200;
+
+/**
  * Activity kinds that never reach thread detail.
  *
  * One list rather than a literal repeated per query. Seven SQL filters, the
@@ -2402,6 +2413,29 @@ export const OrchestrationGetAgentTranscriptResult = Schema.Struct({
 export type OrchestrationGetAgentTranscriptResult =
   typeof OrchestrationGetAgentTranscriptResult.Type;
 
+export const OrchestrationGetItemOutputInput = Schema.Struct({
+  threadId: ThreadId,
+  /** The item for command and file-change output; the turn for reasoning. */
+  targetId: TrimmedNonEmptyString,
+});
+export type OrchestrationGetItemOutputInput = typeof OrchestrationGetItemOutputInput.Type;
+
+export const OrchestrationGetItemOutputResult = Schema.Struct({
+  targetId: TrimmedNonEmptyString,
+  /**
+   * In the order produced. Chunk boundaries are an artefact of how the provider
+   * delivered the text and of server-side coalescing, so a reader should join
+   * them rather than treat them as lines or records.
+   */
+  chunks: Schema.Array(ItemOutputChunk),
+  /**
+   * True when older chunks were dropped to bound the row. The newest are kept,
+   * because the end of a command's output is the part worth reading.
+   */
+  truncated: Schema.Boolean,
+});
+export type OrchestrationGetItemOutputResult = typeof OrchestrationGetItemOutputResult.Type;
+
 export const OrchestrationGetWorkflowScriptInput = Schema.Struct({
   threadId: ThreadId,
   /** Absolute path from the workflow's runHandles.scriptPath. The server
@@ -2458,6 +2492,10 @@ export const OrchestrationRpcSchemas = {
   getAgentTranscript: {
     input: OrchestrationGetAgentTranscriptInput,
     output: OrchestrationGetAgentTranscriptResult,
+  },
+  getItemOutput: {
+    input: OrchestrationGetItemOutputInput,
+    output: OrchestrationGetItemOutputResult,
   },
   getWorkflowScript: {
     input: OrchestrationGetWorkflowScriptInput,
@@ -2516,6 +2554,14 @@ export class OrchestrationGetTurnDiffError extends Schema.TaggedError<Orchestrat
 
 export class OrchestrationGetFullThreadDiffError extends Schema.TaggedError<OrchestrationGetFullThreadDiffError>()(
   "OrchestrationGetFullThreadDiffError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export class OrchestrationGetItemOutputError extends Schema.TaggedError<OrchestrationGetItemOutputError>()(
+  "OrchestrationGetItemOutputError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),

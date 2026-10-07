@@ -34,6 +34,7 @@ import {
   AGENT_TRANSCRIPT_ACTIVITY_KIND,
   HIDDEN_THREAD_ACTIVITY_KINDS,
   ITEM_OUTPUT_ACTIVITY_KIND,
+  ITEM_OUTPUT_CHUNK_LIMIT,
   ThreadId,
   ThreadPullRequestSnapshot,
   ThreadPullRequestStack,
@@ -102,9 +103,6 @@ const THREAD_DETAIL_ACTIVITY_LIMIT = 500;
 // Bounds one agent's retained narration. A long-running agent must not grow an
 // unbounded set; newest-first selection keeps the most recent window.
 const AGENT_TRANSCRIPT_LIMIT = 200;
-// Bounds one row's retained output. Newest-first selection keeps the tail,
-// which is the part worth reading when a command has printed more than this.
-const ITEM_OUTPUT_LIMIT = 200;
 // Snapshot payloads are decoded and projected in small sequential batches so
 // one client read does not retain the raw payloads for the full activity window.
 const THREAD_DETAIL_ACTIVITY_PAYLOAD_BATCH_SIZE = 25;
@@ -1710,7 +1708,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sequence DESC,
           created_at DESC,
           activity_id DESC
-        LIMIT ${ITEM_OUTPUT_LIMIT}
+        LIMIT ${ITEM_OUTPUT_CHUNK_LIMIT}
       ) AS recent_output
       ORDER BY
         sequence ASC,

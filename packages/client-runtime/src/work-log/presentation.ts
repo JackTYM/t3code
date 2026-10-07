@@ -698,3 +698,17 @@ export function toolGroupSummaryKind(
   );
   return fallbackKinds.size === 1 ? fallbackKinds.values().next().value! : "mixed";
 }
+
+/**
+ * Whether a tool row has finished, so its recorded output is complete.
+ *
+ * Output is read only once this is true: Claude has no incremental channel for
+ * tool output and delivers the whole result at completion, so a panel opened
+ * mid-run would sit empty and read as broken rather than as still running.
+ */
+export function workEntryToolLifecycleSettled(
+  entry: Pick<WorkLogPresentationEntry, "toolLifecycleStatus">,
+): boolean {
+  const status = entry.toolLifecycleStatus;
+  return status === "completed" || status === "failed" || status === "declined";
+}

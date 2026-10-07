@@ -47,6 +47,10 @@ import {
   OrchestrationSearchThreadsError,
   OrchestrationGetTurnDiffError,
   isHiddenThreadActivityKind,
+  ITEM_OUTPUT_CHUNK_LIMIT,
+  ITEM_OUTPUT_STREAM_KINDS,
+  type ItemOutputStreamKind,
+  OrchestrationGetItemOutputError,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   type ProjectEntriesFailure,
@@ -1939,6 +1943,44 @@ const makeWsRpcLayer = (
                   (cause) =>
                     new OrchestrationGetAgentTranscriptError({
                       message: "Failed to load agent transcript",
+                      cause,
+                    }),
+                ),
+              ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getItemOutput]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getItemOutput,
+            projectionSnapshotQuery
+              .listItemOutput({ threadId: input.threadId, targetId: input.targetId })
+              .pipe(
+                Effect.map((activities) => {
+                  const chunks = activities.flatMap((activity) => {
+                    const payload = activity.payload;
+                    if (payload === null || typeof payload !== "object") return [];
+                    const { streamKind, text } = payload as {
+                      streamKind?: unknown;
+                      text?: unknown;
+                    };
+                    return typeof text === "string" &&
+                      text.length > 0 &&
+                      ITEM_OUTPUT_STREAM_KINDS.some((kind) => kind === streamKind)
+                      ? [{ streamKind: streamKind as ItemOutputStreamKind, text }]
+                      : [];
+                  });
+                  return {
+                    targetId: input.targetId,
+                    chunks,
+                    // The query keeps the newest window, so a full page back is
+                    // the signal that older chunks fell off the end.
+                    truncated: activities.length >= ITEM_OUTPUT_CHUNK_LIMIT,
+                  };
+                }),
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetItemOutputError({
+                      message: "Failed to load output",
                       cause,
                     }),
                 ),

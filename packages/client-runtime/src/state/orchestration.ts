@@ -29,6 +29,18 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       idleTtlMs: 15_000,
       refreshIntervalMs: 2_000,
     }),
+    itemOutput: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:item-output",
+      tag: ORCHESTRATION_WS_METHODS.getItemOutput,
+      // Reasoning appends while the model thinks, so an open row revalidates on
+      // the same cadence as an open agent view. Command output is written once
+      // on completion, which this cadence picks up just as well. Evicted
+      // shortly after the row closes: nothing is fetched for a row nobody
+      // expanded.
+      staleTimeMs: 2_000,
+      idleTtlMs: 15_000,
+      refreshIntervalMs: 2_000,
+    }),
     fullThreadDiff: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:full-thread-diff",
       tag: ORCHESTRATION_WS_METHODS.getFullThreadDiff,
