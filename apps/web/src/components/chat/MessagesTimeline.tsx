@@ -15,6 +15,7 @@ import {
   COMPOSER_CONTEXT_KINDS,
   type AssistantCitation,
   type EnvironmentId,
+  type ThreadId,
   type MessageId,
   type ScopedThreadRef,
   type ServerProviderSkill,
@@ -53,6 +54,9 @@ const NOOP_OPEN_ATTACHMENT = (_attachment: ChatFileAttachment) => {};
 import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { useAtomValue } from "@effect/atom-react";
+
+import { orchestrationEnvironment } from "~/state/orchestration";
 import { getProjectFaviconCacheKey } from "@t3tools/shared/projectFavicon";
 import { observeVisibleAnimation } from "../../lib/visibleAnimation";
 import {
@@ -84,6 +88,7 @@ import {
   workEntryDisplayIndicatesToolFailure,
   workEntrySignalsSevereFailure,
   workLogEntryIsToolLike,
+  workEntryToolLifecycleSettled,
 } from "../../session-logic";
 import {
   type ChatMessage,
@@ -2306,6 +2311,43 @@ function ThinkingTimelineRow() {
   );
 }
 
+/**
+ * The recorded output of one row, fetched while it is open.
+ *
+ * Chunk boundaries are an artefact of how the provider delivered the text and
+ * of server-side coalescing, so they are joined rather than rendered as lines.
+ */
+function ItemOutputBody({
+  environmentId,
+  threadId,
+  targetId,
+  emptyLabel,
+}: {
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  targetId: string;
+  emptyLabel: string;
+}) {
+  const result = useAtomValue(
+    orchestrationEnvironment.itemOutput({ environmentId, input: { threadId, targetId } }),
+  );
+  if (result._tag !== "Success") {
+    return <p className="mt-1 text-[11px] text-secondary-label">Loading…</p>;
+  }
+  const text = result.value.chunks.map((chunk) => chunk.text).join("");
+  if (text.trim().length === 0) {
+    return <p className="mt-1 text-[11px] text-secondary-label">{emptyLabel}</p>;
+  }
+  return (
+    <div className="mt-1">
+      {result.value.truncated ? (
+        <p className="text-[11px] text-secondary-label">Earlier output was dropped.</p>
+      ) : null}
+      <pre className={toolCallExpandedBodyClassName}>{text}</pre>
+    </div>
+  );
+}
+
 function CompactingLabel() {
   return (
     <span className="inline-flex items-center gap-1.5">
@@ -3901,6 +3943,12 @@ function buildToolCallExpandedBody(
   workspaceRoot: string | undefined,
   visibleLabel: string,
   viewedImagePath: string | null,
+  /**
+   * Drops the result summary when the full recorded output is rendered below.
+   * `detail` is a truncated preview of exactly that output, so keeping both
+   * prints a command's first line twice.
+   */
+  omitDetail = false,
 ): string | null {
   const blocks: string[] = [];
   const seen = new Set<string>([visibleLabel.trim()]);
@@ -3921,7 +3969,7 @@ function buildToolCallExpandedBody(
     addBlock(raw ?? command);
   }
   const detail = workEntry.detail?.trim();
-  if (detail !== viewedImagePath?.trim()) {
+  if (!omitDetail && detail !== viewedImagePath?.trim()) {
     addBlock(detail);
   }
   const viewedImagePaths = new Set(
@@ -4218,7 +4266,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   onToggleEntry?: ((collapsed: boolean) => void) | undefined;
 }) {
   const { workEntry, workspaceRoot, isExpandedToolGroupEntry, displayLabel } = props;
-  const { threadRef, onImageExpand } = use(TimelineRowCtx);
+  const { threadRef, onImageExpand, activeThreadEnvironmentId } = use(TimelineRowCtx);
   const groupView = use(WorkGroupViewCtx);
   const [expanded, setExpanded] = useState(
     () => groupView?.state.expandedEntries.has(workEntry.id) ?? false,
@@ -4258,7 +4306,16 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
           workspaceRoot,
         })
       : null;
+  // Output is recorded against the tool's own item id, and only read once the
+  // tool is done — Claude delivers a result in one piece at completion, so
+  // there is nothing to show before then.
+  const showItemOutput =
+    threadRef !== null &&
+    workEntry.toolCallId !== undefined &&
+    workLogEntryIsToolLike(workEntry) &&
+    workEntryToolLifecycleSettled(workEntry);
   const canExpand =
+    showItemOutput ||
     Boolean(workEntry.questionAnswer) ||
     (showFailedIndicator && previewText.trim().length > 0) ||
     (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) ||
@@ -4275,6 +4332,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
         workspaceRoot,
         previewText,
         viewedImage ? viewedImagePath : null,
+        showItemOutput,
       )
     : null;
   // Reserve destructive row styling for severe failures, not routine tool errors.
@@ -4419,6 +4477,23 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
           onPointerDown={stopRowToggle}
         >
           <pre className={toolCallExpandedBodyClassName}>{expandedBody}</pre>
+        </div>
+      ) : null}
+      {/* Only once the tool has finished. Claude has no incremental channel for
+          tool output — it delivers the whole result at completion — so a box
+          opened mid-run would sit empty and read as broken. */}
+      {expanded && showItemOutput ? (
+        <div
+          className="mt-1 ms-7 cursor-default rounded-md bg-muted/40 px-3 py-2"
+          onClick={stopRowToggle}
+          onPointerDown={stopRowToggle}
+        >
+          <ItemOutputBody
+            environmentId={activeThreadEnvironmentId}
+            threadId={threadRef.threadId}
+            targetId={workEntry.toolCallId!}
+            emptyLabel="This tool recorded no output."
+          />
         </div>
       ) : null}
     </div>

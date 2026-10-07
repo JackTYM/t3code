@@ -415,6 +415,10 @@ describe("ProviderRuntimeIngestion", () => {
         testRuntime.runPromise(
           snapshotQuery.listAgentTranscript({ threadId: asThreadId("thread-1"), taskId }),
         ),
+      readItemOutput: (targetId: string) =>
+        testRuntime.runPromise(
+          snapshotQuery.listItemOutput({ threadId: asThreadId("thread-1"), targetId }),
+        ),
       emit: provider.emit,
       advanceClock: (ms: number) => {
         clockOffsetMs += ms;
@@ -1365,7 +1369,13 @@ describe("ProviderRuntimeIngestion", () => {
     }
 
     await harness.drain();
-    expect(await harness.readModel()).toEqual(initial);
+
+    // These deltas are now recorded as hidden `item.output` rows, so the
+    // snapshot sequence advances. What must not change is thread state: the
+    // whole point of the guard is that output never becomes thread detail.
+    const after = await harness.readModel();
+    expect(after.threads).toEqual(initial.threads);
+    expect(after.snapshotSequence).toBeGreaterThanOrEqual(initial.snapshotSequence);
   });
 
   it("maps canonical content delta/item completed into finalized assistant messages", async () => {
@@ -4183,6 +4193,179 @@ describe("ProviderRuntimeIngestion", () => {
     expect(activity?.summary).toBe("Compacted context 899K → 0 tokens");
     expect(activity?.tone).toBe("info");
     expect(activity?.payload).toMatchObject({ requestId: "message-compact" });
+  });
+
+  it("records item output as hidden rows, keyed by the row that produced it", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-cmd-output"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-output"),
+      itemId: asItemId("item-bash"),
+      payload: { streamKind: "command_output", delta: "total 0\n" },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-output"),
+      payload: { streamKind: "reasoning_text", delta: "Weighing the options" },
+    });
+
+    await harness.drain();
+
+    // Command output hangs off the item that produced it.
+    const commandOutput = await harness.readItemOutput("item-bash");
+    expect(commandOutput).toHaveLength(1);
+    expect(commandOutput[0]?.payload).toMatchObject({
+      scope: "item",
+      targetId: "item-bash",
+      streamKind: "command_output",
+      text: "total 0\n",
+    });
+
+    // Reasoning has no item to hang off — the model thinks between tool calls —
+    // so it is keyed on the turn instead.
+    const reasoning = await harness.readItemOutput("turn-output");
+    expect(reasoning).toHaveLength(1);
+    expect(reasoning[0]?.payload).toMatchObject({
+      scope: "turn",
+      streamKind: "reasoning_text",
+      text: "Weighing the options",
+    });
+
+    // Scoped: another row's view must not pick these up.
+    expect(await harness.readItemOutput("item-other")).toHaveLength(0);
+
+    // And none of it reaches thread detail.
+    const snapshot = await harness.readModel();
+    const thread = snapshot.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    expect(
+      thread?.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "item.output",
+      ),
+    ).toBe(false);
+  });
+
+  it("coalesces a burst of output deltas instead of writing a row each", async () => {
+    const harness = await createHarness();
+
+    // Twenty deltas stamped inside one pacing window, as a streaming provider
+    // sends them. Writing a row per delta is the write flood this buffer
+    // exists to prevent.
+    for (let index = 0; index < 20; index += 1) {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-burst-${index}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.050Z",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-burst"),
+        itemId: asItemId("item-burst"),
+        payload: { streamKind: "command_output", delta: `line ${index}\n` },
+      });
+    }
+    await harness.drain();
+
+    const rows = await harness.readItemOutput("item-burst");
+    expect(rows.length).toBeLessThan(20);
+
+    // The first delta flushes immediately — nothing has been written yet, so
+    // there is no pacing window to wait out — and the rest buffer behind it.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.payload).toMatchObject({ text: "line 0\n" });
+  });
+
+  it("flushes buffered output once the pacing window has passed", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-paced-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-paced"),
+      itemId: asItemId("item-paced"),
+      payload: { streamKind: "command_output", delta: "first\n" },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-paced-2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.100Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-paced"),
+      itemId: asItemId("item-paced"),
+      payload: { streamKind: "command_output", delta: "buffered\n" },
+    });
+    // Past the pacing window, so this one carries the buffered text with it.
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-paced-3"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-paced"),
+      itemId: asItemId("item-paced"),
+      payload: { streamKind: "command_output", delta: "third\n" },
+    });
+    await harness.drain();
+
+    const rows = await harness.readItemOutput("item-paced");
+    const text = rows.map((row) => (row.payload as { text: string }).text).join("");
+    // Nothing is dropped on the way through, whatever the chunking.
+    expect(text).toBe("first\nbuffered\nthird\n");
+  });
+
+  it("does not lose output still buffered when the command finishes", async () => {
+    const harness = await createHarness();
+
+    // Two deltas inside one pacing window: the first flushes, the second is
+    // held. Nothing follows it, so without a flush on completion the tail —
+    // often the part that says how the command went — is simply dropped.
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-tail-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-tail"),
+      itemId: asItemId("item-tail"),
+      payload: { streamKind: "command_output", delta: "building...\n" },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-tail-2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.050Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-tail"),
+      itemId: asItemId("item-tail"),
+      payload: { streamKind: "command_output", delta: "exit 1: build failed\n" },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-tail-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.060Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-tail"),
+      itemId: asItemId("item-tail"),
+      payload: { itemType: "command_execution", status: "completed" },
+    });
+    await harness.drain();
+
+    const rows = await harness.readItemOutput("item-tail");
+    const text = rows.map((row) => (row.payload as { text: string }).text).join("");
+    expect(text).toBe("building...\nexit 1: build failed\n");
   });
 
   it("keeps subagent transcript rows out of the default thread projection", async () => {

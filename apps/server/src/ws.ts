@@ -46,7 +46,11 @@ import {
   OrchestrationGetAgentTranscriptError,
   OrchestrationSearchThreadsError,
   OrchestrationGetTurnDiffError,
-  AGENT_TRANSCRIPT_ACTIVITY_KIND,
+  isHiddenThreadActivityKind,
+  ITEM_OUTPUT_CHUNK_LIMIT,
+  ITEM_OUTPUT_STREAM_KINDS,
+  type ItemOutputStreamKind,
+  OrchestrationGetItemOutputError,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   type ProjectEntriesFailure,
@@ -354,12 +358,12 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
   return (
     event.type === "thread.message-sent" ||
     event.type === "thread.proposed-plan-upserted" ||
-    // Subagent narration is re-homed onto its owning task and is not part of
-    // thread detail. Excluding it in SQL alone would still stream every row
-    // live to every subscribed client, which is the traffic regression this
-    // design exists to prevent; the scoped transcript query serves it instead.
+    // Subagent narration and raw item output are not part of thread detail.
+    // Excluding them in SQL alone would still stream every row live to every
+    // subscribed client, which is the traffic regression this design exists to
+    // prevent; the scoped queries serve them instead.
     (event.type === "thread.activity-appended" &&
-      event.payload.activity.kind !== AGENT_TRANSCRIPT_ACTIVITY_KIND) ||
+      !isHiddenThreadActivityKind(event.payload.activity.kind)) ||
     event.type === "thread.turn-diff-completed" ||
     event.type === "thread.reverted" ||
     event.type === "thread.session-set"
@@ -1939,6 +1943,44 @@ const makeWsRpcLayer = (
                   (cause) =>
                     new OrchestrationGetAgentTranscriptError({
                       message: "Failed to load agent transcript",
+                      cause,
+                    }),
+                ),
+              ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getItemOutput]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getItemOutput,
+            projectionSnapshotQuery
+              .listItemOutput({ threadId: input.threadId, targetId: input.targetId })
+              .pipe(
+                Effect.map((activities) => {
+                  const chunks = activities.flatMap((activity) => {
+                    const payload = activity.payload;
+                    if (payload === null || typeof payload !== "object") return [];
+                    const { streamKind, text } = payload as {
+                      streamKind?: unknown;
+                      text?: unknown;
+                    };
+                    return typeof text === "string" &&
+                      text.length > 0 &&
+                      ITEM_OUTPUT_STREAM_KINDS.some((kind) => kind === streamKind)
+                      ? [{ streamKind: streamKind as ItemOutputStreamKind, text }]
+                      : [];
+                  });
+                  return {
+                    targetId: input.targetId,
+                    chunks,
+                    // The query keeps the newest window, so a full page back is
+                    // the signal that older chunks fell off the end.
+                    truncated: activities.length >= ITEM_OUTPUT_CHUNK_LIMIT,
+                  };
+                }),
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetItemOutputError({
+                      message: "Failed to load output",
                       cause,
                     }),
                 ),

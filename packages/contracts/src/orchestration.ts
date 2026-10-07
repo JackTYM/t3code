@@ -36,6 +36,7 @@ export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getWorkflowScript: "orchestration.getWorkflowScript",
   getAgentTranscript: "orchestration.getAgentTranscript",
+  getItemOutput: "orchestration.getItemOutput",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
@@ -1935,6 +1936,8 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
  * and from the projector's retained activity window. They reach a client only
  * through the scoped (threadId, taskId) transcript query, and only when that
  * agent's view is open.
+ *
+ * See `HIDDEN_THREAD_ACTIVITY_KINDS` for the full set held to these terms.
  */
 export const AGENT_TRANSCRIPT_ACTIVITY_KIND = "agent.transcript";
 
@@ -1952,6 +1955,84 @@ export const AgentTranscriptEntry = Schema.Struct({
   blocks: Schema.Array(AgentTranscriptBlock),
 });
 export type AgentTranscriptEntry = typeof AgentTranscriptEntry.Type;
+
+/**
+ * Activity kind carrying the raw output of one turn item — a command's stdout,
+ * a file edit's diff text, or the model's own reasoning. Stamped with the
+ * owning turnId, and with itemId for everything but reasoning, which belongs to
+ * the turn rather than to any single item.
+ *
+ * Hidden on the same terms as subagent narration, for the same reason: a single
+ * install prints more than the turn it belongs to. Read back through the scoped
+ * (threadId, turnId, itemId) query when a row is expanded, and not before.
+ */
+export const ITEM_OUTPUT_ACTIVITY_KIND = "item.output";
+
+/**
+ * How many chunks one row retains. Newest-first selection keeps the tail, which
+ * is the part worth reading when a command printed more than this.
+ *
+ * Shared because the read and the `truncated` flag derived from it have to
+ * agree: a reader told nothing was dropped when it was shows a command's
+ * middle as if it were the whole.
+ */
+export const ITEM_OUTPUT_CHUNK_LIMIT = 200;
+
+/**
+ * Activity kinds that never reach thread detail.
+ *
+ * One list rather than a literal repeated per query. Seven SQL filters, the
+ * live stream filter and the projector all have to agree, and the projection
+ * paging filter already carries a comment calling that parity load-bearing —
+ * a kind added to one place and missed in another leaks the exact bulk these
+ * kinds exist to keep out.
+ */
+export const HIDDEN_THREAD_ACTIVITY_KINDS = [
+  AGENT_TRANSCRIPT_ACTIVITY_KIND,
+  ITEM_OUTPUT_ACTIVITY_KIND,
+] as const;
+
+export const isHiddenThreadActivityKind = (kind: string): boolean =>
+  HIDDEN_THREAD_ACTIVITY_KINDS.some((hidden) => hidden === kind);
+
+/** Which stream a chunk of item output came from. */
+export const ItemOutputStreamKind = Schema.Literals([
+  "command_output",
+  "file_change_output",
+  "reasoning_text",
+  // Codex reports its reasoning as a summary stream, so a thinking view that
+  // listened only for raw reasoning text would stay empty against it.
+  "reasoning_summary_text",
+]);
+export type ItemOutputStreamKind = typeof ItemOutputStreamKind.Type;
+
+/** Every stream kind recorded as item output, for callers that must sweep all of them. */
+export const ITEM_OUTPUT_STREAM_KINDS = [
+  "command_output",
+  "file_change_output",
+  "reasoning_text",
+  "reasoning_summary_text",
+] as const satisfies ReadonlyArray<ItemOutputStreamKind>;
+
+/** Reasoning belongs to the turn; the kinds that carry it, across providers. */
+export const ITEM_OUTPUT_REASONING_STREAM_KINDS = [
+  "reasoning_text",
+  "reasoning_summary_text",
+] as const satisfies ReadonlyArray<ItemOutputStreamKind>;
+
+/**
+ * One appended run of output text.
+ *
+ * Providers differ in how these arrive: Codex streams a command's output as it
+ * runs, while Claude has no incremental channel for tool output and delivers
+ * the whole result in one chunk when the command finishes. Reasoning streams on
+ * both. A reader must not assume chunk boundaries mean anything.
+ */
+export const ItemOutputChunk = Schema.Struct({
+  streamKind: ItemOutputStreamKind,
+  text: Schema.String,
+});
+export type ItemOutputChunk = typeof ItemOutputChunk.Type;
 
 /**
  * Which client connection dispatched the command that produced an event.
@@ -2342,6 +2423,29 @@ export const OrchestrationGetAgentTranscriptResult = Schema.Struct({
 export type OrchestrationGetAgentTranscriptResult =
   typeof OrchestrationGetAgentTranscriptResult.Type;
 
+export const OrchestrationGetItemOutputInput = Schema.Struct({
+  threadId: ThreadId,
+  /** The item for command and file-change output; the turn for reasoning. */
+  targetId: TrimmedNonEmptyString,
+});
+export type OrchestrationGetItemOutputInput = typeof OrchestrationGetItemOutputInput.Type;
+
+export const OrchestrationGetItemOutputResult = Schema.Struct({
+  targetId: TrimmedNonEmptyString,
+  /**
+   * In the order produced. Chunk boundaries are an artefact of how the provider
+   * delivered the text and of server-side coalescing, so a reader should join
+   * them rather than treat them as lines or records.
+   */
+  chunks: Schema.Array(ItemOutputChunk),
+  /**
+   * True when older chunks were dropped to bound the row. The newest are kept,
+   * because the end of a command's output is the part worth reading.
+   */
+  truncated: Schema.Boolean,
+});
+export type OrchestrationGetItemOutputResult = typeof OrchestrationGetItemOutputResult.Type;
+
 export const OrchestrationGetWorkflowScriptInput = Schema.Struct({
   threadId: ThreadId,
   /** Absolute path from the workflow's runHandles.scriptPath. The server
@@ -2398,6 +2502,10 @@ export const OrchestrationRpcSchemas = {
   getAgentTranscript: {
     input: OrchestrationGetAgentTranscriptInput,
     output: OrchestrationGetAgentTranscriptResult,
+  },
+  getItemOutput: {
+    input: OrchestrationGetItemOutputInput,
+    output: OrchestrationGetItemOutputResult,
   },
   getWorkflowScript: {
     input: OrchestrationGetWorkflowScriptInput,
@@ -2456,6 +2564,14 @@ export class OrchestrationGetTurnDiffError extends Schema.TaggedError<Orchestrat
 
 export class OrchestrationGetFullThreadDiffError extends Schema.TaggedError<OrchestrationGetFullThreadDiffError>()(
   "OrchestrationGetFullThreadDiffError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export class OrchestrationGetItemOutputError extends Schema.TaggedError<OrchestrationGetItemOutputError>()(
+  "OrchestrationGetItemOutputError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),

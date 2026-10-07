@@ -8,7 +8,7 @@ import type {
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import {
-  AGENT_TRANSCRIPT_ACTIVITY_KIND,
+  isHiddenThreadActivityKind,
   isImportedAgentSessionMessageId,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
@@ -1048,12 +1048,12 @@ export function projectEvent(
             return nextBase;
           }
 
-          // Subagent narration is not thread detail. It is persisted by the
-          // projection pipeline and read back through the scoped transcript
-          // query, so keeping it out of the in-memory read model also keeps a
-          // fleet's output from evicting real activity from the retained
+          // Subagent narration and raw item output are not thread detail.
+          // Both are persisted by the projection pipeline and read back through
+          // a scoped query, so keeping them out of the in-memory read model
+          // also keeps them from evicting real activity from the retained
           // window below.
-          if (payload.activity.kind === AGENT_TRANSCRIPT_ACTIVITY_KIND) {
+          if (isHiddenThreadActivityKind(payload.activity.kind)) {
             return nextBase;
           }
 

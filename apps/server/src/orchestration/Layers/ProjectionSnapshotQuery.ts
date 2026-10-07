@@ -32,6 +32,9 @@ import {
   ThreadLinkedPullRequest,
   ThreadTitleState,
   AGENT_TRANSCRIPT_ACTIVITY_KIND,
+  HIDDEN_THREAD_ACTIVITY_KINDS,
+  ITEM_OUTPUT_ACTIVITY_KIND,
+  ITEM_OUTPUT_CHUNK_LIMIT,
   ThreadId,
   ThreadPullRequestSnapshot,
   ThreadPullRequestStack,
@@ -837,7 +840,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sequence,
           created_at AS "createdAt"
         FROM projection_thread_activities
-        WHERE kind <> ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
+        WHERE NOT ${sql.in("kind", HIDDEN_THREAD_ACTIVITY_KINDS)}
         ORDER BY
           thread_id ASC,
           sequence ASC,
@@ -1173,7 +1176,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             AND threads.archived_at IS NULL
             AND projects.deleted_at IS NULL
             AND ${threadId === null ? sql`1 = 1` : sql`threads.thread_id = ${threadId}`}
-            AND activities.kind <> ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
+            AND NOT ${sql.in("activities.kind", HIDDEN_THREAD_ACTIVITY_KINDS)}
             AND (
               activities.summary LIKE ${pattern} ESCAPE '!'
               OR json_extract(activities.payload_json, '$.detail') LIKE ${pattern} ESCAPE '!'
@@ -1537,7 +1540,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             created_at
           FROM projection_thread_activities
           WHERE thread_id = ${threadId}
-            AND kind <> ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
+            AND NOT ${sql.in("kind", HIDDEN_THREAD_ACTIVITY_KINDS)}
           ORDER BY
             sequence DESC,
             created_at DESC,
@@ -1672,6 +1675,59 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
+  const listItemOutputRows = SqlSchema.findAll({
+    Request: Schema.Struct({ threadId: ThreadId, targetId: Schema.String }),
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId, targetId }) => sql`
+      SELECT
+        activity_id AS "activityId",
+        thread_id AS "threadId",
+        turn_id AS "turnId",
+        tone,
+        kind,
+        summary,
+        payload_json AS "payload",
+        sequence,
+        created_at AS "createdAt"
+      FROM (
+        SELECT
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND kind = ${ITEM_OUTPUT_ACTIVITY_KIND}
+          AND json_extract(payload_json, '$.targetId') = ${targetId}
+        ORDER BY
+          sequence DESC,
+          created_at DESC,
+          activity_id DESC
+        LIMIT ${ITEM_OUTPUT_CHUNK_LIMIT}
+      ) AS recent_output
+      ORDER BY
+        sequence ASC,
+        created_at ASC,
+        activity_id ASC
+    `,
+  });
+
+  const listItemOutput: ProjectionSnapshotQueryShape["listItemOutput"] = (input) =>
+    listItemOutputRows(input).pipe(
+      Effect.map((rows) => rows.map(mapThreadActivityRow)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listItemOutput:query",
+          "ProjectionSnapshotQuery.listItemOutput:decodeRow",
+        ),
+      ),
+    );
+
   // Mirrors derivePendingUserInputCountFromActivities: the newest lifecycle
   // row per requestId decides, and a stale-failure counts as a resolution.
   // Scoped to threads the summary already flags, so the window stays small.
@@ -1743,7 +1799,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT activity_id AS "activityId"
         FROM projection_thread_activities
         WHERE thread_id = ${threadId}
-          AND kind <> ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
+          AND NOT ${sql.in("kind", HIDDEN_THREAD_ACTIVITY_KINDS)}
         ORDER BY
           sequence DESC,
           created_at DESC,
@@ -1923,14 +1979,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             'thread.reverted',
             'thread.session-set'
           )
-          -- Agent-transcript rows are activity-appended events the thread
+          -- Hidden-kind rows are activity-appended events the thread
           -- subscription deliberately does not deliver. Counting one here
           -- would publish a watermark the client can never reach, parking the
           -- page forever — the exact failure this filter's parity guards.
           AND NOT (
             event_type = 'thread.activity-appended'
-            AND json_extract(payload_json, '$.activity.kind') =
-              ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
+            AND json_extract(payload_json, '$.activity.kind')
+              IN ${sql.in(HIDDEN_THREAD_ACTIVITY_KINDS)}
           )
       `,
   });
@@ -2166,7 +2222,7 @@ pending_approval_requests AS (
             created_at
           FROM projection_thread_activities
           WHERE thread_id = ${threadId}
-            AND kind <> ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
+            AND NOT ${sql.in("kind", HIDDEN_THREAD_ACTIVITY_KINDS)}
             AND (
               turn_id IN (
                 SELECT turn_id FROM projection_turns
@@ -2214,7 +2270,7 @@ pending_approval_requests AS (
         SELECT activity_id AS "activityId"
         FROM projection_thread_activities
         WHERE thread_id = ${threadId}
-          AND kind <> ${AGENT_TRANSCRIPT_ACTIVITY_KIND}
+          AND NOT ${sql.in("kind", HIDDEN_THREAD_ACTIVITY_KINDS)}
           AND (
             turn_id IN (
               SELECT turn_id FROM projection_turns
@@ -3999,6 +4055,7 @@ pending_approval_requests AS (
     getUserInputActivity,
     listActivitiesByKind,
     listAgentTranscript,
+    listItemOutput,
     listOpenUserInputRequests,
     getSnapshot,
     getShellSnapshot,

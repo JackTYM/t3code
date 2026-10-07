@@ -118,6 +118,20 @@ export interface ProjectionSnapshotQueryShape {
   }) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
 
   /**
+   * Read the raw output recorded for one row — a command's stdout, a file
+   * edit's diff, or a turn's reasoning. Hidden from thread detail on the same
+   * terms as agent narration, so this scoped query is the only way it reaches a
+   * client, and only one that expanded the row asks for it.
+   *
+   * `targetId` is the turn for reasoning and the item for everything else; see
+   * `ITEM_OUTPUT_ACTIVITY_KIND`.
+   */
+  readonly listItemOutput: (input: {
+    readonly threadId: ThreadId;
+    readonly targetId: string;
+  }) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
+  /**
    * Every unanswered user-input request across active threads. Used at
    * startup to close the ones whose provider callback died with the process.
    */
