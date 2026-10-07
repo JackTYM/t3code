@@ -1,6 +1,7 @@
 import {
   AGENT_TRANSCRIPT_ACTIVITY_KIND,
   ITEM_OUTPUT_ACTIVITY_KIND,
+  ITEM_OUTPUT_REASONING_STREAM_KINDS,
   ITEM_OUTPUT_STREAM_KINDS,
   ApprovalRequestId,
   CommandId,
@@ -1306,7 +1307,7 @@ const make = Effect.gen(function* () {
    * belongs to the item that produced it.
    */
   const itemOutputKeyOf = (event: Extract<ProviderRuntimeEvent, { type: "content.delta" }>) =>
-    event.payload.streamKind === "reasoning_text"
+    ITEM_OUTPUT_REASONING_STREAM_KINDS.some((kind) => kind === event.payload.streamKind)
       ? { scope: "turn" as const, id: event.turnId }
       : event.itemId !== undefined
         ? { scope: "item" as const, id: event.itemId }

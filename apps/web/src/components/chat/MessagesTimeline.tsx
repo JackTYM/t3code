@@ -286,6 +286,9 @@ interface TimelineRowSharedState {
   onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
   onToggleWorkEntry: (anchorKey: string, collapsed: boolean) => void;
   onToggleSpawnRow: (entryId: string, expanded: boolean) => void;
+  /** The live thinking row is a singleton, so one flag rather than a set. */
+  thinkingExpanded: boolean;
+  onToggleThinking: () => void;
   workGroupViewState: WorkGroupViewState;
   agentPanelModel: AgentPanelModel;
   expandedSpawnEntryIds: ReadonlySet<string>;
@@ -516,6 +519,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [expandedSpawnEntryIds, setExpandedSpawnEntryIds] = useState<ReadonlySet<string>>(
     new Set(),
   );
+  // Lifted out of the row: LegendList recycles rows, so a flag kept inside one
+  // is lost the moment the turn repaints.
+  const [thinkingExpanded, setThinkingExpanded] = useState(false);
   const listIdentityKey = displayThreadKey ?? routeThreadKey;
   const prefersReducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const listIdentityRef = useRef(listIdentityKey);
@@ -536,7 +542,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     setExpandedTurnIds(paintedExpandedTurnIds);
     setExpandedWorkGroupIds(paintedExpandedWorkGroupIds);
     setExpandedSpawnEntryIds(paintedExpandedSpawnEntryIds);
+    setThinkingExpanded(false);
   }
+  const onToggleThinking = useCallback(() => {
+    setThinkingExpanded((open) => !open);
+  }, []);
   const onToggleSpawnRow = useCallback((entryId: string, expanded: boolean) => {
     setExpandedSpawnEntryIds((current) => {
       if (current.has(entryId) === expanded) return current;
@@ -977,6 +987,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleWorkGroup,
       onToggleWorkEntry: suspendEndScrollMaintenanceForDisclosure,
       onToggleSpawnRow,
+      thinkingExpanded,
+      onToggleThinking,
       workGroupViewState,
       agentPanelModel: agentPanelModel ?? EMPTY_AGENT_PANEL_MODEL,
       expandedSpawnEntryIds: paintedExpandedSpawnEntryIds,
@@ -1011,6 +1023,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleWorkGroup,
       suspendEndScrollMaintenanceForDisclosure,
       onToggleSpawnRow,
+      thinkingExpanded,
+      onToggleThinking,
       workGroupViewState,
       agentPanelModel,
       paintedExpandedSpawnEntryIds,
@@ -2301,8 +2315,8 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
 
 function ThinkingTimelineRow() {
   const { isCompacting, isPreparingWorktree, latestTurnId } = use(TimelineRowActivityCtx);
-  const { threadRef, activeThreadEnvironmentId } = use(TimelineRowCtx);
-  const [expanded, setExpanded] = useState(false);
+  const { threadRef, activeThreadEnvironmentId, thinkingExpanded, onToggleThinking } =
+    use(TimelineRowCtx);
 
   // Reserve the activity row during setup so the handoff keeps the same height.
   if (isPreparingWorktree || isCompacting) {
@@ -2315,18 +2329,16 @@ function ThinkingTimelineRow() {
     <div className="min-h-7">
       <button
         type="button"
-        aria-expanded={canExpand ? expanded : undefined}
+        aria-expanded={canExpand ? thinkingExpanded : undefined}
         disabled={!canExpand}
         className="block w-fit max-w-full text-left disabled:cursor-default"
-        onClick={() => {
-          setExpanded((open) => !open);
-        }}
+        onClick={onToggleThinking}
       >
         <LiveActivityRow label="Thinking" iconName="brain" active shimmer />
       </button>
       {/* Mounted only while open, which is what keeps the query from running
           for a row nobody expanded. */}
-      {canExpand && expanded ? (
+      {canExpand && thinkingExpanded ? (
         <ItemOutputBody
           environmentId={activeThreadEnvironmentId}
           threadId={threadRef.threadId}
@@ -3970,6 +3982,12 @@ function buildToolCallExpandedBody(
   workspaceRoot: string | undefined,
   visibleLabel: string,
   viewedImagePath: string | null,
+  /**
+   * Drops the result summary when the full recorded output is rendered below.
+   * `detail` is a truncated preview of exactly that output, so keeping both
+   * prints a command's first line twice.
+   */
+  omitDetail = false,
 ): string | null {
   const blocks: string[] = [];
   const seen = new Set<string>([visibleLabel.trim()]);
@@ -3990,7 +4008,7 @@ function buildToolCallExpandedBody(
     addBlock(raw ?? command);
   }
   const detail = workEntry.detail?.trim();
-  if (detail !== viewedImagePath?.trim()) {
+  if (!omitDetail && detail !== viewedImagePath?.trim()) {
     addBlock(detail);
   }
   const viewedImagePaths = new Set(
@@ -4353,6 +4371,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
         workspaceRoot,
         previewText,
         viewedImage ? viewedImagePath : null,
+        showItemOutput,
       )
     : null;
   // Reserve destructive row styling for severe failures, not routine tool errors.

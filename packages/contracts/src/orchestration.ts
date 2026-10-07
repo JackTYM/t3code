@@ -2000,6 +2000,9 @@ export const ItemOutputStreamKind = Schema.Literals([
   "command_output",
   "file_change_output",
   "reasoning_text",
+  // Codex reports its reasoning as a summary stream, so a thinking view that
+  // listened only for raw reasoning text would stay empty against it.
+  "reasoning_summary_text",
 ]);
 export type ItemOutputStreamKind = typeof ItemOutputStreamKind.Type;
 
@@ -2008,6 +2011,13 @@ export const ITEM_OUTPUT_STREAM_KINDS = [
   "command_output",
   "file_change_output",
   "reasoning_text",
+  "reasoning_summary_text",
+] as const satisfies ReadonlyArray<ItemOutputStreamKind>;
+
+/** Reasoning belongs to the turn; the kinds that carry it, across providers. */
+export const ITEM_OUTPUT_REASONING_STREAM_KINDS = [
+  "reasoning_text",
+  "reasoning_summary_text",
 ] as const satisfies ReadonlyArray<ItemOutputStreamKind>;
 
 /**
