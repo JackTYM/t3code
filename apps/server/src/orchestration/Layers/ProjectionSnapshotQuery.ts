@@ -33,6 +33,7 @@ import {
   ThreadTitleState,
   AGENT_TRANSCRIPT_ACTIVITY_KIND,
   HIDDEN_THREAD_ACTIVITY_KINDS,
+  ITEM_OUTPUT_ACTIVITY_KIND,
   ThreadId,
   ThreadPullRequestSnapshot,
   ThreadPullRequestStack,
@@ -101,6 +102,9 @@ const THREAD_DETAIL_ACTIVITY_LIMIT = 500;
 // Bounds one agent's retained narration. A long-running agent must not grow an
 // unbounded set; newest-first selection keeps the most recent window.
 const AGENT_TRANSCRIPT_LIMIT = 200;
+// Bounds one row's retained output. Newest-first selection keeps the tail,
+// which is the part worth reading when a command has printed more than this.
+const ITEM_OUTPUT_LIMIT = 200;
 // Snapshot payloads are decoded and projected in small sequential batches so
 // one client read does not retain the raw payloads for the full activity window.
 const THREAD_DETAIL_ACTIVITY_PAYLOAD_BATCH_SIZE = 25;
@@ -1669,6 +1673,59 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         toPersistenceSqlOrDecodeError(
           "ProjectionSnapshotQuery.listAgentTranscript:query",
           "ProjectionSnapshotQuery.listAgentTranscript:decodeRow",
+        ),
+      ),
+    );
+
+  const listItemOutputRows = SqlSchema.findAll({
+    Request: Schema.Struct({ threadId: ThreadId, targetId: Schema.String }),
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId, targetId }) => sql`
+      SELECT
+        activity_id AS "activityId",
+        thread_id AS "threadId",
+        turn_id AS "turnId",
+        tone,
+        kind,
+        summary,
+        payload_json AS "payload",
+        sequence,
+        created_at AS "createdAt"
+      FROM (
+        SELECT
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND kind = ${ITEM_OUTPUT_ACTIVITY_KIND}
+          AND json_extract(payload_json, '$.targetId') = ${targetId}
+        ORDER BY
+          sequence DESC,
+          created_at DESC,
+          activity_id DESC
+        LIMIT ${ITEM_OUTPUT_LIMIT}
+      ) AS recent_output
+      ORDER BY
+        sequence ASC,
+        created_at ASC,
+        activity_id ASC
+    `,
+  });
+
+  const listItemOutput: ProjectionSnapshotQueryShape["listItemOutput"] = (input) =>
+    listItemOutputRows(input).pipe(
+      Effect.map((rows) => rows.map(mapThreadActivityRow)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listItemOutput:query",
+          "ProjectionSnapshotQuery.listItemOutput:decodeRow",
         ),
       ),
     );
@@ -4000,6 +4057,7 @@ pending_approval_requests AS (
     getUserInputActivity,
     listActivitiesByKind,
     listAgentTranscript,
+    listItemOutput,
     listOpenUserInputRequests,
     getSnapshot,
     getShellSnapshot,

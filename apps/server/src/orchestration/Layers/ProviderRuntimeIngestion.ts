@@ -1,5 +1,7 @@
 import {
   AGENT_TRANSCRIPT_ACTIVITY_KIND,
+  ITEM_OUTPUT_ACTIVITY_KIND,
+  ITEM_OUTPUT_STREAM_KINDS,
   ApprovalRequestId,
   CommandId,
   MessageId,
@@ -115,6 +117,17 @@ const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 // message several times a second while still showing the first paragraph
 // as soon as it is done.
 const MIN_ASSISTANT_DELIVERY_INTERVAL_MS = 400;
+
+// Item output is coalesced before it becomes a row. Codex streams a command's
+// stdout in many small deltas, and one activity row per delta would trade the
+// websocket flood this data is kept off for a write flood in its place. One
+// row per second per item bounds that while staying ahead of the client's
+// own poll, so an expanded row is never more than a tick behind.
+const MIN_ITEM_OUTPUT_FLUSH_INTERVAL_MS = 1_000;
+const MAX_BUFFERED_ITEM_OUTPUT_CHARS = 32_000;
+const BUFFERED_ITEM_OUTPUT_CACHE_CAPACITY = 2_000;
+const BUFFERED_ITEM_OUTPUT_TTL = Duration.minutes(30);
+
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
 type TurnStartRequestedDomainEvent = Extract<
@@ -1028,6 +1041,19 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed(0),
   });
 
+  // Same shape as the assistant-text buffer above, keyed by the row the output
+  // belongs to rather than by message.
+  const bufferedItemOutputByKey = yield* Cache.make<string, string>({
+    capacity: BUFFERED_ITEM_OUTPUT_CACHE_CAPACITY,
+    timeToLive: BUFFERED_ITEM_OUTPUT_TTL,
+    lookup: () => Effect.succeed(""),
+  });
+  const lastItemOutputFlushAtByKey = yield* Cache.make<string, number>({
+    capacity: BUFFERED_ITEM_OUTPUT_CACHE_CAPACITY,
+    timeToLive: BUFFERED_ITEM_OUTPUT_TTL,
+    lookup: () => Effect.succeed(0),
+  });
+
   const assistantSegmentStateByTurnKey = yield* Cache.make<string, AssistantSegmentState>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
     timeToLive: TURN_MESSAGE_IDS_BY_TURN_TTL,
@@ -1268,6 +1294,66 @@ const make = Effect.gen(function* () {
       Effect.flatMap((existingText) =>
         Cache.invalidate(bufferedAssistantTextByMessageId, messageId).pipe(
           Effect.as(Option.getOrElse(existingText, () => "")),
+        ),
+      ),
+    );
+
+  /**
+   * Which row an output delta belongs to.
+   *
+   * Reasoning is the turn's, not any item's — the model thinks between tool
+   * calls, so there is often no item in flight to hang it on. Everything else
+   * belongs to the item that produced it.
+   */
+  const itemOutputKeyOf = (event: Extract<ProviderRuntimeEvent, { type: "content.delta" }>) =>
+    event.payload.streamKind === "reasoning_text"
+      ? { scope: "turn" as const, id: event.turnId }
+      : event.itemId !== undefined
+        ? { scope: "item" as const, id: event.itemId }
+        : null;
+
+  /**
+   * Appends a delta and returns the text to write as a row, or "" to keep
+   * buffering. Flushes when the pacing interval has elapsed, and unconditionally
+   * once the buffer would exceed its cap so a chatty command cannot grow it
+   * without bound.
+   */
+  const appendBufferedItemOutput = (cacheKey: string, delta: string, atMillis: number) =>
+    Effect.gen(function* () {
+      const existing = yield* Cache.getOption(bufferedItemOutputByKey, cacheKey);
+      const nextText = Option.match(existing, {
+        onNone: () => delta,
+        onSome: (text) => `${text}${delta}`,
+      });
+
+      if (nextText.length >= MAX_BUFFERED_ITEM_OUTPUT_CHARS) {
+        yield* Cache.invalidate(bufferedItemOutputByKey, cacheKey);
+        yield* Cache.set(lastItemOutputFlushAtByKey, cacheKey, atMillis);
+        return nextText;
+      }
+
+      const lastFlushedAt = Option.getOrUndefined(
+        yield* Cache.getOption(lastItemOutputFlushAtByKey, cacheKey),
+      );
+      if (
+        lastFlushedAt !== undefined &&
+        atMillis - lastFlushedAt < MIN_ITEM_OUTPUT_FLUSH_INTERVAL_MS
+      ) {
+        yield* Cache.set(bufferedItemOutputByKey, cacheKey, nextText);
+        return "";
+      }
+
+      yield* Cache.invalidate(bufferedItemOutputByKey, cacheKey);
+      yield* Cache.set(lastItemOutputFlushAtByKey, cacheKey, atMillis);
+      return nextText;
+    });
+
+  const takeBufferedItemOutput = (cacheKey: string) =>
+    Cache.getOption(bufferedItemOutputByKey, cacheKey).pipe(
+      Effect.flatMap((existing) =>
+        Cache.invalidate(bufferedItemOutputByKey, cacheKey).pipe(
+          Effect.andThen(Cache.invalidate(lastItemOutputFlushAtByKey, cacheKey)),
+          Effect.as(Option.getOrElse(existing, () => "")),
         ),
       ),
     );
@@ -1617,9 +1703,108 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /**
+   * Buffers one output delta and, when the buffer is due, writes it as a hidden
+   * `item.output` activity.
+   *
+   * Deliberately tolerant: output is a display convenience, so a thread that
+   * cannot be resolved or a delta with nothing to key on is dropped rather than
+   * failing the event. Losing a chunk of stdout must never cost the turn.
+   */
+  const recordItemOutput = (event: Extract<ProviderRuntimeEvent, { type: "content.delta" }>) =>
+    Effect.gen(function* () {
+      const delta = event.payload.delta;
+      if (delta.length === 0) return;
+      const outputKey = itemOutputKeyOf(event);
+      if (outputKey === null || outputKey.id === undefined) return;
+
+      const thread = yield* resolveThreadRuntimeContext(event.threadId);
+      if (!thread) return;
+
+      const streamKind = event.payload.streamKind;
+      const cacheKey = `${thread.id}:${outputKey.scope}:${outputKey.id}:${streamKind}`;
+      const atMillis = Date.parse(event.createdAt);
+      const text = yield* appendBufferedItemOutput(
+        cacheKey,
+        delta,
+        Number.isNaN(atMillis) ? 0 : atMillis,
+      );
+      if (text.length === 0) return;
+
+      const commandId = yield* providerCommandId(event, "item-output-append");
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId,
+        threadId: thread.id,
+        activity: {
+          // The flushing delta's own id: at most one row is written per event,
+          // so it is already unique.
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: ITEM_OUTPUT_ACTIVITY_KIND,
+          // Never rendered: these rows are read through the scoped query, which
+          // returns payloads. The summary exists because activities carry one.
+          summary: "Item output",
+          payload: {
+            scope: outputKey.scope,
+            targetId: String(outputKey.id),
+            streamKind,
+            text,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+        },
+        createdAt: event.createdAt,
+      });
+    });
+
+  /**
+   * Writes out whatever is still buffered for one row, once its producer has
+   * stopped. Tries every stream kind because the buffer is keyed by kind and
+   * the caller knows only which row ended.
+   */
+  const flushItemOutput = (
+    threadId: ThreadId,
+    scope: "item" | "turn",
+    targetId: string,
+    event: ProviderRuntimeEvent,
+  ) =>
+    Effect.forEach(
+      ITEM_OUTPUT_STREAM_KINDS,
+      (streamKind) =>
+        Effect.gen(function* () {
+          const cacheKey = `${threadId}:${scope}:${targetId}:${streamKind}`;
+          const text = yield* takeBufferedItemOutput(cacheKey);
+          if (text.length === 0) return;
+
+          const commandId = yield* providerCommandId(event, `item-output-flush:${streamKind}`);
+          yield* orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId,
+            threadId,
+            activity: {
+              id: EventId.make(`${event.eventId}:item-output:${streamKind}`),
+              createdAt: event.createdAt,
+              tone: "info",
+              kind: ITEM_OUTPUT_ACTIVITY_KIND,
+              summary: "Item output",
+              payload: { scope, targetId, streamKind, text },
+              turnId: toTurnId(event.turnId) ?? null,
+            },
+            createdAt: event.createdAt,
+          });
+        }),
+      { discard: true },
+    );
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       if (event.type === "content.delta" && event.payload.streamKind !== "assistant_text") {
+        // These deltas still cannot change thread state — that is why they
+        // return here rather than walking the rest of this function. They do
+        // carry the text a user expands a row to read, so they are recorded as
+        // a hidden activity on the way out.
+        yield* recordItemOutput(event);
         return;
       }
 
@@ -1630,6 +1815,17 @@ const make = Effect.gen(function* () {
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
       const isTerminalTurn = event.type === "turn.completed" || event.type === "turn.aborted";
+
+      // Whatever is still buffered when the producer stops has nothing left to
+      // ride out on. Without this the tail of a command — often the part that
+      // says how it went — is held until the cache expires and then dropped.
+      if (event.type === "item.completed" && event.itemId !== undefined) {
+        yield* flushItemOutput(thread.id, "item", event.itemId, event);
+      }
+      if (isTerminalTurn && event.turnId !== undefined) {
+        yield* flushItemOutput(thread.id, "turn", event.turnId, event);
+      }
+
       const isCompactedThreadState =
         event.type === "thread.state.changed" && event.payload.state === "compacted";
       const pendingTurnStart =

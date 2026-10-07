@@ -1992,6 +1992,13 @@ export const ItemOutputStreamKind = Schema.Literals([
 ]);
 export type ItemOutputStreamKind = typeof ItemOutputStreamKind.Type;
 
+/** Every stream kind recorded as item output, for callers that must sweep all of them. */
+export const ITEM_OUTPUT_STREAM_KINDS = [
+  "command_output",
+  "file_change_output",
+  "reasoning_text",
+] as const satisfies ReadonlyArray<ItemOutputStreamKind>;
+
 /**
  * One appended run of output text.
  *

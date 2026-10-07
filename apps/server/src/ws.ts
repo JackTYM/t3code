@@ -46,7 +46,7 @@ import {
   OrchestrationGetAgentTranscriptError,
   OrchestrationSearchThreadsError,
   OrchestrationGetTurnDiffError,
-  AGENT_TRANSCRIPT_ACTIVITY_KIND,
+  isHiddenThreadActivityKind,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   type ProjectEntriesFailure,
@@ -354,12 +354,12 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
   return (
     event.type === "thread.message-sent" ||
     event.type === "thread.proposed-plan-upserted" ||
-    // Subagent narration is re-homed onto its owning task and is not part of
-    // thread detail. Excluding it in SQL alone would still stream every row
-    // live to every subscribed client, which is the traffic regression this
-    // design exists to prevent; the scoped transcript query serves it instead.
+    // Subagent narration and raw item output are not part of thread detail.
+    // Excluding them in SQL alone would still stream every row live to every
+    // subscribed client, which is the traffic regression this design exists to
+    // prevent; the scoped queries serve them instead.
     (event.type === "thread.activity-appended" &&
-      event.payload.activity.kind !== AGENT_TRANSCRIPT_ACTIVITY_KIND) ||
+      !isHiddenThreadActivityKind(event.payload.activity.kind)) ||
     event.type === "thread.turn-diff-completed" ||
     event.type === "thread.reverted" ||
     event.type === "thread.session-set"
