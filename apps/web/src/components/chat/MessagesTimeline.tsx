@@ -286,9 +286,6 @@ interface TimelineRowSharedState {
   onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
   onToggleWorkEntry: (anchorKey: string, collapsed: boolean) => void;
   onToggleSpawnRow: (entryId: string, expanded: boolean) => void;
-  /** The live thinking row is a singleton, so one flag rather than a set. */
-  thinkingExpanded: boolean;
-  onToggleThinking: () => void;
   workGroupViewState: WorkGroupViewState;
   agentPanelModel: AgentPanelModel;
   expandedSpawnEntryIds: ReadonlySet<string>;
@@ -519,9 +516,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [expandedSpawnEntryIds, setExpandedSpawnEntryIds] = useState<ReadonlySet<string>>(
     new Set(),
   );
-  // Lifted out of the row: LegendList recycles rows, so a flag kept inside one
-  // is lost the moment the turn repaints.
-  const [thinkingExpanded, setThinkingExpanded] = useState(false);
   const listIdentityKey = displayThreadKey ?? routeThreadKey;
   const prefersReducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const listIdentityRef = useRef(listIdentityKey);
@@ -542,11 +536,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     setExpandedTurnIds(paintedExpandedTurnIds);
     setExpandedWorkGroupIds(paintedExpandedWorkGroupIds);
     setExpandedSpawnEntryIds(paintedExpandedSpawnEntryIds);
-    setThinkingExpanded(false);
   }
-  const onToggleThinking = useCallback(() => {
-    setThinkingExpanded((open) => !open);
-  }, []);
   const onToggleSpawnRow = useCallback((entryId: string, expanded: boolean) => {
     setExpandedSpawnEntryIds((current) => {
       if (current.has(entryId) === expanded) return current;
@@ -987,8 +977,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleWorkGroup,
       onToggleWorkEntry: suspendEndScrollMaintenanceForDisclosure,
       onToggleSpawnRow,
-      thinkingExpanded,
-      onToggleThinking,
       workGroupViewState,
       agentPanelModel: agentPanelModel ?? EMPTY_AGENT_PANEL_MODEL,
       expandedSpawnEntryIds: paintedExpandedSpawnEntryIds,
@@ -1023,8 +1011,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleWorkGroup,
       suspendEndScrollMaintenanceForDisclosure,
       onToggleSpawnRow,
-      thinkingExpanded,
-      onToggleThinking,
       workGroupViewState,
       agentPanelModel,
       paintedExpandedSpawnEntryIds,
@@ -2314,38 +2300,13 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
 }
 
 function ThinkingTimelineRow() {
-  const { isCompacting, isPreparingWorktree, latestTurnId } = use(TimelineRowActivityCtx);
-  const { threadRef, activeThreadEnvironmentId, thinkingExpanded, onToggleThinking } =
-    use(TimelineRowCtx);
-
+  const { isCompacting, isPreparingWorktree } = use(TimelineRowActivityCtx);
   // Reserve the activity row during setup so the handoff keeps the same height.
-  if (isPreparingWorktree || isCompacting) {
-    return <div className="min-h-7" />;
-  }
-
-  const canExpand = threadRef !== null && latestTurnId !== null;
-
   return (
     <div className="min-h-7">
-      <button
-        type="button"
-        aria-expanded={canExpand ? thinkingExpanded : undefined}
-        disabled={!canExpand}
-        className="block w-fit max-w-full text-left disabled:cursor-default"
-        onClick={onToggleThinking}
-      >
+      {isPreparingWorktree || isCompacting ? null : (
         <LiveActivityRow label="Thinking" iconName="brain" active shimmer />
-      </button>
-      {/* Mounted only while open, which is what keeps the query from running
-          for a row nobody expanded. */}
-      {canExpand && thinkingExpanded ? (
-        <ItemOutputBody
-          environmentId={activeThreadEnvironmentId}
-          threadId={threadRef.threadId}
-          targetId={latestTurnId}
-          emptyLabel="No reasoning yet."
-        />
-      ) : null}
+      )}
     </div>
   );
 }
