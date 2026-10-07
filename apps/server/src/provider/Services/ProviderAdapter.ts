@@ -11,7 +11,7 @@ import type {
   ApprovalRequestId,
   ProviderApprovalDecision,
   ProviderDriverKind,
-  ProviderMcpServer,
+  ProviderMcpServerList,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
@@ -53,7 +53,12 @@ export type ProviderCompaction<TError> =
  * files, so offering it would edit something other than what the panel lists.
  */
 export type ProviderMcpControl<TError> = {
-  readonly list: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<ProviderMcpServer>, TError>;
+  /**
+   * Reports `supported: false` rather than an empty list when this particular
+   * session cannot answer — an adapter that owns the capability can still be
+   * driving a CLI too old to have the control requests.
+   */
+  readonly list: (threadId: ThreadId) => Effect.Effect<ProviderMcpServerList, TError>;
   readonly reconnect: (threadId: ThreadId, serverName: string) => Effect.Effect<void, TError>;
   readonly setEnabled: (
     threadId: ThreadId,

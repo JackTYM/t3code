@@ -7675,3 +7675,185 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 });
+
+describe("ClaudeAdapterLive MCP control", () => {
+  /** Grafts the SDK's MCP control requests onto the fake, which omits them by
+      default so the rest of the suite exercises the older-CLI path. */
+  const withMcpControl = (query: object, statuses: ReadonlyArray<Record<string, unknown>>) => {
+    const reconnected: Array<string> = [];
+    const toggled: Array<{ readonly name: string; readonly enabled: boolean }> = [];
+    Object.assign(query, {
+      mcpServerStatus: () => Promise.resolve(statuses),
+      reconnectMcpServer: (name: string) => {
+        reconnected.push(name);
+        return Promise.resolve();
+      },
+      toggleMcpServer: (name: string, enabled: boolean) => {
+        toggled.push({ name, enabled });
+        return Promise.resolve();
+      },
+    });
+    return { reconnected, toggled };
+  };
+
+  const startClaudeSession = (adapter: ClaudeAdapterShape) =>
+    adapter.startSession({
+      threadId: THREAD_ID,
+      provider: ProviderDriverKind.make("claudeAgent"),
+      modelSelection: createModelSelection(
+        ProviderInstanceId.make("claudeAgent"),
+        SYNTHETIC_CLAUDE_STANDARD_MODEL,
+      ),
+      runtimeMode: "full-access",
+    });
+
+  it.effect("maps every SDK status field the panel renders", () => {
+    const harness = makeHarness();
+    withMcpControl(harness.query, [
+      {
+        name: "t3-code",
+        status: "needs-auth",
+        scope: "local",
+        config: { url: "https://mcp.t3.codes/sse" },
+      },
+      {
+        name: "blender",
+        status: "connected",
+        scope: "user",
+        serverInfo: { name: "blender", version: "1.4.0" },
+      },
+      { name: "konnect", status: "failed", scope: "user", error: "spawn konnect ENOENT" },
+    ]);
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* startClaudeSession(adapter);
+
+      const listed = yield* adapter.mcp!.list(THREAD_ID);
+      assert.equal(listed.supported, true);
+      assert.deepEqual(listed.servers, [
+        {
+          name: "t3-code",
+          state: "needs-auth",
+          scope: "local",
+          version: null,
+          error: null,
+          url: "https://mcp.t3.codes/sse",
+        },
+        {
+          name: "blender",
+          state: "connected",
+          scope: "user",
+          version: "1.4.0",
+          error: null,
+          url: null,
+        },
+        {
+          name: "konnect",
+          state: "failed",
+          scope: "user",
+          version: null,
+          error: "spawn konnect ENOENT",
+          url: null,
+        },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps a server with an unrecognized status, reading it as failed", () => {
+    const harness = makeHarness();
+    withMcpControl(harness.query, [{ name: "future", status: "reauthenticating" }]);
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* startClaudeSession(adapter);
+
+      const listed = yield* adapter.mcp!.list(THREAD_ID);
+      assert.deepEqual(
+        listed.servers.map((server) => [server.name, server.state]),
+        [["future", "failed"]],
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("reports unsupported, not an empty list, when the CLI cannot answer", () => {
+    const harness = makeHarness();
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* startClaudeSession(adapter);
+
+      // The fake has no mcpServerStatus, standing in for a CLI without the
+      // control requests. `supported: false` is what keeps the panel from
+      // claiming the session has no servers configured.
+      const listed = yield* adapter.mcp!.list(THREAD_ID);
+      assert.deepEqual(listed, { servers: [], supported: false });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("forwards reconnect and toggle to the session's query handle", () => {
+    const harness = makeHarness();
+    const calls = withMcpControl(harness.query, []);
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* startClaudeSession(adapter);
+
+      yield* adapter.mcp!.reconnect(THREAD_ID, "t3-code");
+      yield* adapter.mcp!.setEnabled(THREAD_ID, "blender", false);
+      yield* adapter.mcp!.setEnabled(THREAD_ID, "blender", true);
+
+      assert.deepEqual(calls.reconnected, ["t3-code"]);
+      assert.deepEqual(calls.toggled, [
+        { name: "blender", enabled: false },
+        { name: "blender", enabled: true },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("fails reconnect on a CLI without the control request", () => {
+    const harness = makeHarness();
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* startClaudeSession(adapter);
+
+      const failure = yield* adapter.mcp!.reconnect(THREAD_ID, "t3-code").pipe(Effect.flip);
+      assert.match(failure.message, /cannot reconnect MCP servers/);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("surfaces the server's own words when reconnect throws", () => {
+    const harness = makeHarness();
+    withMcpControl(harness.query, []);
+    Object.assign(harness.query, {
+      reconnectMcpServer: () => Promise.reject(new Error("401 Unauthorized")),
+    });
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* startClaudeSession(adapter);
+
+      const failure = yield* adapter.mcp!.reconnect(THREAD_ID, "t3-code").pipe(Effect.flip);
+      assert.match(failure.message, /401 Unauthorized/);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+});

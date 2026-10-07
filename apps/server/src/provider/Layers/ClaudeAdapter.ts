@@ -5211,7 +5211,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     list: Effect.fn("mcpList")(function* (threadId) {
       const context = yield* requireSession(threadId);
       const read = context.query.mcpServerStatus;
-      if (read === undefined) return [];
+      // An older CLI cannot answer. Reporting that beats an empty list, which
+      // the panel would render as "this session has no MCP servers".
+      if (read === undefined) return { servers: [], supported: false };
       const statuses = yield* Effect.tryPromise({
         try: () => read.call(context.query),
         catch: (cause) =>
@@ -5222,7 +5224,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             cause,
           }),
       });
-      return statuses.map(toMcpServer);
+      return { servers: statuses.map(toMcpServer), supported: true };
     }),
     reconnect: Effect.fn("mcpReconnect")(function* (threadId, serverName) {
       const context = yield* requireSession(threadId);

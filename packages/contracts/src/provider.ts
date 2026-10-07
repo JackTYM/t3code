@@ -191,9 +191,10 @@ export type ProviderMcpServer = typeof ProviderMcpServer.Type;
 export const ProviderMcpServerList = Schema.Struct({
   servers: Schema.Array(ProviderMcpServer),
   /**
-   * False when the thread's provider has no MCP control at all, so the UI can
-   * say "not supported here" rather than render an empty list that looks like
-   * a thread with no servers.
+   * False when the servers cannot be read at all — the provider has no MCP
+   * control, the thread has no running session, or the session's CLI predates
+   * the control requests. The UI says "not supported here" rather than
+   * rendering an empty list that reads like a session with no servers.
    */
   supported: Schema.Boolean,
 });

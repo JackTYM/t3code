@@ -1806,7 +1806,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       if (mcp === undefined) {
         return { servers: [], supported: false };
       }
-      return { servers: yield* mcp.list(threadId), supported: true };
+      return yield* mcp.list(threadId);
     },
   );
 
