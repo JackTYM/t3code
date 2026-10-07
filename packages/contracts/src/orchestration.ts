@@ -1935,6 +1935,8 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
  * and from the projector's retained activity window. They reach a client only
  * through the scoped (threadId, taskId) transcript query, and only when that
  * agent's view is open.
+ *
+ * See `HIDDEN_THREAD_ACTIVITY_KINDS` for the full set held to these terms.
  */
 export const AGENT_TRANSCRIPT_ACTIVITY_KIND = "agent.transcript";
 
@@ -1952,6 +1954,57 @@ export const AgentTranscriptEntry = Schema.Struct({
   blocks: Schema.Array(AgentTranscriptBlock),
 });
 export type AgentTranscriptEntry = typeof AgentTranscriptEntry.Type;
+
+/**
+ * Activity kind carrying the raw output of one turn item — a command's stdout,
+ * a file edit's diff text, or the model's own reasoning. Stamped with the
+ * owning turnId, and with itemId for everything but reasoning, which belongs to
+ * the turn rather than to any single item.
+ *
+ * Hidden on the same terms as subagent narration, for the same reason: a single
+ * install prints more than the turn it belongs to. Read back through the scoped
+ * (threadId, turnId, itemId) query when a row is expanded, and not before.
+ */
+export const ITEM_OUTPUT_ACTIVITY_KIND = "item.output";
+
+/**
+ * Activity kinds that never reach thread detail.
+ *
+ * One list rather than a literal repeated per query. Seven SQL filters, the
+ * live stream filter and the projector all have to agree, and the projection
+ * paging filter already carries a comment calling that parity load-bearing —
+ * a kind added to one place and missed in another leaks the exact bulk these
+ * kinds exist to keep out.
+ */
+export const HIDDEN_THREAD_ACTIVITY_KINDS = [
+  AGENT_TRANSCRIPT_ACTIVITY_KIND,
+  ITEM_OUTPUT_ACTIVITY_KIND,
+] as const;
+
+export const isHiddenThreadActivityKind = (kind: string): boolean =>
+  HIDDEN_THREAD_ACTIVITY_KINDS.some((hidden) => hidden === kind);
+
+/** Which stream a chunk of item output came from. */
+export const ItemOutputStreamKind = Schema.Literals([
+  "command_output",
+  "file_change_output",
+  "reasoning_text",
+]);
+export type ItemOutputStreamKind = typeof ItemOutputStreamKind.Type;
+
+/**
+ * One appended run of output text.
+ *
+ * Providers differ in how these arrive: Codex streams a command's output as it
+ * runs, while Claude has no incremental channel for tool output and delivers
+ * the whole result in one chunk when the command finishes. Reasoning streams on
+ * both. A reader must not assume chunk boundaries mean anything.
+ */
+export const ItemOutputChunk = Schema.Struct({
+  streamKind: ItemOutputStreamKind,
+  text: Schema.String,
+});
+export type ItemOutputChunk = typeof ItemOutputChunk.Type;
 
 /**
  * Which client connection dispatched the command that produced an event.
