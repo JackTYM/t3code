@@ -18,6 +18,7 @@ import type {
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
+  ProviderMcpServerList,
   ProviderSession,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
@@ -94,6 +95,28 @@ export interface ProviderServiceShape {
    * Aggregates runtime session lists from all registered adapters.
    */
   readonly listSessions: () => Effect.Effect<ReadonlyArray<ProviderSession>>;
+
+  /**
+   * MCP servers of a thread's live session. `supported: false` means the
+   * thread's provider has no MCP control, which the panel must say rather than
+   * render as a session with no servers.
+   */
+  readonly listMcpServers: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderMcpServerList, ProviderServiceError>;
+
+  /** Reconnect one MCP server without restarting the session. */
+  readonly reconnectMcpServer: (
+    threadId: ThreadId,
+    serverName: string,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  /** Enable or disable one MCP server for this session. */
+  readonly setMcpServerEnabled: (
+    threadId: ThreadId,
+    serverName: string,
+    enabled: boolean,
+  ) => Effect.Effect<void, ProviderServiceError>;
 
   /**
    * Read capabilities for the adapter bound to a configured provider instance.

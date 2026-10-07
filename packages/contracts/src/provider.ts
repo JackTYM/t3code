@@ -158,3 +158,74 @@ export const ProviderEvent = Schema.Struct({
   payload: Schema.optional(Schema.Unknown),
 });
 export type ProviderEvent = typeof ProviderEvent.Type;
+
+// ── MCP server management ──────────────────────────────────────────────────
+//
+// Read and repair the MCP servers a live session has. Scoped to one session
+// because that is where the connections live: the CLI reads MCP config when it
+// spawns, so two threads can legitimately disagree about a server's state.
+
+export const ProviderMcpServerState = Schema.Literals([
+  "connected",
+  "failed",
+  "needs-auth",
+  "pending",
+  "disabled",
+]);
+export type ProviderMcpServerState = typeof ProviderMcpServerState.Type;
+
+export const ProviderMcpServer = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  state: ProviderMcpServerState,
+  /** Where the server was configured: project, user, local, claudeai, managed. */
+  scope: Schema.NullOr(TrimmedNonEmptyString),
+  /** Present once connected. */
+  version: Schema.NullOr(TrimmedNonEmptyString),
+  /** The server's own error text when it failed, so the panel can say why. */
+  error: Schema.NullOr(Schema.String),
+  /** Present for HTTP/SSE servers. */
+  url: Schema.NullOr(Schema.String),
+});
+export type ProviderMcpServer = typeof ProviderMcpServer.Type;
+
+export const ProviderMcpServerList = Schema.Struct({
+  servers: Schema.Array(ProviderMcpServer),
+  /**
+   * False when the thread's provider has no MCP control at all, so the UI can
+   * say "not supported here" rather than render an empty list that looks like
+   * a thread with no servers.
+   */
+  supported: Schema.Boolean,
+});
+export type ProviderMcpServerList = typeof ProviderMcpServerList.Type;
+
+export class ProviderMcpUnsupportedError extends Schema.TaggedError<ProviderMcpUnsupportedError>()(
+  "ProviderMcpUnsupportedError",
+  { provider: Schema.String },
+) {
+  override get message() {
+    return `${this.provider} does not support managing MCP servers from T3.`;
+  }
+}
+
+export class ProviderMcpNoSessionError extends Schema.TaggedError<ProviderMcpNoSessionError>()(
+  "ProviderMcpNoSessionError",
+  { threadId: Schema.String },
+) {
+  override get message() {
+    return "This thread has no running session, so it has no MCP servers to manage. Send a message to start one.";
+  }
+}
+
+export class ProviderMcpActionFailedError extends Schema.TaggedError<ProviderMcpActionFailedError>()(
+  "ProviderMcpActionFailedError",
+  {
+    serverName: Schema.String,
+    action: Schema.Literals(["reconnect", "toggle"]),
+    detail: Schema.String,
+  },
+) {
+  override get message() {
+    return `Could not ${this.action} MCP server '${this.serverName}': ${this.detail}`;
+  }
+}

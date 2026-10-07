@@ -1792,6 +1792,58 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  // Routed like any other session operation, but tolerant of a thread with no
+  // session: an unstarted thread has no MCP connections, which is a fact to
+  // report rather than an error to raise.
+  const listMcpServers: ProviderServiceMethod<"listMcpServers"> = Effect.fn("listMcpServers")(
+    function* (threadId) {
+      const routed = yield* resolveRoutableSession({
+        threadId,
+        operation: "ProviderService.listMcpServers",
+        allowRecovery: false,
+      });
+      const mcp = routed.adapter.mcp;
+      if (mcp === undefined) {
+        return { servers: [], supported: false };
+      }
+      return { servers: yield* mcp.list(threadId), supported: true };
+    },
+  );
+
+  const requireMcp = (routed: {
+    readonly adapter: { readonly provider: string; readonly mcp?: unknown };
+  }) =>
+    routed.adapter.mcp === undefined
+      ? toValidationError(
+          "ProviderService.mcp",
+          `Provider '${routed.adapter.provider}' does not support managing MCP servers.`,
+        )
+      : Effect.void;
+
+  const reconnectMcpServer: ProviderServiceMethod<"reconnectMcpServer"> = Effect.fn(
+    "reconnectMcpServer",
+  )(function* (threadId, serverName) {
+    const routed = yield* resolveRoutableSession({
+      threadId,
+      operation: "ProviderService.reconnectMcpServer",
+      allowRecovery: false,
+    });
+    yield* requireMcp(routed);
+    yield* routed.adapter.mcp!.reconnect(threadId, serverName);
+  });
+
+  const setMcpServerEnabled: ProviderServiceMethod<"setMcpServerEnabled"> = Effect.fn(
+    "setMcpServerEnabled",
+  )(function* (threadId, serverName, enabled) {
+    const routed = yield* resolveRoutableSession({
+      threadId,
+      operation: "ProviderService.setMcpServerEnabled",
+      allowRecovery: false,
+    });
+    yield* requireMcp(routed);
+    yield* routed.adapter.mcp!.setEnabled(threadId, serverName, enabled);
+  });
+
   const compactThread: ProviderServiceMethod<"compactThread"> = Effect.fn("compactThread")(
     function* (threadId, modelSelection, requestId) {
       const routed = yield* resolveRoutableSession({
@@ -2407,6 +2459,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondToUserInput,
     stopSession,
     listSessions,
+    listMcpServers,
+    reconnectMcpServer,
+    setMcpServerEnabled,
     getCapabilities,
     getInstanceInfo,
     assertConversationRollbackSupported,

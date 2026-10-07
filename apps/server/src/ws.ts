@@ -81,6 +81,7 @@ import {
   WORKTREE_SETUP_ACTIVITY_KIND,
   worktreeSetupActivityId,
   type WorktreeSetupSnapshot,
+  ProviderMcpActionFailedError,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
@@ -3427,6 +3428,49 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.previewReportStatus, previewManager.reportStatus(input), {
             "rpc.aggregate": "preview",
           }),
+        // A thread with no session has no MCP connections. That is a state to
+        // report, not a failure, so the list degrades to unsupported rather
+        // than surfacing a provider error the panel cannot act on.
+        [WS_METHODS.mcpList]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.mcpList,
+            providerService
+              .listMcpServers(input.threadId)
+              .pipe(Effect.orElseSucceed(() => ({ servers: [], supported: false }))),
+            { "rpc.aggregate": "mcp" },
+          ),
+        [WS_METHODS.mcpReconnect]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.mcpReconnect,
+            providerService.reconnectMcpServer(input.threadId, input.serverName).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderMcpActionFailedError({
+                    serverName: input.serverName,
+                    action: "reconnect",
+                    detail: cause instanceof Error ? cause.message : String(cause),
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "mcp" },
+          ),
+        [WS_METHODS.mcpSetEnabled]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.mcpSetEnabled,
+            providerService
+              .setMcpServerEnabled(input.threadId, input.serverName, input.enabled)
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderMcpActionFailedError({
+                      serverName: input.serverName,
+                      action: "toggle",
+                      detail: cause instanceof Error ? cause.message : String(cause),
+                    }),
+                ),
+              ),
+            { "rpc.aggregate": "mcp" },
+          ),
         [WS_METHODS.previewAutomationConnect]: (input) =>
           observeRpcStreamEffect(
             WS_METHODS.previewAutomationConnect,

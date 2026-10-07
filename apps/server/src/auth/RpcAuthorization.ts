@@ -147,6 +147,11 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.previewRefresh]: AuthOrchestrationOperateScope,
   [WS_METHODS.previewClose]: AuthOrchestrationOperateScope,
   [WS_METHODS.previewList]: AuthOrchestrationReadScope,
+  [WS_METHODS.mcpList]: AuthOrchestrationReadScope,
+  // Operate: reconnecting or disabling a server changes what tools the agent
+  // can reach for the rest of the session.
+  [WS_METHODS.mcpReconnect]: AuthOrchestrationOperateScope,
+  [WS_METHODS.mcpSetEnabled]: AuthOrchestrationOperateScope,
   [WS_METHODS.previewReportStatus]: AuthOrchestrationOperateScope,
   [WS_METHODS.previewAutomationConnect]: AuthOrchestrationOperateScope,
   [WS_METHODS.previewAutomationRespond]: AuthOrchestrationOperateScope,

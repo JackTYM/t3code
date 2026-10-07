@@ -52,6 +52,7 @@ import {
   RuntimeTaskId,
   type RuntimeTaskStatus,
   type RuntimeTaskUsage,
+  type ProviderMcpServer,
   type TaskAgentLinkage,
   type TaskRunHandles,
   ThreadId,
@@ -114,6 +115,7 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
+import type { ProviderMcpControl } from "../Services/ProviderAdapter.ts";
 import { spawnAndCollect } from "../providerSnapshot.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
@@ -367,6 +369,22 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
   readonly close: () => void;
+  // Optional for two reasons: a CLI older than these control requests will not
+  // answer them, and every test fake injected through `createQuery` would
+  // otherwise have to grow three methods it does not use.
+  readonly mcpServerStatus?: () => Promise<ReadonlyArray<SdkMcpServerStatus>>;
+  readonly reconnectMcpServer?: (serverName: string) => Promise<void>;
+  readonly toggleMcpServer?: (serverName: string, enabled: boolean) => Promise<void>;
+}
+
+/** The parts of the SDK's McpServerStatus this adapter maps. */
+interface SdkMcpServerStatus {
+  readonly name: string;
+  readonly status: string;
+  readonly serverInfo?: { readonly name: string; readonly version: string };
+  readonly error?: string;
+  readonly scope?: string;
+  readonly config?: { readonly url?: string };
 }
 
 export interface ClaudeAdapterLiveOptions {
@@ -5160,6 +5178,84 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
+  /** Normalizes one SDK status row; unknown states read as failed rather than
+      being dropped, so a server never silently vanishes from the panel. */
+  const toMcpServer = (status: SdkMcpServerStatus): ProviderMcpServer => ({
+    name: status.name,
+    state:
+      status.status === "connected" ||
+      status.status === "failed" ||
+      status.status === "needs-auth" ||
+      status.status === "pending" ||
+      status.status === "disabled"
+        ? status.status
+        : "failed",
+    scope: status.scope ?? null,
+    version: status.serverInfo?.version ?? null,
+    error: status.error ?? null,
+    url: status.config?.url ?? null,
+  });
+
+  const mcpActionFailed = (serverName: string, action: "reconnect" | "toggle", cause: unknown) =>
+    new ProviderAdapterRequestError({
+      provider: PROVIDER,
+      method: `mcp/${action}`,
+      detail:
+        cause instanceof Error ? cause.message : `Could not ${action} MCP server '${serverName}'.`,
+      cause,
+    });
+
+  // A CLI older than these control requests answers none of them, so each
+  // method checks for its own rather than assuming the trio arrives together.
+  const mcp: ProviderMcpControl<ProviderAdapterError> = {
+    list: Effect.fn("mcpList")(function* (threadId) {
+      const context = yield* requireSession(threadId);
+      const read = context.query.mcpServerStatus;
+      if (read === undefined) return [];
+      const statuses = yield* Effect.tryPromise({
+        try: () => read.call(context.query),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "mcp/status",
+            detail: "Could not read MCP server status.",
+            cause,
+          }),
+      });
+      return statuses.map(toMcpServer);
+    }),
+    reconnect: Effect.fn("mcpReconnect")(function* (threadId, serverName) {
+      const context = yield* requireSession(threadId);
+      const reconnect = context.query.reconnectMcpServer;
+      if (reconnect === undefined) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "mcp/reconnect",
+          detail: "This Claude Code version cannot reconnect MCP servers.",
+        });
+      }
+      yield* Effect.tryPromise({
+        try: () => reconnect.call(context.query, serverName),
+        catch: (cause) => mcpActionFailed(serverName, "reconnect", cause),
+      });
+    }),
+    setEnabled: Effect.fn("mcpSetEnabled")(function* (threadId, serverName, enabled) {
+      const context = yield* requireSession(threadId);
+      const toggle = context.query.toggleMcpServer;
+      if (toggle === undefined) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "mcp/toggle",
+          detail: "This Claude Code version cannot enable or disable MCP servers.",
+        });
+      }
+      yield* Effect.tryPromise({
+        try: () => toggle.call(context.query, serverName, enabled),
+        catch: (cause) => mcpActionFailed(serverName, "toggle", cause),
+      });
+    }),
+  };
+
   const readThread: ClaudeAdapterShape["readThread"] = Effect.fn("readThread")(
     function* (threadId) {
       const context = yield* requireSession(threadId);
@@ -5449,6 +5545,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       sessionModelSwitch: "in-session",
     },
     compaction: { type: "slash-command", command: "/compact" },
+    mcp,
     startSession,
     sendTurn,
     interruptTurn,

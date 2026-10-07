@@ -198,6 +198,11 @@ describe("ProviderSessionReaper", () => {
       respondToUserInput: () => unsupported(),
       stopSession,
       listSessions: () => Effect.succeed([]),
+      // MCP management is unused by this test; a thread with no servers is
+      // the honest stub rather than a die().
+      listMcpServers: () => Effect.succeed({ servers: [], supported: false }),
+      reconnectMcpServer: () => Effect.void,
+      setMcpServerEnabled: () => Effect.void,
       getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
       assertConversationRollbackSupported: () => unsupported(),
       getInstanceInfo: (instanceId) => {

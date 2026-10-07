@@ -364,6 +364,11 @@ describe("ProviderCommandReactor", () => {
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
       listSessions: () => Effect.succeed(runtimeSessions),
+      // MCP management is unused by this test; a thread with no servers is
+      // the honest stub rather than a die().
+      listMcpServers: () => Effect.succeed({ servers: [], supported: false }),
+      reconnectMcpServer: () => Effect.void,
+      setMcpServerEnabled: () => Effect.void,
       getCapabilities: (_provider) =>
         Effect.succeed({
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",

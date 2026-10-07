@@ -11,6 +11,7 @@ import type {
   ApprovalRequestId,
   ProviderApprovalDecision,
   ProviderDriverKind,
+  ProviderMcpServer,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
@@ -41,6 +42,25 @@ export type ProviderCompaction<TError> =
       ) => Effect.Effect<void, TError>;
     }
   | { readonly type: "slash-command"; readonly command: `/${string}` };
+
+/**
+ * Reading and repairing a session's MCP servers. Omitted by adapters with no
+ * MCP control, which is how "not supported here" stays a type-level fact
+ * rather than a runtime guess.
+ *
+ * Adding and removing servers is deliberately absent: the SDK's setMcpServers
+ * only reaches servers it added dynamically, never the ones from settings
+ * files, so offering it would edit something other than what the panel lists.
+ */
+export type ProviderMcpControl<TError> = {
+  readonly list: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<ProviderMcpServer>, TError>;
+  readonly reconnect: (threadId: ThreadId, serverName: string) => Effect.Effect<void, TError>;
+  readonly setEnabled: (
+    threadId: ThreadId,
+    serverName: string,
+    enabled: boolean,
+  ) => Effect.Effect<void, TError>;
+};
 
 export interface ProviderAdapterCapabilities {
   /**
@@ -87,6 +107,9 @@ export interface ProviderAdapterShape<TError> {
 
   /** Omitted when this adapter does not support manual context compaction. */
   readonly compaction?: ProviderCompaction<TError>;
+
+  /** Omitted when this adapter cannot manage MCP servers. */
+  readonly mcp?: ProviderMcpControl<TError>;
 
   /**
    * Interrupt an active turn.

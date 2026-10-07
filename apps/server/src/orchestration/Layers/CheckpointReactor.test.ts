@@ -122,6 +122,10 @@ function createProviderServiceHarness(
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),
+    // Unused here: this reactor never touches MCP.
+    listMcpServers: () => unsupported(),
+    reconnectMcpServer: () => unsupported(),
+    setMcpServerEnabled: () => unsupported(),
     listSessions,
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     assertConversationRollbackSupported,
