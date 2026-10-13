@@ -141,6 +141,7 @@ type TestClaudeCapabilities = {
   readonly email: string | undefined;
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
+  readonly apiKeySource: string | undefined;
   readonly apiProvider: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
 };
@@ -151,6 +152,7 @@ function claudeCapabilities(overrides: Partial<TestClaudeCapabilities> = {}) {
       email: undefined,
       subscriptionType: undefined,
       tokenSource: undefined,
+      apiKeySource: undefined,
       apiProvider: undefined,
       slashCommands: [],
       ...overrides,
@@ -2941,6 +2943,54 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                   stderr: "",
                   code: 0,
                 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      // Current CLIs keep reporting `tokenSource: "claude.ai"` when a login also
+      // exists and name the key in `apiKeySource`. Reading only `tokenSource`
+      // labelled every API-key instance a bare "Authenticated", which hid which
+      // billing path a thread was on.
+      for (const apiKeySource of ["ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key"]) {
+        it.effect(`labels a credential from ${apiKeySource} as an api key`, () =>
+          Effect.gen(function* () {
+            const status = yield* checkClaudeProviderStatus(
+              defaultClaudeSettings,
+              claudeCapabilities({ tokenSource: "claude.ai", apiKeySource }),
+            );
+            assert.strictEqual(status.auth.type, "apiKey");
+            assert.strictEqual(status.auth.label, "Claude API Key");
+          }).pipe(
+            Effect.provide(
+              mockSpawnerLayer((args) => {
+                const joined = args.join(" ");
+                if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+                if (joined === "auth status")
+                  return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
+                throw new Error(`Unexpected args: ${joined}`);
+              }),
+            ),
+          ),
+        );
+      }
+
+      it.effect("keeps the subscription label when no api key is in use", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({ subscriptionType: "max", apiKeySource: "none" }),
+          );
+          assert.strictEqual(status.auth.type, "max");
+          assert.strictEqual(status.auth.label, "Claude Max Subscription");
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);
             }),
           ),

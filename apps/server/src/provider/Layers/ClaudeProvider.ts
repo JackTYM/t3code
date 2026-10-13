@@ -136,11 +136,27 @@ function formatClaudeSubscriptionAuthLabel(subscriptionType: string): string {
   return `Claude ${subscriptionLabel} Subscription`;
 }
 
+/**
+ * The `apiKeySource` values that mean an API key is paying for requests. The
+ * SDK also lists `"none"` (a login, a bearer token or a cloud provider) and a
+ * few legacy members current CLIs never emit, so this names the three that
+ * count rather than treating anything but `"none"` as a key.
+ */
+const CLAUDE_API_KEY_SOURCES: ReadonlySet<string> = new Set([
+  "ANTHROPIC_API_KEY",
+  "apiKeyHelper",
+  "/login managed key",
+]);
+
 function claudeAuthMetadata(input: {
   readonly subscriptionType: string | undefined;
   readonly authMethod: string | undefined;
+  readonly apiKeySource?: string | undefined;
 }): { readonly type: string; readonly label: string } | undefined {
-  if (normalizeClaudeAuthMethod(input.authMethod) === "apiKey") {
+  if (
+    (input.apiKeySource !== undefined && CLAUDE_API_KEY_SOURCES.has(input.apiKeySource)) ||
+    normalizeClaudeAuthMethod(input.authMethod) === "apiKey"
+  ) {
     return {
       type: "apiKey",
       label: "Claude API Key",
@@ -228,6 +244,12 @@ type ClaudeCapabilitiesProbe = {
   readonly email: string | undefined;
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
+  /**
+   * Where the credential used for API requests came from. Current CLIs name an
+   * API key here and leave `tokenSource` at `"claude.ai"` when a login also
+   * exists, so `tokenSource` alone cannot tell the two billing paths apart.
+   */
+  readonly apiKeySource: string | undefined;
   /**
    * Active API backend reported by the SDK's `AccountInfo`. Anthropic OAuth
    * login only applies when `"firstParty"`; for Amazon Bedrock (`"bedrock"`)
@@ -377,6 +399,7 @@ const probeClaudeCapabilities = (
               readonly email?: string;
               readonly subscriptionType?: string;
               readonly tokenSource?: string;
+              readonly apiKeySource?: string;
               readonly apiProvider?: string;
             }
           | undefined;
@@ -384,6 +407,7 @@ const probeClaudeCapabilities = (
           email: account?.email,
           subscriptionType: account?.subscriptionType,
           tokenSource: account?.tokenSource,
+          apiKeySource: account?.apiKeySource,
           apiProvider: account?.apiProvider,
           slashCommands: parseClaudeInitializationCommands(init.commands),
           ...(usage ? { usage } : {}),
@@ -559,6 +583,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     claudeAuthMetadata({
       subscriptionType: capabilities.subscriptionType,
       authMethod: capabilities.tokenSource,
+      apiKeySource: capabilities.apiKeySource,
     }) ?? apiProviderAuthMetadata(capabilities.apiProvider);
   const usageLimits = !capabilities.usage
     ? makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" })

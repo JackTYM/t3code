@@ -115,7 +115,7 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
           '      output_style: "default",',
           '      available_output_styles: ["default"],',
           "      models: [],",
-          '      account: { email: "dev@example.com", subscriptionType: "pro", tokenSource: "oauth" },',
+          '      account: { email: "dev@example.com", subscriptionType: "pro", tokenSource: "oauth", apiKeySource: "ANTHROPIC_API_KEY" },',
           "    });",
           "  }",
           "  // The probe follows initialize with get_usage on the same process.",
@@ -149,6 +149,9 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
         email: "dev@example.com",
         subscriptionType: "pro",
         tokenSource: "oauth",
+        // Passed through untouched: the label that tells an API-key instance from
+        // a subscription one is derived from this field, so dropping it is silent.
+        apiKeySource: "ANTHROPIC_API_KEY",
         apiProvider: undefined,
         slashCommands: [
           {
