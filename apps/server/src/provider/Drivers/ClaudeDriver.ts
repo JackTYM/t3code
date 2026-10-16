@@ -13,6 +13,7 @@
  * @module provider/Drivers/ClaudeDriver
  */
 import { ClaudeSettings, ProviderDriverKind } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
@@ -20,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as NodeOS from "node:os";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
@@ -29,6 +31,8 @@ import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
+import { makeClaudeAccountModelsReader } from "../claudeAccountModels.ts";
+import { makeClaudeCredentialsReader } from "../claudeCloudCredentials.ts";
 import { makeClaudeAdapter } from "../Layers/ClaudeAdapter.ts";
 import { makeClaudeScopedLimitNames } from "../Layers/claudeUsageLimits.ts";
 import {
@@ -173,6 +177,32 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       });
       const capabilitiesCacheKey = yield* makeClaudeCapabilitiesCacheKey(effectiveConfig, cwd);
 
+      // Limited-access models (Mythos) are offered only when the account's login
+      // reports them. That login is the CLI's default one, so skip the check
+      // whenever the instance signs in some other way: an API key or router
+      // (which cannot reach those models), a cloud provider, or its own config
+      // directory (a different account than the login we would read).
+      const usesDefaultSubscriptionLogin =
+        effectiveConfig.homePath.trim() === "" &&
+        !processEnv.ANTHROPIC_API_KEY &&
+        !processEnv.ANTHROPIC_AUTH_TOKEN &&
+        !processEnv.ANTHROPIC_BASE_URL &&
+        !processEnv.CLAUDE_CONFIG_DIR &&
+        !Object.keys(processEnv).some((name) => name.startsWith("CLAUDE_CODE_USE_"));
+      const accountModelIds = usesDefaultSubscriptionLogin
+        ? makeClaudeAccountModelsReader({
+            httpClient,
+            credentials: yield* makeClaudeCredentialsReader({
+              spawner,
+              fileSystem,
+              path,
+              platform: yield* HostProcessPlatform,
+              homeDir: NodeOS.homedir(),
+              environment: processEnv,
+            }),
+          }).read
+        : undefined;
+
       // Start the TTL-gated refresh without delaying provider readiness. The
       // next check observes a remote manifest after the background fetch lands.
       const checkProvider = modelManifest.refreshInBackground.pipe(
@@ -186,6 +216,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
                 cwd,
                 resolveClaudeModelCatalog(manifest),
                 scopedLimitNames,
+                accountModelIds,
               ),
             ),
             Effect.map(stampIdentity),

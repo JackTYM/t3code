@@ -2727,6 +2727,45 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         ),
       );
 
+      it.effect("lists Mythos only when the account reports it", () =>
+        Effect.gen(function* () {
+          const withAccount = (ids: ReadonlySet<string>) =>
+            checkClaudeProviderStatus(
+              defaultClaudeSettings,
+              claudeCapabilities(),
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              Effect.succeed(ids),
+            );
+          const mythos = (status: { readonly models: ReadonlyArray<{ readonly slug: string }> }) =>
+            status.models.some((model) => model.slug === "claude-mythos-5-1");
+
+          assert.isTrue(mythos(yield* withAccount(new Set(["claude-mythos-5-1"]))));
+          assert.isFalse(mythos(yield* withAccount(new Set(["claude-fable-5-1"]))));
+          // No account check at all (API key, router, own config dir): not offered.
+          assert.isFalse(
+            mythos(yield* checkClaudeProviderStatus(defaultClaudeSettings, claudeCapabilities())),
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              // Mythos needs a CLI that knows it, which this fake claims to be.
+              if (joined === "--version") return { stdout: "2.1.300\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return {
+                  stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',
+                  stderr: "",
+                  code: 0,
+                };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
       it.effect("returns a display label for claude subscription types", () =>
         Effect.gen(function* () {
           const status = yield* checkClaudeProviderStatus(

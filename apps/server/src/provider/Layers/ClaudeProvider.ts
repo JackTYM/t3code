@@ -45,6 +45,7 @@ import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   type ClaudeModelCatalog,
   formatClaudeVersionUpgradeMessage,
+  listUngatedClaudeModels,
   resolveClaudeModelsForVersion,
 } from "../ClaudeModelCatalog.ts";
 
@@ -426,6 +427,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   modelCatalog: ClaudeModelCatalog = BUNDLED_CLAUDE_MODEL_CATALOG,
   /** Shared with the adapter so turn events reuse the scoped-bucket names this probe saw. */
   scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>,
+  /**
+   * Model ids the signed-in account can use, for models the Claude CLI does not
+   * list itself (Mythos). Omitted when the account cannot be checked.
+   */
+  resolveAccountModelIds?: Effect.Effect<ReadonlySet<string>>,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -434,7 +440,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const resolvedEnvironment = environment ?? process.env;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const allModels = providerModelsFromSettings(
-    modelCatalog.models.map((entry) => entry.model),
+    listUngatedClaudeModels(modelCatalog),
     claudeSettings.customModels,
     DEFAULT_CLAUDE_MODEL_CAPABILITIES,
   );
@@ -523,16 +529,19 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     });
   }
 
-  const models = providerModelsFromSettings(
-    resolveClaudeModelsForVersion(modelCatalog, parsedVersion),
-    claudeSettings.customModels,
-    DEFAULT_CLAUDE_MODEL_CAPABILITIES,
-  );
   const versionUpgradeMessage = formatClaudeVersionUpgradeMessage(modelCatalog, parsedVersion);
 
   const capabilities = resolveCapabilities
     ? yield* resolveCapabilities(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
     : undefined;
+  // After the capabilities probe: the CLI refreshes an expiring login while it
+  // starts, and the account check reads that login.
+  const accountModelIds = resolveAccountModelIds ? yield* resolveAccountModelIds : undefined;
+  const models = providerModelsFromSettings(
+    resolveClaudeModelsForVersion(modelCatalog, parsedVersion, accountModelIds),
+    claudeSettings.customModels,
+    DEFAULT_CLAUDE_MODEL_CAPABILITIES,
+  );
   const skills = yield* discoverClaudeSkills(claudeSettings, cwd, resolvedEnvironment);
   const slashCommands = [COMPACT_SLASH_COMMAND, ...(capabilities?.slashCommands ?? [])];
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
@@ -599,7 +608,7 @@ export const makePendingClaudeProvider = (
   Effect.gen(function* () {
     const checkedAt = yield* nowIso;
     const models = providerModelsFromSettings(
-      modelCatalog.models.map((entry) => entry.model),
+      listUngatedClaudeModels(modelCatalog),
       claudeSettings.customModels,
       DEFAULT_CLAUDE_MODEL_CAPABILITIES,
     );

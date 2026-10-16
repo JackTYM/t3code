@@ -9,7 +9,7 @@ import type { ClaudeCloudSettings } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
-import { BUNDLED_CLAUDE_MODEL_CATALOG } from "../ClaudeModelCatalog.ts";
+import { BUNDLED_CLAUDE_MODEL_CATALOG, listUngatedClaudeModels } from "../ClaudeModelCatalog.ts";
 import type { ClaudeCloudApi } from "../claudeCloudApi.ts";
 import type { ClaudeCloudCredentialsReader } from "../claudeCloudCredentials.ts";
 import {
@@ -26,7 +26,8 @@ export const CLAUDE_CLOUD_PRESENTATION = {
   supportsConversationRollback: false,
 } as const;
 
-const models = () => BUNDLED_CLAUDE_MODEL_CATALOG.models.map((entry) => entry.model);
+// Account-gated models are not offered: this provider never checks the account.
+const models = () => listUngatedClaudeModels(BUNDLED_CLAUDE_MODEL_CATALOG);
 
 const draft = (input: {
   readonly enabled: boolean;

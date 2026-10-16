@@ -9,7 +9,9 @@ import {
   resolveClaudeCatalogApiModelId,
   resolveClaudeCatalogEffort,
   resolveClaudeModelCatalog,
+  listUngatedClaudeModels,
   resolveClaudeModelsForVersion,
+  getClaudeCatalogModelCapabilities,
   resolveClaudeModelSlug,
   scopeClaudeModelCatalog,
 } from "./ClaudeModelCatalog.ts";
@@ -189,5 +191,66 @@ describe("Claude model catalog", () => {
       resolveClaudeModelsForVersion(catalog, "3.2.0").map((model) => model.slug),
       ["claude-synthetic-next", "claude-custom-tuned"],
     );
+  });
+
+  describe("account-gated models", () => {
+    const MYTHOS = "claude-mythos-5-1";
+    const slugs = (
+      catalog: ReturnType<typeof resolveClaudeModelCatalog>,
+      ids?: ReadonlySet<string>,
+    ) => resolveClaudeModelsForVersion(catalog, "3.2.0", ids).map((model) => model.slug);
+
+    it("adds Mythos to any manifest but lists it only when the account reports it", () => {
+      const catalog = resolveClaudeModelCatalog(manifest());
+      assert.isFalse(slugs(catalog).includes(MYTHOS));
+      assert.isFalse(slugs(catalog, new Set(["claude-fable-5-1"])).includes(MYTHOS));
+      assert.isTrue(slugs(catalog, new Set([MYTHOS])).includes(MYTHOS));
+      // Everyone else's models are unaffected by the account's list.
+      assert.isTrue(slugs(catalog, new Set([MYTHOS])).includes("claude-synthetic-next"));
+    });
+
+    it("keeps Mythos resolvable by alias even while it is not listed", () => {
+      const catalog = resolveClaudeModelCatalog(manifest());
+      assert.strictEqual(resolveClaudeModelSlug(catalog, "mythos"), MYTHOS);
+      const effort = getClaudeCatalogModelCapabilities(catalog, MYTHOS).optionDescriptors?.find(
+        (descriptor) => descriptor.id === "effort",
+      );
+      assert.isDefined(effort);
+    });
+
+    it("excludes it from the ungated list and from upgrade prompts", () => {
+      const catalog = resolveClaudeModelCatalog(manifest());
+      assert.isFalse(listUngatedClaudeModels(catalog).some((model) => model.slug === MYTHOS));
+      // 3.1.9 is older than both the synthetic model and Mythos; only the former may be named.
+      assert.include(formatClaudeVersionUpgradeMessage(catalog, "2.0.0") ?? "", "Synthetic");
+      assert.notInclude(formatClaudeVersionUpgradeMessage(catalog, "2.0.0") ?? "", "Mythos");
+    });
+
+    it("does not duplicate a Mythos entry the manifest already defines", () => {
+      const withMythos = manifest();
+      const claude = withMythos.providers!.claudeAgent!;
+      const catalog = resolveClaudeModelCatalog({
+        ...withMythos,
+        providers: {
+          ...withMythos.providers,
+          claudeAgent: {
+            ...claude,
+            models: [
+              ...claude.models,
+              {
+                slug: MYTHOS,
+                name: "Claude Mythos 5.1 (manifest)",
+                status: "current",
+                profile: "synthetic",
+                adapter: { claudeCode: { minVersion: "3.2.0" } },
+              },
+            ],
+          },
+        },
+      });
+      assert.strictEqual(catalog.models.filter((entry) => entry.model.slug === MYTHOS).length, 1);
+      // The manifest's own definition is not gated.
+      assert.isTrue(slugs(catalog).includes(MYTHOS));
+    });
   });
 });

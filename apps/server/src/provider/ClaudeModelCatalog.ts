@@ -12,6 +12,7 @@ import {
   getProviderOptionDescriptors,
   readCustomModelEntries,
 } from "@t3tools/shared/model";
+import { createModelCapabilities } from "@t3tools/shared/model";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 
 import {
@@ -33,6 +34,12 @@ export interface ClaudeCatalogModel {
   readonly model: ServerProviderModel;
   readonly runtime: ClaudeCodeProfile;
   readonly compatibility: ClaudeCodeCompatibility;
+  /**
+   * Listed only when the signed-in account reports the model (see
+   * `resolveClaudeModelsForVersion`). Resolvable either way, so a thread that
+   * already uses it keeps working if the listing check fails.
+   */
+  readonly accountGated?: boolean;
 }
 
 export interface ClaudeModelCatalog {
@@ -60,12 +67,55 @@ function tryResolveClaudeModelCatalog(manifest: ModelManifestData): ClaudeModelC
   };
 }
 
+/**
+ * Models the picker offers only to accounts that have them. Mythos is limited
+ * to approved organizations and the Claude CLI never lists it, so it is
+ * defined here rather than in the manifest: the manifest is fetched from
+ * upstream, which would drop a locally added entry on every refresh.
+ */
+const ACCOUNT_GATED_CLAUDE_MODELS: ReadonlyArray<ClaudeCatalogModel> = [
+  {
+    accountGated: true,
+    model: {
+      slug: "claude-mythos-5-1",
+      name: "Claude Mythos 5.1",
+      aliases: ["mythos", "mythos-5.1", "claude-mythos-5.1"],
+      isCustom: false,
+      capabilities: createModelCapabilities({
+        optionDescriptors: [
+          {
+            id: "effort",
+            label: "Reasoning",
+            type: "select",
+            options: [
+              { id: "low", label: "Low" },
+              { id: "medium", label: "Medium" },
+              { id: "high", label: "High", isDefault: true },
+              { id: "xhigh", label: "Extra High" },
+              { id: "max", label: "Max" },
+            ],
+          },
+        ],
+      }),
+    },
+    runtime: { contextWindowTokens: { "1m": 1_000_000 } },
+    compatibility: { minVersion: "2.1.257" },
+  },
+];
+
+/** Adds the account-gated models the resolved manifest does not already define. */
+function withAccountGatedModels(catalog: ClaudeModelCatalog): ClaudeModelCatalog {
+  const known = new Set(catalog.models.map((entry) => entry.model.slug));
+  const missing = ACCOUNT_GATED_CLAUDE_MODELS.filter((entry) => !known.has(entry.model.slug));
+  return missing.length === 0 ? catalog : { models: [...catalog.models, ...missing] };
+}
+
 export function resolveClaudeModelCatalog(manifest: ModelManifestData): ClaudeModelCatalog {
-  return (
+  return withAccountGatedModels(
     tryResolveClaudeModelCatalog(manifest) ??
-    tryResolveClaudeModelCatalog(BUNDLED_MODEL_MANIFEST) ?? {
-      models: [],
-    }
+      tryResolveClaudeModelCatalog(BUNDLED_MODEL_MANIFEST) ?? {
+        models: [],
+      },
   );
 }
 
@@ -158,22 +208,41 @@ function isVersionSupported(
   );
 }
 
+/**
+ * `accountModelIds` are the model ids the signed-in account can use. Models
+ * marked `accountGated` are left out unless it is given and contains them.
+ */
 export function resolveClaudeModelsForVersion(
   catalog: ClaudeModelCatalog,
   version: string | null | undefined,
+  accountModelIds?: ReadonlySet<string>,
 ): ReadonlyArray<ClaudeCatalogModel["model"]> {
   return catalog.models
-    .filter((entry) => isVersionSupported(entry.compatibility, version))
+    .filter(
+      (entry) =>
+        isVersionSupported(entry.compatibility, version) &&
+        (!entry.accountGated || accountModelIds?.has(entry.model.slug) === true),
+    )
     .map((entry) => entry.model);
+}
+
+/** The catalog's models that anyone may use, for lists shown before an account is known. */
+export function listUngatedClaudeModels(
+  catalog: ClaudeModelCatalog,
+): ReadonlyArray<ClaudeCatalogModel["model"]> {
+  return catalog.models.filter((entry) => !entry.accountGated).map((entry) => entry.model);
 }
 
 export function formatClaudeVersionUpgradeMessage(
   catalog: ClaudeModelCatalog,
   version: string | null,
 ): string | undefined {
+  // Account-gated models are not part of the picker unless the account has
+  // them, so an old CLI is not told to upgrade for one it may not be offered.
   const unavailable = catalog.models
     .filter(
       (entry) =>
+        !entry.accountGated &&
         entry.compatibility.minVersion &&
         (!version || compareSemverVersions(version, entry.compatibility.minVersion) < 0),
     )
