@@ -20,18 +20,24 @@ import type {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   canOpenSubagentTranscript,
+  estimateSubagentCost,
+  formatEstimatedCost,
   formatSubagentModelLabel,
   formatSubagentTokenCount,
   isActiveSubagentStatus,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ThreadId, UsageModelRate } from "@t3tools/contracts";
 import { Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import * as Option from "effect/Option";
+import { AsyncResult } from "effect/unstable/reactivity";
 
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
+import { serverEnvironment } from "~/state/server";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 
 /**
  * In-flight states all present as Working (one steady state, per the
@@ -51,6 +57,44 @@ const STATUS_VISUALS: Record<RuntimeSubagent["status"], { dotClass: string; labe
   cancelled: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
   interrupted: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
 };
+
+const EMPTY_RATES: ReadonlyMap<string, UsageModelRate> = new Map();
+
+/** Model rates for the agents on screen; empty until the server answers. */
+const AgentRatesContext = createContext(EMPTY_RATES);
+
+function useAgentCost(agent: RuntimeSubagent) {
+  const rates = useContext(AgentRatesContext);
+  return estimateSubagentCost(agent.usage, agent.model ? rates.get(agent.model) : undefined);
+}
+
+/**
+ * Fetches rates for the models in this panel and shares them with every row,
+ * so rows never ask the server themselves. Mounted only with an environment.
+ */
+function AgentRatesProvider({
+  environmentId,
+  models,
+  children,
+}: {
+  environmentId: EnvironmentId;
+  models: ReadonlyArray<string>;
+  children: React.ReactNode;
+}) {
+  const result = useAtomValue(
+    serverEnvironment.usageModelRates({ environmentId, input: { models } }),
+  );
+  const rates = useMemo(() => {
+    const value = Option.getOrNull(AsyncResult.value(result));
+    return value ? new Map(value.rates.map((rate) => [rate.model, rate])) : EMPTY_RATES;
+  }, [result]);
+  return <AgentRatesContext.Provider value={rates}>{children}</AgentRatesContext.Provider>;
+}
+
+/** Agents the footer total sums: workflow coordinators are excluded, as for tokens. */
+function costedAgents(model: AgentPanelModel): ReadonlyArray<RuntimeSubagent> {
+  return [...model.directAgents, ...model.workflows.flatMap((group) => workflowMembers(group))];
+}
 
 function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {
   return (
@@ -156,6 +200,7 @@ function AgentRow({
     agent.kind === "subagent_batch" && agent.status === "idle" ? "Idle" : visuals.label;
   const activity = agentActivityText(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
+  const cost = useAgentCost(agent);
   const role =
     agent.role?.trim().toLocaleLowerCase() === agent.title.trim().toLocaleLowerCase()
       ? null
@@ -163,6 +208,7 @@ function AgentRow({
   const metadata = [
     modelLabel,
     agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok",
+    cost ? `~${formatEstimatedCost(cost.costUsd)}` : null,
     agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);
@@ -778,6 +824,65 @@ export function AgentsPanel({
   }
 
   return (
+    <AgentPanelRates environmentId={environmentId} model={model}>
+      <AgentPanelBody
+        model={model}
+        environmentId={environmentId}
+        threadId={threadId}
+        openAgent={openAgent}
+      />
+    </AgentPanelRates>
+  );
+}
+
+function AgentPanelRates({
+  environmentId,
+  model,
+  children,
+}: {
+  environmentId: EnvironmentId | null;
+  model: AgentPanelModel;
+  children: React.ReactNode;
+}) {
+  const models = useMemo(
+    () =>
+      [
+        ...new Set(
+          costedAgents(model).flatMap((agent) => (agent.usage && agent.model ? [agent.model] : [])),
+        ),
+      ].toSorted(),
+    [model],
+  );
+  return environmentId && models.length > 0 ? (
+    <AgentRatesProvider environmentId={environmentId} models={models}>
+      {children}
+    </AgentRatesProvider>
+  ) : (
+    children
+  );
+}
+
+function AgentPanelBody({
+  model,
+  environmentId,
+  threadId,
+  openAgent,
+}: {
+  model: AgentPanelModel;
+  environmentId: EnvironmentId | null;
+  threadId: ThreadId | null;
+  openAgent: ((agent: RuntimeSubagent) => void) | undefined;
+}) {
+  const rates = useContext(AgentRatesContext);
+  const totalCostUsd = costedAgents(model).reduce<number | null>((sum, agent) => {
+    const estimate = estimateSubagentCost(
+      agent.usage,
+      agent.model ? rates.get(agent.model) : undefined,
+    );
+    return estimate ? (sum ?? 0) + estimate.costUsd : sum;
+  }, null);
+
+  return (
     <div className="flex h-full min-h-0 flex-col">
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-2 p-2">
@@ -812,7 +917,24 @@ export function AgentsPanel({
           {model.idleCount > 0 ? <span>{model.idleCount} idle</span> : null}
           {model.settledCount > 0 ? <span>{model.settledCount} settled</span> : null}
         </span>
-        <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
+        {totalCostUsd === null ? (
+          <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span className="cursor-help tabular-nums">
+                  Σ {formatSubagentTokenCount(model.totalTokens)} tok · ~
+                  {formatEstimatedCost(totalCostUsd)}
+                </span>
+              }
+            />
+            <TooltipPopup side="top">
+              Estimated at list prices. Agents that report only a token total are priced at the
+              input rate.
+            </TooltipPopup>
+          </Tooltip>
+        )}
       </footer>
     </div>
   );

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vite-plus/test";
 import { classifyTaskAgentKind, type OrchestrationThreadActivity } from "@t3tools/contracts";
 import {
   deriveAgentPanelModel,
+  estimateSubagentCost,
   foldSubagentActivities,
+  formatEstimatedCost,
   formatSubagentModelLabel,
   formatSubagentTokenCount,
 } from "./subagentRuntime.ts";
@@ -1041,5 +1043,58 @@ describe("nested agents vs subagent shells", () => {
       }),
     ]);
     expect(agents.map((agent) => agent.id)).toEqual(["nested-1"]);
+  });
+});
+
+describe("estimateSubagentCost", () => {
+  const rate = {
+    model: "m",
+    inputCostPerToken: 0.000003,
+    outputCostPerToken: 0.000015,
+    cacheReadCostPerToken: 0.0000003,
+    cacheCreationCostPerToken: 0.00000375,
+  };
+
+  it("prices the breakdown exactly, treating cached tokens as a subset of input", () => {
+    const estimate = estimateSubagentCost(
+      {
+        totalTokens: 1_200_000,
+        inputTokens: 1_000_000,
+        cachedInputTokens: 800_000,
+        outputTokens: 200_000,
+      },
+      rate,
+    );
+    // 200k uncached * 3e-6 + 800k cached * 3e-7 + 200k output * 1.5e-5
+    expect(estimate?.costUsd).toBeCloseTo(0.6 + 0.24 + 3, 6);
+    expect(estimate?.hasTokenBreakdown).toBe(true);
+  });
+
+  it("falls back to the input rate when only a total is known", () => {
+    const estimate = estimateSubagentCost({ totalTokens: 100_000 }, rate);
+    expect(estimate?.costUsd).toBeCloseTo(0.3, 6);
+    expect(estimate?.hasTokenBreakdown).toBe(false);
+  });
+
+  it("does not trust a breakdown whose cached count exceeds input", () => {
+    const estimate = estimateSubagentCost(
+      { totalTokens: 50_000, inputTokens: 100, cachedInputTokens: 40_000, outputTokens: 500 },
+      rate,
+    );
+    expect(estimate?.hasTokenBreakdown).toBe(false);
+  });
+
+  it("has no estimate without usage or a rate", () => {
+    expect(estimateSubagentCost(null, rate)).toBeNull();
+    expect(estimateSubagentCost({ totalTokens: 10 }, undefined)).toBeNull();
+  });
+});
+
+describe("formatEstimatedCost", () => {
+  it("rounds to cents and collapses sub-cent amounts", () => {
+    expect(formatEstimatedCost(0)).toBe("$0.00");
+    expect(formatEstimatedCost(0.004)).toBe("<$0.01");
+    expect(formatEstimatedCost(0.426)).toBe("$0.43");
+    expect(formatEstimatedCost(1234.5)).toBe("$1235");
   });
 });

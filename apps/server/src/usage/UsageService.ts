@@ -23,6 +23,11 @@ import {
   type UsageProviderKind,
   type UsageSource,
   type UsagePricing,
+  type UsageModelRate,
+  type UsageModelRates,
+  type UsageModelRatesInput,
+  type UsageThreadCost,
+  type UsageThreadCosts,
   type UsageSummary,
   type UsageSummaryInput,
   UsageReadError,
@@ -48,7 +53,14 @@ import * as ServerSettings from "../serverSettings.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
-import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
+import type { TranscriptSessionRef } from "./threadSession.ts";
+import {
+  createOverrideRateTable,
+  lookupRate,
+  parseRateTable,
+  priceUsage,
+  type RateTable,
+} from "./usagePricing.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -102,12 +114,30 @@ const ScanCacheJson = Schema.fromJsonString(Schema.Unknown as unknown as Schema.
 const decodeScanCacheFile = Schema.decodeUnknownEffect(ScanCacheJson);
 const encodeScanCacheFile = Schema.encodeEffect(ScanCacheJson);
 
+export interface SessionCostRequest extends TranscriptSessionRef {
+  readonly key: string;
+}
+
+export interface SessionCosts {
+  readonly pricing: UsagePricing;
+  readonly costs: ReadonlyArray<Omit<UsageThreadCost, "threadId"> & { readonly key: string }>;
+}
+
 export class UsageService extends Context.Service<
   UsageService,
   {
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     /** Refetches the rate table ahead of its TTL. See `ensureRates`. */
     readonly refreshRates: Effect.Effect<UsagePricing>;
+    /** Rates for specific models, for clients that price token counts themselves. */
+    readonly readModelRates: (input: UsageModelRatesInput) => Effect.Effect<UsageModelRates>;
+    /**
+     * Prices whole transcripts for specific provider sessions, keyed by the
+     * caller's own key (a thread id). Unpriced or missing sessions are omitted.
+     */
+    readonly readSessionCosts: (
+      sessions: ReadonlyArray<SessionCostRequest>,
+    ) => Effect.Effect<SessionCosts>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -135,6 +165,8 @@ export const layerTest = Layer.succeed(
         scanDurationMs: 0,
       }),
     refreshRates: Effect.succeed(EMPTY_PRICING),
+    readModelRates: () => Effect.succeed({ pricing: EMPTY_PRICING, rates: [] }),
+    readSessionCosts: () => Effect.succeed({ pricing: EMPTY_PRICING, costs: [] }),
   }),
 );
 
@@ -628,7 +660,113 @@ export const make = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
-  return { readSummary, refreshRates } as const;
+  const readModelRates = Effect.fn("UsageService.readModelRates")(function* (
+    input: UsageModelRatesInput,
+  ) {
+    yield* ensureRates(false);
+    // Unreadable settings only cost the custom overrides; the table still prices.
+    const overrides = createOverrideRateTable(
+      yield* settingsService.getSettings.pipe(
+        Effect.map((settings) => settings.usagePriceOverrides),
+        Effect.orElseSucceed(() => ({})),
+      ),
+    );
+    const priced: UsageModelRate[] = [];
+    for (const model of new Set(input.models)) {
+      const rate = overrides.get(model.trim()) ?? lookupRate(rates, model);
+      if (rate !== null) priced.push({ model, ...rate });
+    }
+    return { pricing: pricing(), rates: priced } satisfies UsageModelRates;
+  });
+
+  const readSessionCosts = Effect.fn("UsageService.readSessionCosts")(function* (
+    sessions: ReadonlyArray<SessionCostRequest>,
+  ) {
+    const none = { pricing: pricing(), costs: [] } satisfies SessionCosts;
+    if (sessions.length === 0) return none;
+    const settings = yield* settingsService.getSettings.pipe(
+      Effect.map(Option.some),
+      Effect.orElseSucceed(() => Option.none<ServerSettingsValue>()),
+    );
+    if (Option.isNone(settings)) return none;
+
+    yield* ensureScanCacheLoaded;
+    yield* ensureRates(false);
+    const overrides = createOverrideRateTable(settings.value.usagePriceOverrides);
+    const dirs = yield* resolveTranscriptDirs(settings.value).pipe(
+      Effect.provideService(Path.Path, path),
+    );
+
+    interface Tally {
+      costUsd: number;
+      records: number;
+      unpricedRecords: number;
+      providerReportedRecords: number;
+      readonly seen: Set<string>;
+    }
+    const tallies = new Map<string, Tally>();
+    for (const { provider, dir, fileName } of dirs) {
+      const wanted = sessions.filter((session) => session.provider === provider);
+      if (wanted.length === 0) continue;
+      const files = yield* Effect.promise(() =>
+        listTranscriptFiles(dir, 0, {
+          pathIncludesAny: wanted.map((session) => session.sessionId),
+          ...(fileName === undefined ? {} : { fileName }),
+        }),
+      );
+      for (const file of files) {
+        const owners = wanted.filter((session) => file.path.includes(session.sessionId));
+        if (owners.length === 0) continue;
+        const records = yield* readFileRecords(file.path, file.size, file.mtimeMs, provider);
+        for (const { key } of owners) {
+          let tally = tallies.get(key);
+          if (tally === undefined) {
+            tally = {
+              costUsd: 0,
+              records: 0,
+              unpricedRecords: 0,
+              providerReportedRecords: 0,
+              seen: new Set(),
+            };
+            tallies.set(key, tally);
+          }
+          for (const record of records) {
+            // A resumed or forked transcript repeats earlier messages.
+            if (record.dedupeKey !== null) {
+              if (tally.seen.has(record.dedupeKey)) continue;
+              tally.seen.add(record.dedupeKey);
+            }
+            const priced = priceUsage(
+              rates,
+              record.model,
+              record.totals,
+              record.reportedCostUsd,
+              overrides,
+            );
+            tally.costUsd += priced.costUsd;
+            tally.records += 1;
+            if (priced.costSource === "unpriced") tally.unpricedRecords += 1;
+            if (priced.costSource === "providerReported") tally.providerReportedRecords += 1;
+          }
+        }
+      }
+    }
+    yield* persistScanCache();
+
+    const costs: Array<SessionCosts["costs"][number]> = [];
+    for (const [key, tally] of tallies) {
+      if (tally.records === 0 || tally.unpricedRecords === tally.records) continue;
+      costs.push({
+        key,
+        costUsd: tally.costUsd,
+        costSource:
+          tally.providerReportedRecords === tally.records ? "providerReported" : "modelPriced",
+      });
+    }
+    return { pricing: pricing(), costs } satisfies SessionCosts;
+  });
+
+  return { readSummary, refreshRates, readModelRates, readSessionCosts } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

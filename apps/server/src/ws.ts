@@ -161,6 +161,7 @@ import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as UsageService from "./usage/UsageService.ts";
+import { transcriptSessionOf } from "./usage/threadSession.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { listLinkedPullRequestThreads } from "./pullRequest/linkedThreads.ts";
@@ -2667,6 +2668,33 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.serverGetUsageSummary, usage.readSummary(input), {
             "rpc.aggregate": "server",
           }),
+        [WS_METHODS.serverGetUsageModelRates]: (input) =>
+          observeRpcEffect(WS_METHODS.serverGetUsageModelRates, usage.readModelRates(input), {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverGetUsageThreadCosts]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetUsageThreadCosts,
+            Effect.gen(function* () {
+              const sessions: UsageService.SessionCostRequest[] = [];
+              for (const threadId of new Set(input.threadIds)) {
+                const binding = yield* providerSessionDirectory
+                  .getBinding(threadId)
+                  .pipe(Effect.orElseSucceed(() => Option.none()));
+                const session = Option.isSome(binding) ? transcriptSessionOf(binding.value) : null;
+                if (session !== null) sessions.push({ key: threadId, ...session });
+              }
+              const result = yield* usage.readSessionCosts(sessions);
+              return {
+                pricing: result.pricing,
+                costs: result.costs.map(({ key, ...cost }) => ({
+                  threadId: ThreadId.make(key),
+                  ...cost,
+                })),
+              };
+            }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverRefreshUsageRates]: (_input) =>
           observeRpcEffect(WS_METHODS.serverRefreshUsageRates, usage.refreshRates, {
             "rpc.aggregate": "server",

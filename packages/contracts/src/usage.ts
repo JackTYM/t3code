@@ -14,7 +14,7 @@
  */
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /**
  * Bumped whenever the shape of {@link UsageSummary} changes incompatibly. The
@@ -201,6 +201,57 @@ export const UsageSummary = Schema.Struct({
   scanDurationMs: NonNegativeInt,
 });
 export type UsageSummary = typeof UsageSummary.Type;
+
+/**
+ * Rates for a handful of model ids, so clients can price token counts they
+ * already hold (e.g. subagent usage) without fetching a usage summary. Custom
+ * price overrides win over the LiteLLM table, matching the usage page.
+ */
+export const UsageModelRatesInput = Schema.Struct({
+  models: Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(50)),
+});
+export type UsageModelRatesInput = typeof UsageModelRatesInput.Type;
+
+/** USD per token. Cache rates fall back to the input rate when the table has none. */
+export const UsageModelRate = Schema.Struct({
+  model: TrimmedNonEmptyString,
+  inputCostPerToken: Schema.Finite,
+  outputCostPerToken: Schema.Finite,
+  cacheReadCostPerToken: Schema.Finite,
+  cacheCreationCostPerToken: Schema.Finite,
+});
+export type UsageModelRate = typeof UsageModelRate.Type;
+
+/** Unpriced models are omitted rather than reported as zero. */
+export const UsageModelRates = Schema.Struct({
+  pricing: UsagePricing,
+  rates: Schema.Array(UsageModelRate),
+});
+export type UsageModelRates = typeof UsageModelRates.Type;
+
+/**
+ * What each thread's provider session has cost, priced exactly as the usage
+ * page prices it (reported cost, else custom price, else the rate table). The
+ * server finds each thread's transcript from its provider session.
+ */
+export const UsageThreadCostsInput = Schema.Struct({
+  threadIds: Schema.Array(ThreadId).check(Schema.isMaxLength(200)),
+});
+export type UsageThreadCostsInput = typeof UsageThreadCostsInput.Type;
+
+export const UsageThreadCost = Schema.Struct({
+  threadId: ThreadId,
+  costUsd: Schema.Finite,
+  costSource: UsageCostSource,
+});
+export type UsageThreadCost = typeof UsageThreadCost.Type;
+
+/** Threads with no readable transcript, or from unsupported providers, are omitted. */
+export const UsageThreadCosts = Schema.Struct({
+  pricing: UsagePricing,
+  costs: Schema.Array(UsageThreadCost),
+});
+export type UsageThreadCosts = typeof UsageThreadCosts.Type;
 
 export class UsageReadError extends Schema.TaggedError<UsageReadError>()("UsageReadError", {
   reason: Schema.Literals(["scanFailed", "invalidWindow"]),

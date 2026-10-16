@@ -100,10 +100,15 @@ function fnv1a(buffer: Buffer): number {
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
-  options?: { readonly fileName?: string },
+  options?: {
+    readonly fileName?: string;
+    /** Skips files whose path contains none of these, before they are stat'd. */
+    readonly pathIncludesAny?: readonly string[];
+  },
 ): Promise<readonly TranscriptFile[]> {
   const found: TranscriptFile[] = [];
   const fileName = options?.fileName;
+  const pathIncludesAny = options?.pathIncludesAny;
 
   const walk = async (dir: string): Promise<void> => {
     let entries;
@@ -121,6 +126,9 @@ export async function listTranscriptFiles(
       if (fileName !== undefined) {
         if (entry.name !== fileName) continue;
       } else if (!entry.name.endsWith(".jsonl")) {
+        continue;
+      }
+      if (pathIncludesAny !== undefined && !pathIncludesAny.some((part) => child.includes(part))) {
         continue;
       }
       try {
