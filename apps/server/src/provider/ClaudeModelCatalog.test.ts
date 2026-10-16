@@ -5,6 +5,8 @@ import { hasValidClaudeManifestAdapters } from "./ClaudeModelManifest.ts";
 import { resolveProviderCatalog, type ModelManifestData } from "./ModelManifest.ts";
 import {
   formatClaudeVersionUpgradeMessage,
+  getClaudeCatalogModelCapabilities,
+  listUngatedClaudeModels,
   normalizeClaudeCatalogEffort,
   resolveClaudeCatalogApiModelId,
   resolveClaudeCatalogContextWindowTokens,
@@ -240,6 +242,76 @@ describe("Claude model catalog", () => {
     assert.deepStrictEqual(
       resolveClaudeModelsForVersion(catalog, "3.2.0").map((model) => model.slug),
       ["claude-synthetic-next", "claude-custom-tuned"],
+    );
+  });
+});
+
+describe("account-gated Claude models", () => {
+  const MYTHOS = "claude-mythos-5-1";
+  const listed = (accountModelIds?: ReadonlySet<string>) =>
+    resolveClaudeModelsForVersion(catalogFromManifest(manifest()), "3.2.0", accountModelIds).map(
+      (model) => model.slug,
+    );
+
+  it("offers Mythos only to an account that reports it", () => {
+    assert.isFalse(listed().includes(MYTHOS));
+    assert.isFalse(listed(new Set(["claude-fable-5-1"])).includes(MYTHOS));
+    assert.isTrue(listed(new Set([MYTHOS])).includes(MYTHOS));
+  });
+
+  it("leaves every other model unaffected by the account's list", () => {
+    assert.deepStrictEqual(
+      listed(new Set([MYTHOS])).filter((slug) => slug !== MYTHOS),
+      listed(),
+    );
+  });
+
+  it("keeps a gated model resolvable while it is unlisted", () => {
+    const catalog = catalogFromManifest(manifest());
+    assert.strictEqual(resolveClaudeModelSlug(catalog, "mythos"), MYTHOS);
+    assert.isDefined(
+      getClaudeCatalogModelCapabilities(catalog, MYTHOS).optionDescriptors?.find(
+        (descriptor) => descriptor.id === "effort",
+      ),
+    );
+  });
+
+  it("keeps a gated model out of ungated lists and upgrade prompts", () => {
+    const catalog = catalogFromManifest(manifest());
+    assert.isFalse(listUngatedClaudeModels(catalog).some((model) => model.slug === MYTHOS));
+    // A CLI older than every model: only ungated ones may be named.
+    assert.notInclude(formatClaudeVersionUpgradeMessage(catalog, "1.0.0") ?? "", "Mythos");
+    assert.isFalse(
+      resolveClaudeUpdateRequiredModels(catalog, "1.0.0").some((model) => model.slug === MYTHOS),
+    );
+  });
+
+  it("does not duplicate a gated model the manifest defines itself", () => {
+    const base = manifest();
+    const claude = base.providers!.claudeAgent!;
+    const catalog = catalogFromManifest({
+      ...base,
+      providers: {
+        ...base.providers,
+        claudeAgent: {
+          ...claude,
+          models: [
+            ...claude.models,
+            {
+              slug: MYTHOS,
+              name: "Claude Mythos 5.1 (manifest)",
+              status: "current",
+              profile: claude.models[0]!.profile,
+              adapter: { claudeCode: { minVersion: "3.2.0" } },
+            },
+          ],
+        },
+      },
+    });
+    assert.strictEqual(catalog.models.filter((entry) => entry.model.slug === MYTHOS).length, 1);
+    // A manifest-defined entry is not gated, so it lists without an account.
+    assert.isTrue(
+      resolveClaudeModelsForVersion(catalog, "3.2.0").some((model) => model.slug === MYTHOS),
     );
   });
 });

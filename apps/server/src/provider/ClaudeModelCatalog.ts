@@ -13,6 +13,7 @@ import {
   getProviderOptionDescriptors,
   readCustomModelEntries,
 } from "@t3tools/shared/model";
+import { createModelCapabilities } from "@t3tools/shared/model";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 
 import {
@@ -31,6 +32,13 @@ export interface ClaudeCatalogModel {
   readonly model: ServerProviderModel;
   readonly runtime: ClaudeCodeProfile;
   readonly compatibility: ClaudeCodeCompatibility;
+  /**
+   * Offered only to accounts that report the model (see
+   * `resolveClaudeModelsForVersion`). Still resolvable by slug or alias either
+   * way, so a thread already on one keeps working when the account cannot be
+   * checked.
+   */
+  readonly accountGated?: boolean;
 }
 
 export interface ClaudeModelCatalog {
@@ -62,14 +70,57 @@ function tryResolveClaudeModelCatalog(
 const BUNDLED_CLAUDE_PROVIDER_CATALOG =
   resolveProviderCatalog(BUNDLED_MODEL_MANIFEST, CLAUDE) ?? undefined;
 
+/**
+ * Models limited to approved organizations. The Claude CLI never lists these,
+ * so they cannot come from a probe, and they are defined here rather than in
+ * `model-manifest.json` because that file is refetched from the published
+ * manifest, which would drop a locally added entry.
+ */
+const ACCOUNT_GATED_CLAUDE_MODELS: ReadonlyArray<ClaudeCatalogModel> = [
+  {
+    accountGated: true,
+    model: {
+      slug: "claude-mythos-5-1",
+      name: "Claude Mythos 5.1",
+      aliases: ["mythos", "mythos-5.1", "claude-mythos-5.1"],
+      isCustom: false,
+      capabilities: createModelCapabilities({
+        optionDescriptors: [
+          {
+            id: "effort",
+            label: "Reasoning",
+            type: "select",
+            options: [
+              { id: "low", label: "Low" },
+              { id: "medium", label: "Medium" },
+              { id: "high", label: "High", isDefault: true },
+              { id: "xhigh", label: "Extra High" },
+              { id: "max", label: "Max" },
+            ],
+          },
+        ],
+      }),
+    },
+    runtime: { contextWindowTokens: { "1m": 1_000_000 } },
+    compatibility: { minVersion: "2.1.257" },
+  },
+];
+
+/** Adds the gated models a resolved catalog does not already define itself. */
+function withAccountGatedModels(catalog: ClaudeModelCatalog): ClaudeModelCatalog {
+  const known = new Set(catalog.models.map((entry) => entry.model.slug));
+  const missing = ACCOUNT_GATED_CLAUDE_MODELS.filter((entry) => !known.has(entry.model.slug));
+  return missing.length === 0 ? catalog : { models: [...catalog.models, ...missing] };
+}
+
 export function resolveClaudeModelCatalog(
   catalog: ModelCatalog.ProviderCatalog | undefined,
 ): ClaudeModelCatalog {
-  return (
+  return withAccountGatedModels(
     tryResolveClaudeModelCatalog(catalog) ??
-    tryResolveClaudeModelCatalog(BUNDLED_CLAUDE_PROVIDER_CATALOG) ?? {
-      models: [],
-    }
+      tryResolveClaudeModelCatalog(BUNDLED_CLAUDE_PROVIDER_CATALOG) ?? {
+        models: [],
+      },
   );
 }
 
@@ -130,6 +181,13 @@ function resolveClaudeCatalogModel(
   );
 }
 
+/** The models anyone may use, for lists built before an account is known. */
+export function listUngatedClaudeModels(
+  catalog: ClaudeModelCatalog,
+): ReadonlyArray<ClaudeCatalogModel["model"]> {
+  return catalog.models.filter((entry) => !entry.accountGated).map((entry) => entry.model);
+}
+
 export function resolveClaudeModelSlug(catalog: ClaudeModelCatalog, slugOrAlias: string): string {
   return resolveClaudeCatalogModel(catalog, slugOrAlias)?.model.slug ?? slugOrAlias;
 }
@@ -156,12 +214,21 @@ function isVersionSupported(
   );
 }
 
+/**
+ * `accountModelIds` lists what the signed-in account may use. Gated models are
+ * left out unless it is supplied and names them.
+ */
 export function resolveClaudeModelsForVersion(
   catalog: ClaudeModelCatalog,
   version: string | null | undefined,
+  accountModelIds?: ReadonlySet<string>,
 ): ReadonlyArray<ClaudeCatalogModel["model"]> {
   return catalog.models
-    .filter((entry) => isVersionSupported(entry.compatibility, version))
+    .filter(
+      (entry) =>
+        isVersionSupported(entry.compatibility, version) &&
+        (!entry.accountGated || accountModelIds?.has(entry.model.slug) === true),
+    )
     .map((entry) => entry.model);
 }
 
@@ -170,9 +237,14 @@ export function resolveClaudeUpdateRequiredModels(
   version: string | null | undefined,
 ): ReadonlyArray<ServerProviderUpdateRequiredModel> {
   if (!version) return [];
-  return catalog.models.flatMap(({ model, compatibility }) => {
+  return catalog.models.flatMap(({ model, compatibility, accountGated }) => {
     const minVersion = compatibility.minVersion;
-    if (model.isLegacy || !minVersion || compareSemverVersions(version, minVersion) >= 0) {
+    if (
+      accountGated ||
+      model.isLegacy ||
+      !minVersion ||
+      compareSemverVersions(version, minVersion) >= 0
+    ) {
       return [];
     }
     return [
@@ -193,6 +265,7 @@ export function formatClaudeVersionUpgradeMessage(
   const unavailable = catalog.models
     .filter(
       (entry) =>
+        !entry.accountGated &&
         entry.compatibility.minVersion &&
         (!version || compareSemverVersions(version, entry.compatibility.minVersion) < 0),
     )
