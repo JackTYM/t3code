@@ -118,6 +118,7 @@ const startupDependencies = Layer.mergeAll(
     respondToRequest: () => Effect.die("unused"),
     respondToUserInput: () => Effect.die("unused"),
     stopSession: () => Effect.die("unused"),
+    releaseThread: () => Effect.die("unused"),
     listSessions: () => Effect.succeed([]),
     // MCP management is unused by this test; a thread with no servers is
     // the honest stub rather than a die().

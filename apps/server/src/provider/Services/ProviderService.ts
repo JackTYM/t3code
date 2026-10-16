@@ -90,6 +90,14 @@ export interface ProviderServiceShape {
   ) => Effect.Effect<void, ProviderServiceError>;
 
   /**
+   * Release provider-side resources for a thread that is being deleted, when
+   * its adapter has any (see `ProviderAdapterShape.releaseThread`).
+   */
+  readonly releaseThread: (input: {
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
    * List active provider sessions.
    *
    * Aggregates runtime session lists from all registered adapters.

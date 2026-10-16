@@ -43,6 +43,14 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const terminalManager = yield* TerminalManager.TerminalManager;
 
+  // Before the stop: it reads the binding, which must still be intact.
+  const releaseProviderThread = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
+    logCleanupCauseUnlessInterrupted({
+      effect: providerService.releaseThread({ threadId }),
+      message: "thread deletion cleanup skipped provider thread release",
+      threadId,
+    });
+
   const stopProviderSession = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
     logCleanupCauseUnlessInterrupted({
       effect: providerService.stopSession({ threadId }),
@@ -61,6 +69,7 @@ const make = Effect.gen(function* () {
     event: ThreadDeletedEvent,
   ) {
     const { threadId } = event.payload;
+    yield* releaseProviderThread(threadId);
     yield* stopProviderSession(threadId);
     yield* closeThreadTerminals(threadId);
   });

@@ -363,6 +363,7 @@ describe("ProviderCommandReactor", () => {
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
+      releaseThread: () => Effect.void,
       listSessions: () => Effect.succeed(runtimeSessions),
       // MCP management is unused by this test; a thread with no servers is
       // the honest stub rather than a die().

@@ -165,6 +165,25 @@ const make = Effect.gen(function* () {
       : Option.none();
   });
 
+  // Errors count as local: losing a checkpoint is worse than a stray one.
+  const threadUsesLocalWorkspace = Effect.fn("threadUsesLocalWorkspace")(
+    function* (threadId: ThreadId) {
+      const sessions = yield* providerService.listSessions();
+      const sessionInstanceId = sessions.find(
+        (entry) => entry.threadId === threadId,
+      )?.providerInstanceId;
+      const instanceId =
+        sessionInstanceId ?? (yield* resolveThreadDetail(threadId))?.modelSelection.instanceId;
+      if (instanceId === undefined) {
+        return true;
+      }
+      return yield* providerService
+        .getCapabilities(instanceId)
+        .pipe(Effect.map((capabilities) => capabilities.usesLocalWorkspace !== false));
+    },
+    Effect.orElseSucceed(() => true),
+  );
+
   const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
       .getThreadDetailById(threadId, { activityKinds: [] })
@@ -190,6 +209,11 @@ const make = Effect.gen(function* () {
     readonly projects: ReadonlyArray<{ readonly id: ProjectId; readonly workspaceRoot: string }>;
     readonly preferSessionRuntime: boolean;
   }): Effect.fn.Return<string | undefined, CheckpointStoreError> {
+    // A hosted agent never touches the local tree, so a checkpoint of it
+    // would show (and a revert would undo) changes the agent did not make.
+    if (!(yield* threadUsesLocalWorkspace(input.threadId))) {
+      return undefined;
+    }
     const fromSession = yield* resolveSessionRuntimeForThread(input.threadId);
     const fromThread = resolveThreadWorkspaceCwd({
       thread: input.thread,

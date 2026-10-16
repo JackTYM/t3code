@@ -1,5 +1,6 @@
 import {
   AntigravitySettings,
+  ClaudeCloudSettings,
   ClaudeSettings,
   CodexSettings,
   CursorSettings,
@@ -55,6 +56,13 @@ const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
     label: "Claude",
     icon: ClaudeAI,
     settingsSchema: ClaudeSettings,
+  },
+  {
+    value: ProviderDriverKind.make("claudeCloud"),
+    label: "Claude Cloud",
+    icon: ClaudeAI,
+    badgeLabel: "Early Access",
+    settingsSchema: ClaudeCloudSettings,
   },
   {
     value: ProviderDriverKind.make("cursor"),

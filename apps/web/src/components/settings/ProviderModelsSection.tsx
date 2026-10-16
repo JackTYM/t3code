@@ -30,6 +30,13 @@ const CUSTOM_MODEL_PLACEHOLDER_BY_KIND: Partial<Record<ProviderDriverKind, strin
   [ProviderDriverKind.make("opencode")]: "openai/gpt-5",
 };
 
+/**
+ * Drivers whose model list is owned by the driver: custom slugs would either be
+ * ignored (Antigravity follows the session's model) or have nothing to select.
+ */
+const isFixedModelListDriver = (driverKind: ProviderDriverKind | null) =>
+  driverKind === "antigravity" || driverKind === "claudeCloud";
+
 /** Above this many models the list gets a filter input. */
 const FILTER_THRESHOLD = 8;
 
@@ -223,7 +230,7 @@ export function ProviderModelsSection({
   }, [displayModels]);
 
   const handleAdd = () => {
-    if (driverKind === "antigravity") return;
+    if (isFixedModelListDriver(driverKind)) return;
     const normalized = normalizeCustomModelSlug(input);
     if (!normalized) {
       setError("Enter a model slug.");
@@ -540,7 +547,7 @@ export function ProviderModelsSection({
             {hiddenCount > 0 ? ` · ${hiddenCount} hidden` : ""}
           </span>
         </div>
-        {driverKind !== "antigravity" && !isAdding ? (
+        {!isFixedModelListDriver(driverKind) && !isAdding ? (
           <Button
             type="button"
             size="xs"
@@ -598,7 +605,7 @@ export function ProviderModelsSection({
         })}
       </div>
 
-      {driverKind === "antigravity" ? null : isAdding ? (
+      {isFixedModelListDriver(driverKind) ? null : isAdding ? (
         <div className="mt-3 flex flex-col gap-2 sm:flex-row">
           <Input
             id={`provider-instance-${instanceId}-custom-model`}
@@ -633,7 +640,7 @@ export function ProviderModelsSection({
         </div>
       ) : null}
 
-      {driverKind !== "antigravity" && error ? (
+      {!isFixedModelListDriver(driverKind) && error ? (
         <p className="mt-2 text-xs text-destructive">{error}</p>
       ) : null}
     </div>

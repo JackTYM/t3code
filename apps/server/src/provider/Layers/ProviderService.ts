@@ -2146,6 +2146,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const releaseThread: ProviderServiceMethod<"releaseThread"> = Effect.fn("releaseThread")(
+    function* (input) {
+      const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+      if (binding?.providerInstanceId === undefined) return;
+      const adapter = yield* registry.getByInstance(binding.providerInstanceId);
+      if (adapter.releaseThread === undefined) return;
+      yield* adapter.releaseThread({
+        threadId: input.threadId,
+        resumeCursor: binding.resumeCursor,
+      });
+    },
+  );
+
   const listSessions: ProviderServiceMethod<"listSessions"> = Effect.fn("listSessions")(
     function* () {
       const currentAdapters = yield* getAdapterEntries;
@@ -2458,6 +2471,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondToRequest,
     respondToUserInput,
     stopSession,
+    releaseThread,
     listSessions,
     listMcpServers,
     reconnectMcpServer,
