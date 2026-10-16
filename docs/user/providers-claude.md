@@ -104,6 +104,32 @@ can still be started by you. Invoke those one per message: Claude directly runs
 only the last named skill and may try to start earlier ones through its Skill
 tool, which refuses skills reserved for manual invocation.
 
+## Claude Cloud (Early Access)
+
+Claude Cloud runs a thread in Anthropic's cloud sandbox, the same one behind claude.ai/code,
+instead of on your machine. The session also appears on claude.ai/code and in the Claude app.
+
+It is off by default. Turn it on in **Settings > Providers > Claude Cloud**. It uses the login the
+`claude` command saved, so it needs a Claude subscription sign-in (`claude auth login`). An API key
+or a router setup does not work. If the provider card asks you to sign in, run `claude` once. T3 Code
+only reads that login and never refreshes it, so run `claude` again when it expires.
+
+When the project's remote is on GitHub, the cloud session clones that repository through the Claude
+GitHub app. If the app cannot reach it, the session runs without a repository and the thread shows
+a warning. Projects with other hosts run without one.
+
+Things that differ from a local Claude thread:
+
+- The agent works in the sandbox, so nothing it does appears in your folder. Diffs, checkpoints,
+  and revert are not available, and a worktree or checkout choice has no effect.
+- It has full access inside the sandbox and does not ask for permission.
+- Messages are text only; images and files are not sent.
+- Its usage and cost do not appear on the Usage page.
+
+Stopping a thread, or leaving it idle, keeps the cloud session so you can continue. Deleting the
+thread archives it. A reply the cloud finishes while T3 Code is closed shows on claude.ai but not in
+the thread.
+
 ## OpenRouter
 
 Create a Claude instance with its own config directory, such as

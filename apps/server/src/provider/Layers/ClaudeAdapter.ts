@@ -516,7 +516,7 @@ function terminalResultError(
   }
 }
 
-function isInterruptedResult(result: SDKResultMessage): boolean {
+export function isInterruptedResult(result: SDKResultMessage): boolean {
   // The CLI stamps user aborts explicitly: interrupting mid-tool-call yields
   // "aborted_tools" (with an internal "[ede_diagnostic] ..." error and
   // is_error: true), interrupting mid-stream yields "aborted_streaming".
@@ -733,7 +733,7 @@ function normalizeClaudeActiveTokenUsage(
   });
 }
 
-function normalizeClaudeTurnTokenUsage(
+export function normalizeClaudeTurnTokenUsage(
   result: SDKResultMessage | undefined,
   hasSubagents: boolean,
   terminalStatus: ProviderRuntimeTurnStatus,
@@ -948,7 +948,7 @@ function readToolImagePath(toolName: string, input: Record<string, unknown>): st
   return path.length > 0 && isWorkspaceImagePreviewPath(path) ? path : undefined;
 }
 
-function classifyToolItemType(
+export function classifyToolItemType(
   toolName: string,
   input: Record<string, unknown> = {},
 ): CanonicalItemType {
@@ -1438,7 +1438,7 @@ function workflowAgentStatus(entry: ClaudeWorkflowAgentEntry): RuntimeTaskStatus
   }
 }
 
-function summarizeToolRequest(toolName: string, input: Record<string, unknown>): string {
+export function summarizeToolRequest(toolName: string, input: Record<string, unknown>): string {
   const imagePath = readToolImagePath(toolName, input);
   if (imagePath) {
     return imagePath;
@@ -1471,7 +1471,7 @@ function summarizeToolRequest(toolName: string, input: Record<string, unknown>):
   return `${toolName}: ${serialized.slice(0, 397)}...`;
 }
 
-function titleForTool(itemType: CanonicalItemType): string {
+export function titleForTool(itemType: CanonicalItemType): string {
   switch (itemType) {
     case "command_execution":
       return "Command run";
@@ -1643,7 +1643,7 @@ function isOverloadedResult(result: SDKResultMessage): boolean {
 }
 
 /** Derives turn status and its error from the same provider result. */
-function resultOutcome(
+export function resultOutcome(
   result: SDKResultMessage,
   failureHint?: string,
 ): {
@@ -1795,7 +1795,9 @@ function toolInputFingerprint(input: Record<string, unknown>): string | undefine
   return encodeJsonStringForDiagnostics(input);
 }
 
-function toolResultStreamKind(itemType: CanonicalItemType): ClaudeToolResultStreamKind | undefined {
+export function toolResultStreamKind(
+  itemType: CanonicalItemType,
+): ClaudeToolResultStreamKind | undefined {
   switch (itemType) {
     case "command_execution":
       return "command_output";
@@ -1806,7 +1808,7 @@ function toolResultStreamKind(itemType: CanonicalItemType): ClaudeToolResultStre
   }
 }
 
-function toolResultBlocksFromUserMessage(message: SDKMessage): Array<{
+export function toolResultBlocksFromUserMessage(message: SDKMessage): Array<{
   readonly toolUseId: string;
   readonly block: Record<string, unknown>;
   readonly text: string;

@@ -197,6 +197,7 @@ describe("ProviderSessionReaper", () => {
       respondToRequest: () => unsupported(),
       respondToUserInput: () => unsupported(),
       stopSession,
+      releaseThread: () => Effect.void,
       listSessions: () => Effect.succeed([]),
       // MCP management is unused by this test; a thread with no servers is
       // the honest stub rather than a die().

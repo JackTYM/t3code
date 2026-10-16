@@ -97,6 +97,7 @@ describe("ThreadDeletionReactor drain", () => {
         ),
       } as unknown as OrchestrationEngineShape;
       const providerService = {
+        releaseThread: () => Effect.void,
         stopSession: () =>
           Effect.gen(function* () {
             stops.push(stops.length + 1);
@@ -132,6 +133,43 @@ describe("ThreadDeletionReactor drain", () => {
           yield* Deferred.succeed(releaseSecondEvent, undefined);
           yield* Fiber.join(drained);
           expect(stops).toEqual([1, 2]);
+        }),
+      ).pipe(Effect.provide(layer));
+    }),
+  );
+
+  effectIt.effect("releases the provider thread before stopping its session", () =>
+    Effect.gen(function* () {
+      const calls: Array<string> = [];
+      const cleanupDone = yield* Deferred.make<void>();
+      const engine = {
+        latestSequence: Effect.succeed(0),
+        streamDomainEvents: Stream.make(deletedEvent(1)),
+      } as unknown as OrchestrationEngineShape;
+      const providerService = {
+        // The release reads the thread's binding, which the stop leaves intact
+        // today but a future stop may clear, so the order is part of the contract.
+        releaseThread: () => Effect.sync(() => calls.push("release")),
+        stopSession: () =>
+          Effect.sync(() => calls.push("stop")).pipe(
+            Effect.andThen(Deferred.succeed(cleanupDone, undefined)),
+          ),
+      } as unknown as ProviderServiceShape;
+      const terminalManager = {
+        close: () => Effect.void,
+      } as unknown as TerminalManager.TerminalManager["Service"];
+      const layer = ThreadDeletionReactorLive.pipe(
+        Layer.provide(Layer.succeed(ProviderService, providerService)),
+        Layer.provide(Layer.succeed(TerminalManager.TerminalManager, terminalManager)),
+        Layer.provide(Layer.succeed(OrchestrationEngineService, engine)),
+      );
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const reactor = yield* ThreadDeletionReactor;
+          yield* reactor.start();
+          yield* Deferred.await(cleanupDone);
+          expect(calls).toEqual(["release", "stop"]);
         }),
       ).pipe(Effect.provide(layer));
     }),

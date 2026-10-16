@@ -77,6 +77,12 @@ export interface ProviderAdapterCapabilities {
   readonly promptlessTurnContinuation?: boolean;
   /** False when native conversation history cannot be rewound. */
   readonly supportsConversationRollback?: boolean;
+  /**
+   * False when the agent works in a provider-hosted workspace and never
+   * touches the session cwd. Local checkpoints and diffs would describe a
+   * tree the agent did not change, so they are skipped for these adapters.
+   */
+  readonly usesLocalWorkspace?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -173,6 +179,16 @@ export interface ProviderAdapterShape<TError> {
   readonly uploadFeedback?: (
     input: ProviderUploadFeedbackInput,
   ) => Effect.Effect<ProviderUploadFeedbackResult, TError>;
+
+  /**
+   * Release provider-side resources when a T3 thread is deleted (for example
+   * archiving a hosted session). Distinct from `stopSession`, which also runs
+   * for idle reaping and must leave the hosted session resumable.
+   */
+  readonly releaseThread?: (input: {
+    readonly threadId: ThreadId;
+    readonly resumeCursor?: unknown;
+  }) => Effect.Effect<void, TError>;
 
   /**
    * Stop all sessions owned by this adapter.

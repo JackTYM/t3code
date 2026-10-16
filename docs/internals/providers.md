@@ -93,6 +93,20 @@ checkpoints but cannot roll back its conversation. The [checkpoint boundary](./o
 therefore rejects revert before touching files. Native permission and question option IDs must
 also survive normalization; a display label is not necessarily a valid reply.
 
+## Hosted agents
+
+Claude Cloud drives claude.ai/code over an undocumented API using the `claude` CLI's OAuth login.
+Treat that login as read-only: refreshing it rotates the refresh token, which can sign the user out
+of the CLI. The [credentials reader](../../apps/server/src/provider/claudeCloudCredentials.ts) never
+refreshes or writes, and a disabled provider must not read it at all because the macOS Keychain can
+raise a system prompt.
+
+`usesLocalWorkspace: false` on the adapter's capabilities keeps the checkpoint reactor away from the
+thread's cwd. The agent never touched it, so a checkpoint would describe changes it did not make.
+`stopSession` must also stay non-destructive: the idle reaper and auth changes call it, and the
+hosted session has to remain resumable. Archiving happens in `releaseThread`, which only thread
+deletion calls.
+
 ## Attachments and stored history
 
 Attachments live outside the project workspace. [ProviderService](../../apps/server/src/provider/Layers/ProviderService.ts)

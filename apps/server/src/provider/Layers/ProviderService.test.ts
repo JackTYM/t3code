@@ -1107,6 +1107,57 @@ declaredCompaction.layer("ProviderService declared compaction", (it) => {
   );
 });
 
+const releasingInstanceId = ProviderInstanceId.make("releasing-instance");
+const plainInstanceId = ProviderInstanceId.make("plain-instance");
+const releasingAdapter = makeFakeCodexAdapter(customCompactionDriver);
+const plainAdapter = makeFakeCodexAdapter(customCompactionDriver);
+const releaseThreadHook = vi.fn(
+  (_input: { readonly threadId: ThreadId; readonly resumeCursor?: unknown }) => Effect.void,
+);
+const releaseRouting = makeProviderServiceLayer({
+  registry: makeStaticInstanceRegistry([
+    [releasingInstanceId, { ...releasingAdapter.adapter, releaseThread: releaseThreadHook }],
+    [plainInstanceId, plainAdapter.adapter],
+  ]),
+});
+
+releaseRouting.layer("ProviderService releaseThread", (it) => {
+  it.effect("hands the adapter the stored cursor even after the session was stopped", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-to-release");
+      yield* provider.startSession(threadId, {
+        providerInstanceId: releasingInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* provider.stopSession({ threadId });
+      yield* provider.releaseThread({ threadId });
+      assert.equal(releaseThreadHook.mock.calls.length, 1);
+      assert.deepEqual(releaseThreadHook.mock.calls[0]?.[0], {
+        threadId,
+        resumeCursor: { opaque: `resume-${String(threadId)}` },
+      });
+    }),
+  );
+
+  it.effect("does nothing for an adapter without a hook or a thread it never ran", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("plain-thread");
+      yield* provider.startSession(threadId, {
+        providerInstanceId: plainInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      releaseThreadHook.mockClear();
+      yield* provider.releaseThread({ threadId });
+      yield* provider.releaseThread({ threadId: asThreadId("never-started") });
+      assert.equal(releaseThreadHook.mock.calls.length, 0);
+    }),
+  );
+});
+
 const antigravityDriver = ProviderDriverKind.make("antigravity");
 const replacementAntigravity = makeFakeCodexAdapter(antigravityDriver);
 const originalAntigravityInstanceId = ProviderInstanceId.make("antigravity-personal");

@@ -36,6 +36,7 @@ import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
+import { RepositoryIdentityResolver } from "../../project/RepositoryIdentityResolver.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import * as CodexResetCredit from "./codexResetCredit.ts";
@@ -83,6 +84,11 @@ const TestHttpClientLive = Layer.succeed(
     Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ version: "0.0.0" }))),
   ),
 );
+
+// Claude Cloud reads the project's remote; these suites have no git projects.
+const RepositoryIdentityResolverTestLayer = Layer.succeed(RepositoryIdentityResolver, {
+  resolve: () => Effect.succeed(null),
+});
 
 const BackgroundPolicyAlwaysRunLayer = Layer.mock(BackgroundPolicy.BackgroundPolicy)({
   reportClientActivity: () => Effect.void,
@@ -1859,6 +1865,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 }),
               ),
               Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+              Layer.provideMerge(RepositoryIdentityResolverTestLayer),
               Layer.provideMerge(NodeServices.layer),
             ),
           ).pipe(Scope.provide(scope));
@@ -2087,6 +2094,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 }),
               ),
               Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+              Layer.provideMerge(RepositoryIdentityResolverTestLayer),
               Layer.provideMerge(NodeServices.layer),
             ),
           ).pipe(Scope.provide(scope));
@@ -2199,6 +2207,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 }),
               ),
               Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+              Layer.provideMerge(RepositoryIdentityResolverTestLayer),
               Layer.provideMerge(NodeServices.layer),
             ),
           ).pipe(Scope.provide(scope));
@@ -2307,6 +2316,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             Layer.provideMerge(CodexResetCredit.layerTest),
             Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
             Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+            Layer.provideMerge(RepositoryIdentityResolverTestLayer),
             // NO spawner mock — `ChildProcessSpawner` is supplied by the
             // outer `NodeServices.layer` on `it.layer(...)` and will
             // genuinely spawn a subprocess. The missing-binary ENOENT is
@@ -2420,6 +2430,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             ),
             Layer.provideMerge(NodeServices.layer),
             Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+            Layer.provideMerge(RepositoryIdentityResolverTestLayer),
           );
           const runtimeServices = yield* Layer.build(providerRegistryLayer).pipe(
             Scope.provide(scope),
@@ -2523,6 +2534,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
             Layer.provideMerge(NodeServices.layer),
             Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+            Layer.provideMerge(RepositoryIdentityResolverTestLayer),
           );
           const runtimeServices = yield* Layer.build(providerRegistryLayer).pipe(
             Scope.provide(scope),
@@ -2585,6 +2597,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               Layer.provideMerge(CodexResetCredit.layerTest),
               Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
               Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
+              Layer.provideMerge(RepositoryIdentityResolverTestLayer),
               Layer.provideMerge(
                 mockCommandSpawnerLayer((command, args) => {
                   if (command === "cursor-agent") {
@@ -2626,11 +2639,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               assert.deepStrictEqual(providers.map((provider) => provider.instanceId).toSorted(), [
                 "antigravity",
                 "claudeAgent",
+                "claudeCloud",
                 "codex",
                 "cursor",
                 "grok",
                 "opencode",
               ]);
+              const claudeCloudProvider = providers.find(
+                (provider) => provider.instanceId === ProviderInstanceId.make("claudeCloud"),
+              );
+              assert.strictEqual(claudeCloudProvider?.enabled, false);
+              assert.strictEqual(claudeCloudProvider?.status, "disabled");
               assert.strictEqual(cursorProvider?.enabled, false);
               assert.strictEqual(cursorProvider?.status, "disabled");
               assert.strictEqual(

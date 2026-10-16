@@ -26,7 +26,7 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
-  if (props.provider === "claudeAgent") {
+  if (props.provider === "claudeAgent" || props.provider === "claudeCloud") {
     return (
       <Svg width={size} height={size} viewBox="0 0 256 257" fill="none">
         <Path
