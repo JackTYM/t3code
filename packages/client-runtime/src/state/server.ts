@@ -1048,6 +1048,20 @@ export function createServerEnvironmentAtoms<R, E>(
       staleTimeMs: 60_000,
       refreshTrigger: ({ environmentId }) => usagePricesAtom(environmentId),
     }),
+    // Rates move about daily, so a long stale window keeps the panel from
+    // re-asking every time the set of models in a thread changes.
+    usageModelRates: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:usage-model-rates",
+      tag: WS_METHODS.serverGetUsageModelRates,
+      staleTimeMs: 10 * 60_000,
+    }),
+    // Parsed transcripts are cached server-side, so a short window keeps a
+    // working thread's figure moving without re-asking on every render.
+    usageThreadCosts: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:usage-thread-costs",
+      tag: WS_METHODS.serverGetUsageThreadCosts,
+      staleTimeMs: 30_000,
+    }),
     configProjection,
     welcome,
     consumeResetCredit: createEnvironmentRpcCommand(runtime, {

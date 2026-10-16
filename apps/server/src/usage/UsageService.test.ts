@@ -375,6 +375,97 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("prices requested models from the table, letting custom prices win", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+
+      yield* Effect.gen(function* () {
+        const settingsService = yield* ServerSettings.ServerSettingsService;
+        const service = yield* UsageService.make;
+        yield* settingsService.updateSettings({
+          usagePriceOverrides: {
+            "custom-model": { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 },
+          },
+        });
+
+        const result = yield* service.readModelRates({
+          models: ["table-model", "custom-model", "unknown-model", "table-model"],
+        });
+
+        assert.deepStrictEqual(result.rates.map((rate) => rate.model).toSorted(), [
+          "custom-model",
+          "table-model",
+        ]);
+        const table = result.rates.find((rate) => rate.model === "table-model");
+        assert.closeTo(table?.inputCostPerToken ?? -1, 0.000003, 1e-12);
+        assert.closeTo(table?.cacheReadCostPerToken ?? -1, 0.0000003, 1e-12);
+        const custom = result.rates.find((rate) => rate.model === "custom-model");
+        assert.closeTo(custom?.outputCostPerToken ?? -1, 0.000008, 1e-12);
+        assert.strictEqual(result.pricing.status, "fresh");
+      }).pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-model-rates-test",
+            home,
+            settings,
+            ratesDocument: {
+              "table-model": {
+                input_cost_per_token: 0.000003,
+                output_cost_per_token: 0.000015,
+                cache_read_input_token_cost: 0.0000003,
+              },
+            },
+          }),
+        ),
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("prices a session's transcript by id and omits sessions without one", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      const sessionId = "623dde97-20fd-4920-93d5-e216a8861377";
+      const sessionTranscript = NodePath.join(NodePath.dirname(transcript), `${sessionId}.jsonl`);
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          sessionTranscript,
+          claudeLine(1, 5) + claudeLine(1, 5) + claudeLine(2, 7),
+        ),
+      );
+      // Another session's transcript must not leak into this one's cost.
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(3, 1000)));
+
+      yield* Effect.gen(function* () {
+        const service = yield* UsageService.make;
+        const result = yield* service.readSessionCosts([
+          { key: "thread-a", provider: "claude", sessionId },
+          {
+            key: "thread-b",
+            provider: "claude",
+            sessionId: "00000000-0000-0000-0000-000000000000",
+          },
+        ]);
+
+        assert.strictEqual(result.costs.length, 1);
+        assert.strictEqual(result.costs[0]?.key, "thread-a");
+        // Two distinct messages: 20 input and 12 output tokens.
+        assert.closeTo(result.costs[0]?.costUsd ?? -1, 20e-6 + 24e-6, 1e-12);
+        assert.strictEqual(result.costs[0]?.costSource, "modelPriced");
+      }).pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-session-costs-test",
+            home,
+            settings,
+            ratesDocument: {
+              "claude-fable-5": { input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+            },
+          }),
+        ),
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.live("counts appended usage on a rescan of a grown transcript", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

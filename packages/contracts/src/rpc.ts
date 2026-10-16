@@ -252,7 +252,16 @@ import {
   ProviderConsumeResetCreditInput,
   ProviderConsumeResetCreditResult,
 } from "./providerUsageLimits.ts";
-import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
+import {
+  UsageModelRates,
+  UsageModelRatesInput,
+  UsageThreadCosts,
+  UsageThreadCostsInput,
+  UsagePricing,
+  UsageReadError,
+  UsageSummary,
+  UsageSummaryInput,
+} from "./usage.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
   ProjectCloneActionInput,
@@ -387,6 +396,8 @@ export const WS_METHODS = {
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
   serverGetUsageSummary: "server.getUsageSummary",
   serverRefreshUsageRates: "server.refreshUsageRates",
+  serverGetUsageModelRates: "server.getUsageModelRates",
+  serverGetUsageThreadCosts: "server.getUsageThreadCosts",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -635,6 +646,18 @@ const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSummary, {
   payload: UsageSummaryInput,
   success: UsageSummary,
   error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
+});
+
+const WsServerGetUsageModelRatesRpc = Rpc.make(WS_METHODS.serverGetUsageModelRates, {
+  payload: UsageModelRatesInput,
+  success: UsageModelRates,
+  error: EnvironmentAuthorizationError,
+});
+
+const WsServerGetUsageThreadCostsRpc = Rpc.make(WS_METHODS.serverGetUsageThreadCosts, {
+  payload: UsageThreadCostsInput,
+  success: UsageThreadCosts,
+  error: EnvironmentAuthorizationError,
 });
 
 /**
@@ -1430,6 +1453,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRetryResourceTelemetryRpc,
   WsServerGetUsageSummaryRpc,
   WsServerRefreshUsageRatesRpc,
+  WsServerGetUsageModelRatesRpc,
+  WsServerGetUsageThreadCostsRpc,
   WsServerSignalProcessRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
