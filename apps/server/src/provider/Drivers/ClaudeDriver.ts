@@ -9,6 +9,9 @@ import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
+import { claudeAccountModelIds } from "../claudeAccountModels.ts";
+import { readClaudeOauthToken } from "../claudeOauthToken.ts";
+
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
@@ -157,6 +160,30 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         continuationGroupKey,
       });
 
+      // Models limited to approved organizations are offered only when the
+      // account's own login reports them. That login is the CLI's default one,
+      // so skip the check whenever this instance signs in another way: an API
+      // key or router cannot reach those models, and a separate config
+      // directory is a different account than the login we would read.
+      const usesDefaultSubscriptionLogin =
+        !effectiveConfig.homePath.trim() &&
+        !processEnv.ANTHROPIC_API_KEY &&
+        !processEnv.ANTHROPIC_AUTH_TOKEN &&
+        !processEnv.ANTHROPIC_BASE_URL &&
+        !processEnv.CLAUDE_CONFIG_DIR &&
+        !Object.keys(processEnv).some((name) => name.startsWith("CLAUDE_CODE_USE_"));
+      const resolveAccountModelIds = usesDefaultSubscriptionLogin
+        ? readClaudeOauthToken(undefined).pipe(
+            Effect.flatMap((token) =>
+              token ? claudeAccountModelIds(token) : Effect.succeed(new Set<string>()),
+            ),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(HttpClient.HttpClient, httpClient),
+          )
+        : undefined;
+
       const scopedLimitNames = yield* makeClaudeScopedLimitNames;
       const orchestrationAdapter = yield* createClaudeAdapterV2(
         {
@@ -225,6 +252,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
                     Effect.provideService(FileSystem.FileSystem, fileSystem),
                     Effect.provideService(Path.Path, path),
                   ),
+                resolveAccountModelIds,
               ),
             ),
             Effect.map(stampIdentity),
