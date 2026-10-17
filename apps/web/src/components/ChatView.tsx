@@ -189,7 +189,7 @@ import { useActiveThreadRef } from "../hooks/useActiveThreadRef";
 import {
   type ComposerSubmissionIntent,
   collapseExpandedComposerCursor,
-  parseStandaloneComposerSlashCommand,
+  parseComposerInteractionModeCommand,
 } from "../composer-logic";
 import {
   derivePendingApprovals,
@@ -8473,7 +8473,7 @@ export default function ChatView(props: ChatViewProps) {
       selectedProviderModels: ctxSelectedProviderModels,
       selectedPromptEffort: ctxSelectedPromptEffort,
       selectedModelSelection: ctxSelectedModelSelection,
-      interactionMode: sendInteractionMode,
+      interactionMode: ctxInteractionMode,
       interactionModeEnabled: sendInteractionModeEnabled,
     } = sendCtx;
     const annotationImageAlreadyAttached =
@@ -8508,14 +8508,14 @@ export default function ChatView(props: ChatViewProps) {
         : sendContextPreviewAnnotations;
     // A direct "send annotation" writes the draft and sends in the same tick; the reference
     // must be in the text now, not after the next render.
-    const promptForSend = directAnnotation
+    const rawPromptForSend = directAnnotation
       ? ensureInlineContextReferences(promptRef.current, [
           previewAnnotationContextReference(directAnnotation.annotation),
         ])
       : promptRef.current;
     if (editingQueuedRun !== null) {
       if (queuedEditSaveInFlightRef.current) return;
-      const editText = promptForSend.trim();
+      const editText = rawPromptForSend.trim();
       const newEditImages = [...composerImages];
       const newEditFiles = [...composerFiles];
       const newEditAttachments = [...newEditImages, ...newEditFiles];
@@ -8637,6 +8637,24 @@ export default function ChatView(props: ChatViewProps) {
       }
       return;
     }
+    // `/plan <text>` switches the mode and sends `<text>` as that same turn. The
+    // bare form is handled below, where the attachment guards live. Gating on
+    // `sendInteractionModeEnabled` lets a provider's own `/plan` (Antigravity
+    // ships one) through unmodified.
+    const interactionModeCommand = sendInteractionModeEnabled
+      ? parseComposerInteractionModeCommand(rawPromptForSend)
+      : null;
+    const inlineInteractionModeCommand =
+      interactionModeCommand && interactionModeCommand.remainder.length > 0
+        ? interactionModeCommand
+        : null;
+    // The send context snapshot was taken before this command was read.
+    const sendInteractionMode = inlineInteractionModeCommand
+      ? inlineInteractionModeCommand.mode
+      : ctxInteractionMode;
+    const promptForSend = inlineInteractionModeCommand
+      ? inlineInteractionModeCommand.remainder
+      : rawPromptForSend;
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
@@ -8777,15 +8795,18 @@ export default function ChatView(props: ChatViewProps) {
       }
       return;
     }
+    // A bare `/plan` or `/default` only switches the mode, so it must not
+    // swallow a composer that still holds attachments or contexts.
     const standaloneSlashCommand =
-      sendInteractionModeEnabled &&
+      interactionModeCommand &&
+      interactionModeCommand.remainder.length === 0 &&
       composerImages.length === 0 &&
       composerFiles.length === 0 &&
       sendableComposerTerminalContexts.length === 0 &&
       composerPreviewAnnotations.length === 0 &&
       composerReviewComments.length === 0 &&
       composerThreadContexts.length === 0
-        ? parseStandaloneComposerSlashCommand(trimmed)
+        ? interactionModeCommand.mode
         : null;
     if (standaloneSlashCommand && multipleModelSelections === null) {
       handleInteractionModeChange(standaloneSlashCommand);
@@ -8793,6 +8814,9 @@ export default function ChatView(props: ChatViewProps) {
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
       return;
+    }
+    if (inlineInteractionModeCommand && multipleModelSelections === null) {
+      handleInteractionModeChange(inlineInteractionModeCommand.mode);
     }
     if (!hasSendableContent) {
       if (expiredTerminalContextCount > 0) {
