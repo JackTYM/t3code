@@ -24,6 +24,12 @@ import { assertClaudeCompactAfterPeerTurnOutput } from "./claude_compact_after_p
 import { assertClaudeCompactAfterPeerTurnNoEchoOutput } from "./claude_compact_after_peer_turn_no_echo/output.ts";
 import { claudeCompactAfterResumeWakeInput } from "./claude_compact_after_resume_wake/input.ts";
 import { assertClaudeCompactAfterResumeWakeOutput } from "./claude_compact_after_resume_wake/output.ts";
+import { claudeCloudSimpleInput } from "./claude_cloud_simple/input.ts";
+import {
+  assertClaudeCloudMultiTurnOutput,
+  assertClaudeCloudSimpleOutput,
+  assertClaudeCloudTurnInterruptOutput,
+} from "./claude_cloud_simple/output.ts";
 import { claudeIdleResumeInput } from "./claude_idle_resume/input.ts";
 import { assertClaudeIdleResumeOutput } from "./claude_idle_resume/output.ts";
 import { claudeLocalBashTaskInput } from "./claude_local_bash_task/input.ts";
@@ -202,6 +208,7 @@ import { assertWebSearchOutput } from "./web_search/codex_output.ts";
 import { webSearchInput } from "./web_search/input.ts";
 import {
   ACP_REGISTRY_MODEL_SELECTION,
+  CLAUDE_CLOUD_MODEL_SELECTION,
   CLAUDE_MODEL_SELECTION,
   CODEX_MODEL_SELECTION,
   CURSOR_MODEL_SELECTION,
@@ -218,6 +225,21 @@ import {
 } from "./shared.ts";
 
 export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixture> = [
+  {
+    name: "claude_cloud_simple",
+    buildInput: claudeCloudSimpleInput,
+    providers: [
+      {
+        driver: ProviderDriverKind.make("claudeCloud"),
+        transcriptFile: new URL(
+          "./claude_cloud_simple/claude_cloud_transcript.ndjson",
+          import.meta.url,
+        ),
+        modelSelection: CLAUDE_CLOUD_MODEL_SELECTION,
+        assertOutput: assertClaudeCloudSimpleOutput,
+      },
+    ],
+  },
   {
     name: "claude_background_subagent_after_root",
     buildInput: claudeBackgroundSubagentAfterRootInput,
@@ -1199,6 +1221,12 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
     buildInput: multiTurnInput,
     providers: [
       {
+        driver: ProviderDriverKind.make("claudeCloud"),
+        transcriptFile: new URL("./multi_turn/claude_cloud_transcript.ndjson", import.meta.url),
+        modelSelection: CLAUDE_CLOUD_MODEL_SELECTION,
+        assertOutput: assertClaudeCloudMultiTurnOutput,
+      },
+      {
         driver: ProviderDriverKind.make("codex"),
         transcriptFile: new URL("./multi_turn/codex_transcript.ndjson", import.meta.url),
         modelSelection: CODEX_MODEL_SELECTION,
@@ -1524,6 +1552,12 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
     name: "turn_interrupt",
     buildInput: turnInterruptInput,
     providers: [
+      {
+        driver: ProviderDriverKind.make("claudeCloud"),
+        transcriptFile: new URL("./turn_interrupt/claude_cloud_transcript.ndjson", import.meta.url),
+        modelSelection: CLAUDE_CLOUD_MODEL_SELECTION,
+        assertOutput: assertClaudeCloudTurnInterruptOutput,
+      },
       {
         driver: ProviderDriverKind.make("codex"),
         transcriptFile: new URL("./turn_interrupt/codex_transcript.ndjson", import.meta.url),
