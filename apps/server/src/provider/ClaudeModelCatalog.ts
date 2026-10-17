@@ -71,12 +71,14 @@ const BUNDLED_CLAUDE_PROVIDER_CATALOG =
   resolveProviderCatalog(BUNDLED_MODEL_MANIFEST, CLAUDE) ?? undefined;
 
 /**
- * Models limited to approved organizations. The Claude CLI never lists these,
- * so they cannot come from a probe, and they are defined here rather than in
- * `model-manifest.json` because that file is refetched from the published
- * manifest, which would drop a locally added entry.
+ * Models this app adds on top of the published catalog. They are defined here
+ * rather than in `model-manifest.json` because that file is refetched from the
+ * published manifest, which would drop a locally added entry.
+ *
+ * `accountGated` ones are limited to approved organizations; the Claude CLI
+ * never lists them, so they cannot come from a probe.
  */
-const ACCOUNT_GATED_CLAUDE_MODELS: ReadonlyArray<ClaudeCatalogModel> = [
+const CODE_DEFINED_CLAUDE_MODELS: ReadonlyArray<ClaudeCatalogModel> = [
   {
     accountGated: true,
     model: {
@@ -104,19 +106,52 @@ const ACCOUNT_GATED_CLAUDE_MODELS: ReadonlyArray<ClaudeCatalogModel> = [
     runtime: { contextWindowTokens: { "1m": 1_000_000 } },
     compatibility: { minVersion: "2.1.257" },
   },
+  {
+    // The CLI's own `opusplan` alias: Opus while the permission mode is plan,
+    // Sonnet otherwise. The capabilities are what both models share, and both
+    // have a fixed 1M context window, so the meter reads the same either way.
+    // Selecting it needs no adapter change: the slug is passed through as the
+    // SDK model id.
+    model: {
+      slug: "opusplan",
+      name: "Claude Opus Planning · Sonnet",
+      shortName: "Opus Plan",
+      isCustom: false,
+      capabilities: createModelCapabilities({
+        optionDescriptors: [
+          {
+            id: "effort",
+            label: "Reasoning",
+            type: "select",
+            options: [
+              { id: "low", label: "Low" },
+              { id: "medium", label: "Medium" },
+              { id: "high", label: "High", isDefault: true },
+              { id: "xhigh", label: "Extra High" },
+              { id: "max", label: "Max" },
+              { id: "ultrathink", label: "Ultrathink" },
+            ],
+            promptInjectedValues: ["ultrathink"],
+          },
+        ],
+      }),
+    },
+    runtime: { effortMap: { ultrathink: null }, fixedContextWindowTokens: 1_000_000 },
+    compatibility: { minVersion: "2.1.270" },
+  },
 ];
 
-/** Adds the gated models a resolved catalog does not already define itself. */
-function withAccountGatedModels(catalog: ClaudeModelCatalog): ClaudeModelCatalog {
+/** Adds the code-defined models a resolved catalog does not already define itself. */
+function withCodeDefinedModels(catalog: ClaudeModelCatalog): ClaudeModelCatalog {
   const known = new Set(catalog.models.map((entry) => entry.model.slug));
-  const missing = ACCOUNT_GATED_CLAUDE_MODELS.filter((entry) => !known.has(entry.model.slug));
+  const missing = CODE_DEFINED_CLAUDE_MODELS.filter((entry) => !known.has(entry.model.slug));
   return missing.length === 0 ? catalog : { models: [...catalog.models, ...missing] };
 }
 
 export function resolveClaudeModelCatalog(
   catalog: ModelCatalog.ProviderCatalog | undefined,
 ): ClaudeModelCatalog {
-  return withAccountGatedModels(
+  return withCodeDefinedModels(
     tryResolveClaudeModelCatalog(catalog) ??
       tryResolveClaudeModelCatalog(BUNDLED_CLAUDE_PROVIDER_CATALOG) ?? {
         models: [],
