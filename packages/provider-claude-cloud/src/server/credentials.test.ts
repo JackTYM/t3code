@@ -9,6 +9,7 @@ import { ClaudeCloudSignInError, parseClaudeCloudCredentials } from "./credentia
 const NOW = 1_800_000_000_000;
 const TOKEN = "sk-ant-oat01-super-secret";
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const isSignInError = Schema.is(ClaudeCloudSignInError);
 const document = (oauth: Record<string, unknown>) => encode({ claudeAiOauth: oauth });
 const live = {
   accessToken: TOKEN,
@@ -21,8 +22,8 @@ const refusal = (raw: string) =>
     const exit = yield* Effect.exit(parseClaudeCloudCredentials(raw, NOW));
     assert.isTrue(Exit.isFailure(exit));
     const error = Exit.isFailure(exit) ? Exit.findErrorOption(exit) : undefined;
-    assert.isTrue(error?._tag === "Some" && Schema.is(ClaudeCloudSignInError)(error.value));
-    return error?._tag === "Some" && Schema.is(ClaudeCloudSignInError)(error.value)
+    assert.isTrue(error?._tag === "Some" && isSignInError(error.value));
+    return error?._tag === "Some" && isSignInError(error.value)
       ? { reason: error.value.reason, text: `${String(error.value)}${error.value.message}` }
       : undefined;
   });

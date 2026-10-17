@@ -12,6 +12,7 @@ import type { ClaudeCloudCredentialStore } from "./credentials.ts";
 
 const TOKEN = "sk-ant-oat01-test-token";
 const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const isApiError = Schema.is(ClaudeCloudApiError);
 
 interface Recorded {
   readonly method: string;
@@ -194,8 +195,8 @@ describe("claude cloud api", () => {
         const exit = yield* Effect.exit(api.getSession("cse_1"));
         assert.isTrue(Exit.isFailure(exit));
         const error = Exit.isFailure(exit) ? Exit.findErrorOption(exit) : undefined;
-        assert.isTrue(error?._tag === "Some" && Schema.is(ClaudeCloudApiError)(error.value));
-        if (error?._tag === "Some" && Schema.is(ClaudeCloudApiError)(error.value)) {
+        assert.isTrue(error?._tag === "Some" && isApiError(error.value));
+        if (error?._tag === "Some" && isApiError(error.value)) {
           assert.strictEqual(error.value.kind, kind);
           assert.notInclude(error.value.message, TOKEN);
         }
