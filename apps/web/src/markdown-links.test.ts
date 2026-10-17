@@ -5,28 +5,7 @@ import {
   resolveMarkdownFileLinkMeta,
   rewriteMarkdownFileUriHref,
   shouldOpenMarkdownFileLinkInBrowserByDefault,
-  shouldOpenMarkdownFileLinkInEditor,
 } from "./markdown-links";
-
-describe("shouldOpenMarkdownFileLinkInEditor", () => {
-  it("uses command-click on macOS", () => {
-    expect(shouldOpenMarkdownFileLinkInEditor({ metaKey: true, ctrlKey: false }, "MacIntel")).toBe(
-      true,
-    );
-    expect(shouldOpenMarkdownFileLinkInEditor({ metaKey: false, ctrlKey: true }, "MacIntel")).toBe(
-      false,
-    );
-  });
-
-  it("uses control-click on other platforms", () => {
-    expect(
-      shouldOpenMarkdownFileLinkInEditor({ metaKey: false, ctrlKey: true }, "Linux x86_64"),
-    ).toBe(true);
-    expect(
-      shouldOpenMarkdownFileLinkInEditor({ metaKey: true, ctrlKey: false }, "Linux x86_64"),
-    ).toBe(false);
-  });
-});
 
 describe("shouldOpenMarkdownFileLinkInBrowserByDefault", () => {
   it("keeps PDFs browser-first while source files open in the file viewer", () => {

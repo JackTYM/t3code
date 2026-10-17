@@ -740,6 +740,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["links default browser in-app browser external open"],
   },
   {
+    id: "file-open-target",
+    title: "Open files in",
+    to: "/settings/integrations",
+    searchTerms: ["files default editor file manager finder explorer panel reveal open"],
+  },
+  {
     id: "pull-request-links-open-in-app",
     title: "Open pull requests in T3 Code",
     to: "/settings/integrations",

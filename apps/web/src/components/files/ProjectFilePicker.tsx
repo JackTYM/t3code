@@ -3,7 +3,7 @@ import { useMemo, useState, type ReactNode } from "react";
 
 import { useActiveProjectTarget, type ActiveProjectTarget } from "~/hooks/useActiveProjectTarget";
 import { useTheme } from "~/hooks/useTheme";
-import { useRightPanelStore } from "~/rightPanelStore";
+import { useOpenFile } from "~/useOpenFile";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 
 import { PierreEntryIcon } from "../chat/PierreEntryIcon";
@@ -70,6 +70,7 @@ function EmptyProjectFilePicker() {
 
 function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveProjectTarget }) {
   const { target } = props;
+  const openFile = useOpenFile({ threadRef: target.threadRef, cwd: target.cwd });
   const [query, setQuery] = useState("");
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const result = useProjectFilePickerQuery(
@@ -107,10 +108,10 @@ function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveP
         ),
         icon: <PierreEntryIcon pathValue={match.path} kind="file" theme={resolvedTheme} />,
         run: async () => {
-          useRightPanelStore.getState().openFile(target.threadRef, match.path);
+          openFile({ workspacePath: match.path });
         },
       })),
-    [hasMatchedQuery, matches, resolvedTheme, target.threadRef],
+    [hasMatchedQuery, matches, openFile, resolvedTheme],
   );
 
   const emptyStateMessage = getEmptyStateMessage(query, result.error, result.isPending);

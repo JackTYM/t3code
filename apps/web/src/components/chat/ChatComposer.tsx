@@ -4,7 +4,7 @@ import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { runtimeModeConfig, runtimeModeOptions as runtimeModes } from "./runtimeModeConfig";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
 import { usePrimaryEnvironmentId } from "../../state/environments";
-import { useRightPanelStore } from "~/rightPanelStore";
+import { useOpenFile } from "~/useOpenFile";
 import { AttachmentFilePreview } from "../files/AttachmentFilePreview";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import {
@@ -1849,6 +1849,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const openPrLink = useOpenPrLink(routeThreadRef);
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
   const previewFile = composerFiles.find((file) => file.id === previewFileId);
+  const openMentionFile = useOpenFile({ threadRef: routeThreadRef, cwd: gitCwd ?? undefined });
   const composerContextActions = useMemo(
     () => ({
       environmentId,
@@ -1858,7 +1859,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         if (preview) onExpandImage(preview);
       },
       openFile: setPreviewFileId,
-      openMention: (path: string) => useRightPanelStore.getState().openFile(routeThreadRef, path),
+      openMention: (path: string, event?: { metaKey: boolean; ctrlKey: boolean }) => {
+        openMentionFile({ workspacePath: path, ...(event ? { event } : {}) });
+      },
       expandVideo: (fileId: string) => {
         const file = composerFiles.find((candidate) => candidate.id === fileId);
         if (!file || !isVideoAttachment(file)) return;
@@ -1889,8 +1892,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       gitCwd,
       environmentId,
       onExpandImage,
+      openMentionFile,
       openPrLink,
-      routeThreadRef,
     ],
   );
   const composerContextRecords = useMemo(

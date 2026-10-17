@@ -1,9 +1,8 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { openDiffFilePrimaryAction, resolveDiffPathForWorkspace } from "./diffFileActions";
-import { selectThreadRightPanelState, useRightPanelStore } from "./rightPanelStore";
 
 const THREAD_REF = scopeThreadRef(
   EnvironmentId.make("environment-local"),
@@ -11,36 +10,33 @@ const THREAD_REF = scopeThreadRef(
 );
 
 describe("openDiffFilePrimaryAction", () => {
-  beforeEach(() => {
-    useRightPanelStore.setState({ byThreadKey: {}, threadPanelVisibilityByThreadKey: {} });
-  });
-
   it("opens diff files in the thread file viewer", () => {
     const openInEditor = vi.fn();
+    const openFile = vi.fn();
 
     openDiffFilePrimaryAction({
       threadRef: THREAD_REF,
       filePath: "apps/web/src/components/DiffPanel.tsx",
       activeCwd: "/repo/project",
+      openFile,
       openInEditor,
     });
 
-    expect(
-      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, THREAD_REF),
-    ).toMatchObject({
-      isOpen: true,
-      activeSurfaceId: "file:apps/web/src/components/DiffPanel.tsx",
+    expect(openFile).toHaveBeenCalledWith({
+      workspacePath: "apps/web/src/components/DiffPanel.tsx",
     });
     expect(openInEditor).not.toHaveBeenCalled();
   });
 
   it("falls back to the editor without thread context", () => {
     const openInEditor = vi.fn();
+    const openFile = vi.fn();
 
     openDiffFilePrimaryAction({
       threadRef: null,
       filePath: "apps/web/src/components/DiffPanel.tsx",
       activeCwd: "/repo/project",
+      openFile,
       openInEditor,
     });
 
@@ -51,21 +47,18 @@ describe("openDiffFilePrimaryAction", () => {
 
   it("opens repository-relative diff files from a nested project", () => {
     const openInEditor = vi.fn();
+    const openFile = vi.fn();
 
     openDiffFilePrimaryAction({
       threadRef: THREAD_REF,
       filePath: "frontend/Dockerfile",
       activeCwd: "/repo/frontend",
       repositoryRoot: "/repo",
+      openFile,
       openInEditor,
     });
 
-    expect(
-      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, THREAD_REF),
-    ).toMatchObject({
-      isOpen: true,
-      activeSurfaceId: "file:Dockerfile",
-    });
+    expect(openFile).toHaveBeenCalledWith({ workspacePath: "Dockerfile" });
     expect(openInEditor).not.toHaveBeenCalled();
   });
 
@@ -106,18 +99,18 @@ describe("openDiffFilePrimaryAction", () => {
     "does not open an out-of-project diff path: %s",
     (filePath) => {
       const openInEditor = vi.fn();
+      const openFile = vi.fn();
 
       openDiffFilePrimaryAction({
         threadRef: THREAD_REF,
         filePath,
         activeCwd: "/repo/frontend",
         repositoryRoot: "/repo",
+        openFile,
         openInEditor,
       });
 
-      expect(
-        selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, THREAD_REF),
-      ).toMatchObject({ isOpen: false });
+      expect(openFile).not.toHaveBeenCalled();
       expect(openInEditor).not.toHaveBeenCalled();
     },
   );

@@ -262,7 +262,7 @@ function ComposerMentionNodeView({ node }: NodeViewProps) {
     <ContextChip
       kind="mention"
       render={<button type="button" />}
-      onClick={() => actions.openMention(path)}
+      onClick={(event) => actions.openMention(path, event)}
       aria-label={`Preview ${path}`}
       contentEditable={false}
       spellCheck={false}
@@ -340,7 +340,11 @@ function ComposerSkillNodeView({ node }: NodeViewProps) {
               "No description is available for this skill."}
           </p>
           {skill?.path ? (
-            <Button variant="outline" size="sm" onClick={() => actions.openMention(skill.path)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={(event) => actions.openMention(skill.path, event)}
+            >
               View instructions
             </Button>
           ) : null}

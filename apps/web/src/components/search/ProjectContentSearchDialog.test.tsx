@@ -24,9 +24,7 @@ const target = {
 
 vi.mock("~/hooks/useActiveProjectTarget", () => ({ useActiveProjectTarget: () => target }));
 vi.mock("~/hooks/useTheme", () => ({ useTheme: () => ({ resolvedTheme: "light" }) }));
-vi.mock("~/rightPanelStore", () => ({
-  useRightPanelStore: { getState: () => ({ openFile: state.openFile }) },
-}));
+vi.mock("~/useOpenFile", () => ({ useOpenFile: () => state.openFile }));
 vi.mock("~/state/session", () => ({ readEnvironmentScope: state.readScope }));
 vi.mock("~/state/queries", () => ({
   useProjectContentSearch: ({ query }: { query: string }) => ({
@@ -107,7 +105,7 @@ it("enables search after access resolves and opens a result in its own environme
   await act(() => root.findByProps({ "data-content-search-result": 0 }).props.onClick());
 
   expect(state.readScope).toHaveBeenCalledWith(target.environmentId, AuthFilesystemReadScope);
-  expect(state.openFile).toHaveBeenCalledWith(target.threadRef, "src/index.ts", 3);
+  expect(state.openFile).toHaveBeenCalledWith({ workspacePath: "src/index.ts", line: 3 });
   expect(onOpenChange).toHaveBeenCalledWith(false);
 });
 

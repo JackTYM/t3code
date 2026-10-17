@@ -239,6 +239,7 @@ describe("getChangedBrowserSettingLabels", () => {
         browserRecordingShowKeyPresses: true,
         browserRecordingShowMousePresses: true,
         browserLinkTarget: "app",
+        fileOpenTarget: "editor",
         browserAutoShowFloatingPreview: !DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview,
         pullRequestLinksOpenInApp: false,
       }),
@@ -250,6 +251,7 @@ describe("getChangedBrowserSettingLabels", () => {
       "Recording key presses",
       "Recording mouse presses",
       "Open links in",
+      "Open files in",
       "Floating preview",
       "Open pull requests in T3 Code",
     ]);

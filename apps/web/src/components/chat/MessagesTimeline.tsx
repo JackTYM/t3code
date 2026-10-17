@@ -6,7 +6,7 @@ import { WorkLogBlock, WorkLogButton, WorkLogDetails, WorkLogList, WorkLogRow } 
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
 import { ReadOnlySourcePreview } from "../files/AttachmentFilePreview";
-import { useRightPanelStore } from "~/rightPanelStore";
+import { useOpenFile } from "~/useOpenFile";
 import {
   getQuestionAnswerPreview,
   getQuestionAnswerText,
@@ -312,6 +312,7 @@ interface TimelineRowSharedState {
   routeThreadKey: string;
   threadRef: ScopedThreadRef | null;
   markdownCwd: string | undefined;
+  onOpenMentionFile: (path: string, event: { metaKey: boolean; ctrlKey: boolean }) => void;
   resolvedTheme: "light" | "dark";
   workspaceRoot: string | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
@@ -629,6 +630,13 @@ const ConversationTimeline = memo(function ConversationTimeline({
   }
   const citationThreadRef = useMemo(() => parseScopedThreadKey(routeThreadKey), [routeThreadKey]);
   const openPullRequest = useOpenPrLink(citationThreadRef ?? undefined);
+  const openFile = useOpenFile({ threadRef: citationThreadRef, cwd: workspaceRoot });
+  const onOpenMentionFile = useCallback(
+    (path: string, event: { metaKey: boolean; ctrlKey: boolean }) => {
+      openFile({ workspacePath: path, event });
+    },
+    [openFile],
+  );
   const expandCitedRun = useCallback((runId: RunId) => {
     setExpandedRunIds((current) => (current.has(runId) ? current : new Set([...current, runId])));
   }, []);
@@ -1282,6 +1290,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       routeThreadKey,
       threadRef: citationThreadRef,
       markdownCwd,
+      onOpenMentionFile,
       resolvedTheme,
       workspaceRoot,
       skills,
@@ -1320,6 +1329,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       routeThreadKey,
       citationThreadRef,
       markdownCwd,
+      onOpenMentionFile,
       resolvedTheme,
       workspaceRoot,
       skills,
@@ -4228,9 +4238,8 @@ function UserMessageMentionChip(props: {
             render={<button type="button" />}
             aria-label={`Preview ${props.record.path}`}
             data-markdown-copy={props.copyMarkdown}
-            onClick={() => {
-              if (ctx.threadRef)
-                useRightPanelStore.getState().openFile(ctx.threadRef, props.record.path);
+            onClick={(event) => {
+              ctx.onOpenMentionFile(props.record.path, event);
             }}
           >
             <WorkspaceEntryIcon
