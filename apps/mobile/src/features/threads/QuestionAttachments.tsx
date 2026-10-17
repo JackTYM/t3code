@@ -9,7 +9,11 @@ import { View } from "react-native";
 import { useEffect, useRef, useState } from "react";
 import { ComposerAttachmentButton } from "./ComposerAttachmentButton";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
-import { pickComposerFiles, pickComposerMedia } from "../../lib/composerImages";
+import {
+  captureComposerMedia,
+  pickComposerFiles,
+  pickComposerMedia,
+} from "../../lib/composerImages";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { useNavigation } from "@react-navigation/native";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
@@ -123,7 +127,7 @@ export function QuestionAttachments(props: {
     props.question.id,
   );
   const attachments = drafts[key]?.attachments ?? [];
-  const pick = async (kind: "media" | "files") => {
+  const pick = async (kind: "media" | "files" | "camera") => {
     const scope = pickerScope.current;
     changeQuestionAttachmentPreparation(key, 1);
     try {
@@ -134,7 +138,7 @@ export function QuestionAttachments(props: {
               existingCount,
               maxBytes: capabilities?.fileAttachments?.maxUploadBytes,
             })
-          : await pickComposerMedia({
+          : await (kind === "camera" ? captureComposerMedia : pickComposerMedia)({
               existingCount,
               maxVideoBytes: capabilities?.fileAttachments?.maxUploadBytes,
             });
@@ -162,6 +166,7 @@ export function QuestionAttachments(props: {
         <ComposerAttachmentButton
           disabled={props.disabled}
           supportsFiles={Boolean(capabilities?.fileAttachments)}
+          onCaptureMedia={() => pick("camera")}
           onPickMedia={() => pick("media")}
           onPickFiles={() => pick("files")}
         />

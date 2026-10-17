@@ -24,6 +24,7 @@ import { fitComposerImage, renderPhoto } from "./composerImageFit";
 import { beginForegroundHandoff } from "./foreground-handoff";
 import { uuidv4 } from "./uuid";
 import { writeFileAtomically } from "./atomic-file";
+import type { ImagePickerAsset } from "expo-image-picker";
 
 export interface DraftComposerImageAttachment extends Omit<UploadChatImageAttachment, "dataUrl"> {
   readonly id: string;
@@ -414,10 +415,26 @@ export async function pickComposerMedia(input: {
     };
   }
 
+  return await collectPickedAssets(result.assets, {
+    remainingSlots,
+    ...(input.maxVideoBytes === undefined ? {} : { maxVideoBytes: input.maxVideoBytes }),
+  });
+}
+
+// Shared by the library and the camera so size caps, HEIC rendering and video
+// handling cannot drift: both pickers return the same asset shape.
+async function collectPickedAssets(
+  assets: ReadonlyArray<ImagePickerAsset>,
+  input: { readonly remainingSlots: number; readonly maxVideoBytes?: number },
+): Promise<{
+  readonly attachments: ReadonlyArray<DraftComposerAttachment>;
+  readonly error: string | null;
+}> {
+  const { remainingSlots } = input;
   const attachments: DraftComposerAttachment[] = [];
   let error: string | null = null;
 
-  for (const asset of result.assets) {
+  for (const asset of assets) {
     if (attachments.length >= remainingSlots) {
       error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} attachments per message.`;
       break;
@@ -524,6 +541,77 @@ export async function pickComposerMedia(input: {
     attachments,
     error,
   };
+}
+
+/**
+ * Capture from the camera instead of picking an existing file. Kept apart from
+ * `pickComposerMedia` because camera permission has its own failure mode that
+ * needs its own message; everything after capture is shared.
+ */
+export async function captureComposerMedia(input: {
+  readonly existingCount: number;
+  readonly maxVideoBytes?: number;
+}): Promise<{
+  readonly attachments: ReadonlyArray<DraftComposerAttachment>;
+  readonly error: string | null;
+}> {
+  const remainingSlots = PROVIDER_SEND_TURN_MAX_ATTACHMENTS - input.existingCount;
+  if (remainingSlots <= 0) {
+    return {
+      attachments: [],
+      error: `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} attachments per message.`,
+    };
+  }
+
+  let imagePicker: Awaited<ReturnType<typeof loadImagePicker>>;
+  try {
+    imagePicker = await loadImagePicker();
+  } catch (error) {
+    return {
+      attachments: [],
+      error: error instanceof Error ? error.message : "The camera is unavailable right now.",
+    };
+  }
+
+  // Asked for explicitly: launching without it leaves iOS dismissing the sheet
+  // with no explanation, so a refusal needs its own message.
+  const permission = await imagePicker.requestCameraPermissionsAsync();
+  if (!permission.granted) {
+    return {
+      attachments: [],
+      error: permission.canAskAgain
+        ? "Camera access is needed to take a photo."
+        : "Camera access is off for T3 Code. Turn it on in Settings to take a photo.",
+    };
+  }
+
+  // The camera activity reports the app as backgrounded on Android; the guard
+  // keeps background-triggered restarts from losing the shot.
+  const endHandoff = beginForegroundHandoff();
+  let result: Awaited<ReturnType<typeof imagePicker.launchCameraAsync>>;
+  try {
+    result = await imagePicker.launchCameraAsync({
+      mediaTypes: input.maxVideoBytes === undefined ? ["images"] : ["images", "videos"],
+      base64: false,
+      quality: 1,
+    });
+  } catch (error) {
+    return {
+      attachments: [],
+      error: error instanceof Error ? error.message : "Could not open the camera.",
+    };
+  } finally {
+    endHandoff();
+  }
+
+  if (result.canceled) {
+    return { attachments: [], error: null };
+  }
+
+  return await collectPickedAssets(result.assets, {
+    remainingSlots,
+    ...(input.maxVideoBytes === undefined ? {} : { maxVideoBytes: input.maxVideoBytes }),
+  });
 }
 
 export async function pasteComposerClipboard(input: { readonly existingCount: number }): Promise<
