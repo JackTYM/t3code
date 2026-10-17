@@ -28,6 +28,9 @@ to you for approval.
 Muse Code offers only **Supervised** and **Full access**. A Muse thread already set to another mode
 runs in **Supervised**.
 
+Claude Cloud offers only **Full access**. Its agent works unattended in Anthropic's sandbox and
+never asks for approval, so a thread's mode does not change what it can do there.
+
 Grok offers no **Auto-accept edits**. A Grok thread already set to it runs in **Supervised**. Grok
 file-change approvals offer **Allow all edits this session**. Its command approvals have no
 session-wide choice, because Grok would remember that command for the whole project.
