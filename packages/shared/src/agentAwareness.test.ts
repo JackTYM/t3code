@@ -154,7 +154,7 @@ describe("projectThreadAwarenessV2", () => {
   const wakesLater = DateTime.makeUnsafe("2026-05-22T18:00:00.000Z");
   const pendingApproval = {
     id: RuntimeRequestId.make("request-approval"),
-    kind: "command_approval" as const,
+    kind: "command" as const,
     createdAt: updatedAt,
   };
 
