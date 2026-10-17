@@ -85,9 +85,14 @@ function fnv1a(buffer: Buffer): number {
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
-  options?: { readonly fileName?: string },
+  options?: {
+    readonly fileName?: string;
+    /** Skips files whose path contains none of these, before they are stat'd. */
+    readonly pathIncludesAny?: readonly string[];
+  },
 ): Promise<{ readonly files: readonly TranscriptFile[]; readonly failedPaths: number }> {
   const fileName = options?.fileName;
+  const pathIncludesAny = options?.pathIncludesAny;
   const candidates: string[] = [];
   let failedPaths = 0;
   const walk = async (dir: string): Promise<void> => {
@@ -102,7 +107,9 @@ export async function listTranscriptFiles(
       const child = NodePath.join(dir, entry.name);
       if (entry.isDirectory()) await walk(child);
       else if (fileName !== undefined ? entry.name === fileName : entry.name.endsWith(".jsonl")) {
-        candidates.push(child);
+        if (pathIncludesAny === undefined || pathIncludesAny.some((part) => child.includes(part))) {
+          candidates.push(child);
+        }
       }
     }
   };

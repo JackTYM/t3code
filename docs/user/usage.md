@@ -13,6 +13,10 @@ cost, split by token type and by speed. These estimates are not your subscriptio
 split, such as a provider-reported cost for a model without public rates, shows as **Other**.
 Select a model under **Breakdown** to see its trend, cache hit rate, and cost per million tokens.
 
+Thread rows in the sidebar and the subagents in a thread's **Lineage** panel show the same
+estimate for Claude Code and Codex threads, prefixed with `~`. A figure marked approximate in
+its tooltip was priced from a token total alone.
+
 Totals depend on the history available on each server. Grok turns without a saved completed-turn
 record are missing from the totals.
 

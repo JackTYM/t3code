@@ -19,6 +19,7 @@ import {
   CheckIcon,
   CircleDashedIcon,
   CircleXIcon,
+  CoinsIcon,
   FolderIcon,
   GitBranchIcon,
   TerminalIcon,
@@ -27,6 +28,8 @@ import { ThreadHoverCard } from "../ThreadHoverCard";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { cn } from "~/lib/utils";
+import { formatEstimatedCost } from "@t3tools/client-runtime/state/subagentRuntime";
+import type { SubagentCost } from "./useSubagentCosts";
 import { deriveProviderInstanceEntries, shouldShowInstanceBadge } from "../../providerInstances";
 
 /** Geometry and preview limits stay identical in lineage and timeline tooltips. */
@@ -49,6 +52,7 @@ export function SubagentTooltipContent(props: {
   status: OrchestrationV2TurnItemStatus;
   result?: string | null | undefined;
   progress?: string | null | undefined;
+  cost?: SubagentCost | null | undefined;
 }) {
   const { modelLabel, workspace: metadata } = resolveSubagentMetadata(props);
   const preview = subagentDetailPreview(props);
@@ -168,6 +172,15 @@ export function SubagentTooltipContent(props: {
         </span>
         {props.elapsed}
       </div>
+      {props.cost ? (
+        <div className="flex min-w-0 items-center gap-2">
+          <CoinsIcon aria-hidden className="size-3 shrink-0" />
+          <span className="min-w-0 truncate">
+            ~{formatEstimatedCost(props.cost.costUsd)}
+            {props.cost.approximate ? " (approximate: priced at the input rate)" : null}
+          </span>
+        </div>
+      ) : null}
       {metadata.map(({ label, value }) => {
         const Icon = label === "Branch" ? GitBranchIcon : FolderIcon;
         return (

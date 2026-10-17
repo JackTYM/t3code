@@ -35,6 +35,7 @@ import {
   effectiveSnoozed,
   threadWokeAt,
 } from "@t3tools/client-runtime/state/thread-settled";
+import { formatEstimatedCost } from "@t3tools/client-runtime/state/subagentRuntime";
 import { createInboxReturnTracker } from "@t3tools/client-runtime/state/thread-inbox";
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import {
@@ -164,7 +165,11 @@ import {
   useProjects,
   useThreadShells,
 } from "../state/entities";
-import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
+import {
+  environmentServerConfigsAtom,
+  primaryServerKeybindingsAtom,
+  serverEnvironment,
+} from "../state/server";
 import { environmentProjects } from "../state/projects";
 import { vcsEnvironment } from "../state/vcs";
 import { threadEnvironment } from "../state/threads";
@@ -1164,6 +1169,20 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     JSON.stringify([thread.environmentId, gitCwd]),
     gitStatus.data,
   );
+  // Absent for providers without a readable transcript and on servers that
+  // predate the RPC, where the query just fails quietly.
+  const threadCost = useEnvironmentQuery(
+    leaseLiveStatus
+      ? serverEnvironment.usageThreadCosts({
+          environmentId: thread.environmentId,
+          input: { threadIds: [thread.id] },
+        })
+      : null,
+  );
+  const visibleThreadCostUsd = useRetainedValue(
+    JSON.stringify([thread.environmentId, thread.id]),
+    threadCost.data?.costs[0]?.costUsd ?? null,
+  );
   const pr = linkedPullRequestStatus?.pr ?? null;
   const supportsMultiplePullRequests = useSupportsMultiplePullRequests(thread.environmentId);
   const currentLinkedPr = supportsMultiplePullRequests
@@ -2024,6 +2043,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                   <span className="text-diff-deletion-foreground">
                     −{formatDiffCount(diff.deletions)}
                   </span>
+                </span>
+              ) : null}
+              {visibleThreadCostUsd !== null ? (
+                <span className="shrink-0 font-mono tabular-nums">
+                  ~{formatEstimatedCost(visibleThreadCostUsd)}
                 </span>
               ) : null}
               <span

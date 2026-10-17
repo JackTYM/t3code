@@ -2,7 +2,12 @@ import { describe, expect, it } from "vite-plus/test";
 import type { OrchestrationV2Subagent, OrchestrationV2SubagentWorkflow } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { deriveWorkflowGroups, projectedSubagentsToRuntime } from "./subagentRuntime.ts";
+import {
+  deriveWorkflowGroups,
+  estimateSubagentCost,
+  formatEstimatedCost,
+  projectedSubagentsToRuntime,
+} from "./subagentRuntime.ts";
 
 const at = (iso: string) => DateTime.makeUnsafe(iso);
 
@@ -241,5 +246,56 @@ describe("deriveWorkflowGroups over a dynamic workflow", () => {
     expect(groups[0]?.unphasedMembers.map((agent) => agent.title)).toEqual(["alpha:one"]);
     expect(groups[1]?.phases).toEqual([]);
     expect(groups[1]?.unphasedMembers).toEqual([]);
+  });
+});
+
+describe("estimateSubagentCost", () => {
+  const rate = {
+    model: "m",
+    inputCostPerToken: 0.000003,
+    outputCostPerToken: 0.000015,
+    cacheReadCostPerToken: 0.0000003,
+    cacheCreationCostPerToken: 0.00000375,
+  };
+
+  it("prices a token breakdown exactly, treating cached tokens as a subset of input", () => {
+    const estimate = estimateSubagentCost(
+      { totalTokens: 1_500, inputTokens: 1_000, cachedInputTokens: 600, outputTokens: 500 },
+      rate,
+    );
+    expect(estimate?.hasTokenBreakdown).toBe(true);
+    expect(estimate?.costUsd).toBeCloseTo(400 * 0.000003 + 600 * 0.0000003 + 500 * 0.000015, 12);
+  });
+
+  it("prices a bare total at the input rate and marks it approximate", () => {
+    expect(estimateSubagentCost({ totalTokens: 2_000 }, rate)).toEqual({
+      costUsd: 2_000 * 0.000003,
+      hasTokenBreakdown: false,
+    });
+  });
+
+  it("falls back to the total when cached tokens exceed input", () => {
+    expect(
+      estimateSubagentCost(
+        { totalTokens: 900, inputTokens: 100, cachedInputTokens: 300, outputTokens: 500 },
+        rate,
+      )?.hasTokenBreakdown,
+    ).toBe(false);
+  });
+
+  it("has no estimate without usage or a rate", () => {
+    expect(estimateSubagentCost(null, rate)).toBeNull();
+    expect(estimateSubagentCost({ totalTokens: 10 }, undefined)).toBeNull();
+  });
+});
+
+describe("formatEstimatedCost", () => {
+  it.each([
+    [0, "$0.00"],
+    [0.004, "<$0.01"],
+    [1.234, "$1.23"],
+    [250.4, "$250"],
+  ])("formats %s", (costUsd, expected) => {
+    expect(formatEstimatedCost(costUsd)).toBe(expected);
   });
 });

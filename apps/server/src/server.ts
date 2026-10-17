@@ -165,6 +165,7 @@ import * as CursorAccountReader from "@t3tools/provider-cursor/server/CursorAcco
 import * as CursorKeychain from "@t3tools/provider-cursor/server/CursorKeychain";
 import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsageAccounts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as UsageThreadCosts from "./usage/UsageThreadCosts.ts";
 import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
@@ -256,7 +257,7 @@ const layerBackground = BackgroundPolicy.layer.pipe(
   Layer.provideMerge(layerServerSettings),
 );
 
-const layerUsage = UsageService.layer.pipe(
+const layerUsageService = UsageService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       AntigravityUsage.layer,
@@ -266,6 +267,11 @@ const layerUsage = UsageService.layer.pipe(
     ).pipe(Layer.provide(ProviderHostLive.layer.pipe(Layer.provide(ServerSecretStore.layer)))),
   ),
   Layer.provide(layerServerSettings),
+);
+
+const layerUsage = UsageThreadCosts.layer.pipe(
+  Layer.provideMerge(layerUsageService),
+  Layer.provide(ProjectionStoreV2.layer),
 );
 
 const layerResourceDiagnostics = Layer.mergeAll(
