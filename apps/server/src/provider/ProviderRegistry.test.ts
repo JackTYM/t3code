@@ -3063,6 +3063,7 @@ it.layer(
             assert.deepStrictEqual(providers.map((provider) => provider.instanceId).toSorted(), [
               "antigravity",
               "claudeAgent",
+              "claudeCloud",
               "codex",
               "cursor",
               "grok",
@@ -3070,6 +3071,9 @@ it.layer(
               "opencode",
               "pi",
             ]);
+            // Off by default, so its Keychain login is never read (the fake spawner throws).
+            const cloudProvider = providers.find((provider) => provider.driver === "claudeCloud");
+            assert.strictEqual(cloudProvider?.status, "disabled");
             assert.strictEqual(cursorProvider?.enabled, false);
             assert.strictEqual(cursorProvider?.status, "disabled");
             assert.strictEqual(cursorProvider?.message, "Cursor is disabled in T3 Code settings.");

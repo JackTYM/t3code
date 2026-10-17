@@ -47,6 +47,9 @@ capabilities, never the driver kind.
   survive when that server is unreachable.
 - **Updates.** Run an update only through the installer that provably owns the binary; otherwise
   leave it manual. See [`providerMaintenance.ts`](../../apps/server/src/provider/providerMaintenance.ts).
+- **Hosted state.** A provider whose native threads live on its own servers frees them in the
+  adapter's `releaseNativeThread`, which only thread deletion calls. Closing a session must leave
+  them resumable.
 
 ## Tests
 

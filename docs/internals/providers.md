@@ -78,6 +78,26 @@ run before the prompt. They reject profiles with such configuration before launc
 instructions and tool denial do not create a native sandbox.
 See [helper constraints](../../apps/server/src/textGeneration/AntigravityTextGeneration.ts).
 
+## Hosted agents
+
+Claude Cloud drives claude.ai/code over an undocumented API using the `claude` CLI's OAuth login.
+Treat that login as read-only: refreshing it rotates the refresh token, which can sign the user out
+of the CLI. The [credential store](../../packages/provider-claude-cloud/src/server/credentials.ts)
+never refreshes or writes, and a disabled provider must not read it at all because the macOS
+Keychain can raise a system prompt.
+
+The cloud session outlives T3's provider session. Closing a session, which the idle reaper and
+provider switches do, only detaches; the native thread must stay resumable. Thread deletion is the
+only path that frees it: it queues a `provider-thread.release` effect for each native thread, and
+the [adapter](../../apps/server/src/orchestration-v2/Adapters/ClaudeCloudAdapterV2.ts) archives
+the cloud session in `releaseNativeThread`. The effect runs whether or not a session is open.
+
+Worker output carries no turn id, so the adapter attributes it to queued turns in send order. A
+re-attach after a restart checks whether the cloud is still running an earlier message and holds
+the queue head for it, or that turn's result would complete the next one. A re-attach that fails
+for any reason but a gone session keeps the native thread and reports the problem on the next
+turn, since falling back to a fresh session would abandon the cloud one.
+
 ## Provider updates run only through the owning installer
 
 A package manager runs only when the resolved executable's path proves it owns the install. Homebrew
