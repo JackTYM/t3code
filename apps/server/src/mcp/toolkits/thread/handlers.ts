@@ -1,5 +1,6 @@
 import {
   type CommandId,
+  type McpServerError,
   type RuntimeRequestId,
   ThreadId,
   type OrchestrationV2ThreadProjection,
@@ -18,6 +19,7 @@ import {
   readThread,
   unavailable,
 } from "../../threadAccess.ts";
+import * as SessionMcpServers from "../../../mcpServers/SessionMcpServers.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
@@ -74,7 +76,35 @@ const writesThread = <P extends { readonly threadId?: ThreadId | undefined }, A,
   handle: (params: P) => Effect.Effect<A, E, R>,
 ) => McpToolAccess.writesThreads((params: P) => [params.threadId], handle);
 
+const mcpServerFailure = (error: McpServerError) =>
+  new OrchestratorMcpFailure({
+    code: error.reason === "request-failed" ? "orchestration_error" : "invalid_request",
+    message: error.message,
+  });
+
 export const layer = McpToolAccess.toLayer(ThreadToolkit, {
+  t3_mcp_servers: McpToolAccess.reads((input) =>
+    Effect.gen(function* () {
+      const { projection } = yield* readThread(input.threadId);
+      const servers = yield* SessionMcpServers.SessionMcpServers;
+      return yield* servers
+        .list({ threadId: projection.thread.id })
+        .pipe(Effect.mapError(mcpServerFailure));
+    }),
+  ),
+  t3_mcp_server_repair: writesThread((input) =>
+    Effect.gen(function* () {
+      const { projection } = yield* readThread(input.threadId);
+      const servers = yield* SessionMcpServers.SessionMcpServers;
+      const target = { threadId: projection.thread.id, server: input.server };
+      yield* (
+        input.action === "reconnect"
+          ? servers.reconnect(target)
+          : servers.setEnabled({ ...target, enabled: input.action === "enable" })
+      ).pipe(Effect.mapError(mcpServerFailure));
+      return {};
+    }),
+  ),
   run_scheduled_task_now: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
       const scheduler = yield* ScheduledTasks.ScheduledTaskService;

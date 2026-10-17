@@ -28,6 +28,8 @@ export type T3McpToolSummaryAction =
   | "thread-merge"
   | "thread-search"
   | "thread-transfers"
+  | "mcp-servers"
+  | "mcp-server-repair"
   | "thread-organize"
   | "thread-update"
   | "queue-list"
@@ -300,6 +302,11 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   ),
   t3_thread_search: tool(["Search", "Searching", "Searched", "thread content"], "thread-search"),
   t3_thread_transfers: tool(["Read", "Reading", "Read", "thread transfers"], "thread-transfers"),
+  t3_mcp_servers: tool(["Check", "Checking", "Checked", "MCP servers"], "mcp-servers"),
+  t3_mcp_server_repair: tool(
+    ["Repair", "Repairing", "Repaired", "an MCP server"],
+    "mcp-server-repair",
+  ),
   t3_thread_organize: tool(["Organize", "Organizing", "Organized", "a thread"], "thread-organize"),
   t3_thread_update: tool(["Update", "Updating", "Updated", "T3 thread metadata"], "thread-update"),
   t3_worktree_list: tool(["List", "Listing", "Listed", "workspace branches"], "worktree-list"),

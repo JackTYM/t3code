@@ -63,6 +63,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as SessionMcpServers from "../mcpServers/SessionMcpServers.ts";
 import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
@@ -688,6 +689,7 @@ describe("orchestrator MCP toolkit", () => {
             Layer.provide(ServerSettings.layerTest()),
             Layer.provide(layerScheduledTaskStub),
             Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
+            Layer.provide(Layer.mock(SessionMcpServers.SessionMcpServers)({})),
             Layer.provide(
               Layer.mock(ProjectService.ProjectService)({
                 getById: (id) =>
@@ -3806,6 +3808,7 @@ describe("orchestrator MCP toolkit", () => {
           Layer.provide(layerProviderRegistry),
           Layer.provide(ServerSettings.layerTest()),
           Layer.provide(layerUnusedScheduledTaskStub),
+          Layer.provide(Layer.mock(SessionMcpServers.SessionMcpServers)({})),
           Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
           Layer.provideMerge(
             SecretRequests.layer.pipe(

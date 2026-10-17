@@ -228,6 +228,12 @@ export function summarizeT3ToolCalls(
     case "thread-transfers":
       label = phrase("Checked", "check", `thread transfers ${times}`);
       break;
+    case "mcp-servers":
+      label = phrase("Checked", "check", `MCP servers ${times}`);
+      break;
+    case "mcp-server-repair":
+      label = phrase("Repaired", "repair", quantity(selected.length, "MCP server"));
+      break;
     case "thread-organize":
       label = phrase("Organized", "organize", `threads ${times}`);
       break;
