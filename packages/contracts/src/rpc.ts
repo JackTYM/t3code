@@ -15,6 +15,13 @@ import {
   McpAppUpdateModelContextInput,
 } from "./mcpApps.ts";
 import {
+  McpServerError,
+  McpServerList,
+  McpServerListInput,
+  McpServerReconnectInput,
+  McpServerSetEnabledInput,
+} from "./mcpServers.ts";
+import {
   ChatGptReconnectProfileInput,
   ChatGptReconnectProfile,
   ChatGptImportProfileInput,
@@ -399,6 +406,9 @@ export const WS_METHODS = {
   mcpAppsToolInfo: "mcpApps.toolInfo",
   mcpAppsReadResource: "mcpApps.readResource",
   mcpAppsUpdateModelContext: "mcpApps.updateModelContext",
+  mcpServersList: "mcpServers.list",
+  mcpServersReconnect: "mcpServers.reconnect",
+  mcpServersSetEnabled: "mcpServers.setEnabled",
 
   providerUploadFeedback: "provider.uploadFeedback",
   providerAuthStart: "provider.auth.start",
@@ -1317,6 +1327,22 @@ const WsMcpAppsReadResourceRpc = Rpc.make(WS_METHODS.mcpAppsReadResource, {
   error: Schema.Union([McpAppRequestError, EnvironmentAuthorizationError]),
 });
 
+const WsMcpServersListRpc = Rpc.make(WS_METHODS.mcpServersList, {
+  payload: McpServerListInput,
+  success: McpServerList,
+  error: Schema.Union([McpServerError, EnvironmentAuthorizationError]),
+});
+
+const WsMcpServersReconnectRpc = Rpc.make(WS_METHODS.mcpServersReconnect, {
+  payload: McpServerReconnectInput,
+  error: Schema.Union([McpServerError, EnvironmentAuthorizationError]),
+});
+
+const WsMcpServersSetEnabledRpc = Rpc.make(WS_METHODS.mcpServersSetEnabled, {
+  payload: McpServerSetEnabledInput,
+  error: Schema.Union([McpServerError, EnvironmentAuthorizationError]),
+});
+
 const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
   payload: ProviderUploadFeedbackInput,
   success: ProviderUploadFeedbackResult,
@@ -1976,6 +2002,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsMcpAppsToolInfoRpc,
   WsMcpAppsReadResourceRpc,
   WsMcpAppsUpdateModelContextRpc,
+  WsMcpServersListRpc,
+  WsMcpServersReconnectRpc,
+  WsMcpServersSetEnabledRpc,
   WsProviderUploadFeedbackRpc,
   WsSubscribeVcsStatusRpc,
   WsSubscribeWorktreeSetupRpc,
