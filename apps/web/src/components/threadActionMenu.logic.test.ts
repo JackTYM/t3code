@@ -17,6 +17,7 @@ const baseState: ThreadActionMenuState = {
   canSnoozeNow: true,
   isRegeneratingTitle: false,
   isRunning: false,
+  hasLiveSession: false,
   supports: {
     settlement: true,
     autoSettleOptOut: true,
@@ -213,6 +214,23 @@ describe("buildThreadActionMenuItems", () => {
         },
       }),
     ).toContain("archive");
+  });
+
+  it("offers stop session only while a provider process is attached", () => {
+    expect(ids(baseState)).not.toContain("stop-session");
+    expect(ids({ ...baseState, hasLiveSession: true })).toContain("stop-session");
+  });
+
+  it("keeps stop session out of the lifecycle group and disables it without operate", () => {
+    const order = ids({ ...baseState, hasLiveSession: true });
+    expect(order.indexOf("stop-session")).toBeGreaterThan(order.indexOf("settle"));
+    expect(order.indexOf("stop-session")).toBeGreaterThan(order.indexOf("rename"));
+    const denied = buildThreadActionMenuItems({
+      ...baseState,
+      canOperate: false,
+      hasLiveSession: true,
+    });
+    expect(denied.find((item) => item.id === "stop-session")?.disabled).toBe(true);
   });
 
   it("disables archive while the thread is running", () => {

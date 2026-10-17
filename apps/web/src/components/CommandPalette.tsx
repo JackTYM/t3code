@@ -75,6 +75,7 @@ import {
   RotateCcwIcon,
   SettingsIcon,
   SquarePenIcon,
+  SquarePowerIcon,
   SunIcon,
   TextSearchIcon,
 } from "lucide-react";
@@ -122,6 +123,7 @@ import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
 import { threadEnvironment } from "../state/threads";
+import { deriveHasLiveSession } from "../session-logic";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -1959,6 +1961,26 @@ function OpenCommandPaletteDialog(props: {
           },
         });
         if (refreshed._tag === "Failure") throw squashAtomCommandFailure(refreshed);
+      },
+    });
+  }
+
+  // Unlike Restart agent session, this does not refresh providers. It only ends
+  // the provider process; the next message starts a fresh one.
+  if (activeThread !== null && deriveHasLiveSession(activeThread.runtime)) {
+    actionItems.push({
+      kind: "action",
+      value: "action:stop-thread-session",
+      searchTerms: ["stop session", "end session", "provider process", "mcp", "respawn"],
+      title: "Stop session",
+      description: "Ends the provider process. Your next message starts a fresh one.",
+      icon: <SquarePowerIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        const stopped = await stopThreadSession({
+          environmentId: activeThread.environmentId,
+          input: { threadId: activeThread.id },
+        });
+        if (stopped._tag === "Failure") throw squashAtomCommandFailure(stopped);
       },
     });
   }

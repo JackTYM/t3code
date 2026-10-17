@@ -29,6 +29,7 @@ import {
   deriveTimelineEntriesFromVisibleTurnItemsWithState,
   deriveRevertTurnCountByUserMessageId,
   derivePhase,
+  deriveHasLiveSession,
   findLatestProposedPlan,
   isLatestRunSettled,
   selectHandoffImageResources,
@@ -1818,4 +1819,33 @@ it("renders automatic completion as a work entry instead of a user bubble", () =
       ],
     })[0]?.kind,
   ).toBe("message");
+});
+
+describe("deriveHasLiveSession", () => {
+  const runtimeWithStatus = (status: ThreadRuntimeSummary["status"]): ThreadRuntimeSummary => ({
+    status,
+    activeRunId: null,
+    providerInstanceId: ProviderInstanceId.make("claude-default"),
+    providerName: null,
+    lastError: null,
+    updatedAt: "2026-09-29T00:00:00.000Z",
+  });
+
+  it("has no session when the thread has never run", () => {
+    expect(deriveHasLiveSession(null)).toBe(false);
+  });
+
+  it.each(["preparing", "queued", "starting", "running", "waiting", "idle", "completed"] as const)(
+    "treats a %s provider process as live",
+    (status) => {
+      expect(deriveHasLiveSession(runtimeWithStatus(status))).toBe(true);
+    },
+  );
+
+  it.each(["failed", "interrupted"] as const)(
+    "treats a %s session as having no process left to stop",
+    (status) => {
+      expect(deriveHasLiveSession(runtimeWithStatus(status))).toBe(false);
+    },
+  );
 });
