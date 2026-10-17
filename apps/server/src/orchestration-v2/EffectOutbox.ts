@@ -7,6 +7,7 @@ import {
   ProviderSessionId,
   RunAttemptId,
   ProviderApprovalDecision,
+  ProviderInstanceId,
   ProviderUserInputAnswers,
   ProviderThreadId,
   ProviderTurnId,
@@ -104,6 +105,11 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     attachmentIds: Schema.Array(Schema.String),
   }),
   Schema.Struct({
+    type: Schema.Literal("provider-thread.release"),
+    providerInstanceId: ProviderInstanceId,
+    nativeThreadId: Schema.String,
+  }),
+  Schema.Struct({
     type: Schema.Literal("thread-title.generate"),
     kind: Schema.Union([
       Schema.Struct({ type: Schema.Literal("initial"), messageId: MessageId }),
@@ -125,6 +131,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "terminal.cleanup",
   "preview.cleanup",
   "attachment.cleanup",
+  "provider-thread.release",
   "thread-title.generate",
   "delegated-tasks.stop",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;

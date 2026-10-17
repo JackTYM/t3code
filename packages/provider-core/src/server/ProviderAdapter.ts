@@ -643,5 +643,13 @@ export class ProviderAdapterV2 extends Context.Service<
     readonly openSession: (
       input: ProviderAdapterV2OpenSessionInput,
     ) => Effect.Effect<ProviderAdapterV2SessionRuntime, ProviderAdapterV2Error, Scope.Scope>;
+    /**
+     * Frees provider-side state for a native thread whose app thread was
+     * deleted. Called without an open session, and only on deletion: stop and
+     * idle release must leave native threads resumable.
+     */
+    readonly releaseNativeThread?: (input: {
+      readonly nativeThreadId: string;
+    }) => Effect.Effect<void, ProviderAdapterV2Error>;
   }
 >()("@t3tools/provider-core/server/ProviderAdapter/ProviderAdapterV2") {}

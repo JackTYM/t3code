@@ -18,7 +18,14 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
   readonly command: Extract<OrchestrationV2Command, { readonly type: "thread.delete" }>;
   readonly projection: Pick<
     OrchestrationV2ThreadProjection,
-    "thread" | "runs" | "attempts" | "nodes" | "runtimeRequests" | "subagents" | "providerSessions"
+    | "thread"
+    | "runs"
+    | "attempts"
+    | "nodes"
+    | "runtimeRequests"
+    | "subagents"
+    | "providerSessions"
+    | "providerThreads"
   >;
   readonly attachmentIds: ReadonlyArray<string>;
   readonly now: DateTime.Utc;
@@ -206,6 +213,31 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
         detail: "Thread deleted.",
         revokeMcpCredential: true,
       },
+    });
+  }
+  // Adapters without a release hook ignore this; hosted ones free the native
+  // session here, since only deletion makes it unreachable.
+  const nativeThreads = new Map(
+    projection.providerThreads.flatMap((providerThread) =>
+      providerThread.nativeThreadRef?.nativeId == null
+        ? []
+        : [
+            [
+              `${providerThread.providerInstanceId}:${providerThread.nativeThreadRef.nativeId}`,
+              {
+                providerInstanceId: providerThread.providerInstanceId,
+                nativeThreadId: providerThread.nativeThreadRef.nativeId,
+              },
+            ] as const,
+          ],
+    ),
+  );
+  for (const [key, nativeThread] of nativeThreads) {
+    effects.push({
+      id: `effect:${command.commandId}:provider-thread.release:${key}`,
+      commandId: command.commandId,
+      threadId: command.threadId,
+      request: { type: "provider-thread.release", ...nativeThread },
     });
   }
   effects.push({

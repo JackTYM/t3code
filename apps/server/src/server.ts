@@ -480,7 +480,11 @@ const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
   Layer.provide(ProviderEventIngestor.layerAnalytics),
   Layer.provide(layerCheckpointStore),
   Layer.provide(layerGitWorkflow),
-  Layer.provide(ResourceCleanupService.layer),
+  Layer.provide(
+    ResourceCleanupService.layer.pipe(
+      Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
+    ),
+  ),
   Layer.provide(
     RunFinalizationService.layerObserver.pipe(
       Layer.provide(ProjectionStoreV2.layer),
