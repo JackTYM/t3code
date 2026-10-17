@@ -1,7 +1,8 @@
 # Running T3 Code in the background
 
-On Linux and macOS, T3 Code can run as a service for your user so you do not need
-to keep a terminal open.
+T3 Code can run as a service for your user so you do not need to keep a
+terminal open. It uses systemd on Linux, launchd on macOS, and Task Scheduler
+on Windows, and never needs administrator rights on any of them.
 
 ## Manage the service
 
@@ -51,7 +52,13 @@ Mac logged in and awake for unattended remote access. Installing over SSH while
 nobody is logged in at the Mac's screen can fail at the final start step; the
 service is still installed and will start at the next login.
 
-Windows background services are not supported.
+Windows registers a Task Scheduler task for your account that starts T3 Code
+when you sign in and restarts it if it stops. The server runs without a console
+window, so closing a terminal does not stop it, and its output goes to the log
+file shown by `t3 service status`. Like macOS, it runs only while you are signed
+in. Manage it with the `t3 service` commands rather than the Task Scheduler
+app, so the task and the files T3 Code writes stay in step; `t3 service
+uninstall` stops the server and removes both.
 
 T3 Connect can offer service installation during setup, but the two are managed
 separately. Signing out of T3 Connect does not stop or uninstall the service.
@@ -86,6 +93,10 @@ that session open.
 | `user-manager-unavailable`              | Run `systemctl --user status` in a login session for the service user; check your distribution's systemd user-session support. |
 | `service-disabled` or `service-stopped` | Read the log and `systemctl --user status t3code.service`, then use the repair command printed by T3 Code.                     |
 | `restart-pending`                       | A newer version is installed but the service still runs the previous one. Run `t3 service restart`.                            |
+
+On Windows, run `t3 service status` first; if the task was deleted or edited in
+Task Scheduler, `t3 service install` registers it again. If the server is not
+running, read the log file that `t3 service status` prints.
 
 On macOS, check **System Settings → General → Login Items** if the service no
 longer starts at login. If agent work cannot access Desktop, Documents, or
