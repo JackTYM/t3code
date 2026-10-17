@@ -1058,6 +1058,18 @@ export function derivePhase(runtime: ThreadRuntimeSummary | null): SessionPhase 
 }
 
 /**
+ * derivePhase reports failed and interrupted runs as "ready", but neither has a
+ * provider process left to stop, so they do not count as a live session.
+ */
+export function deriveHasLiveSession(runtime: ThreadRuntimeSummary | null): boolean {
+  return (
+    derivePhase(runtime) !== "disconnected" &&
+    runtime?.status !== "failed" &&
+    runtime?.status !== "interrupted"
+  );
+}
+
+/**
  * The server settles a preparing or starting run on `run.interrupt`
  * (Orchestrator.dispatchRunInterrupt), so Stop must not wait for the phase to reach "running".
  */

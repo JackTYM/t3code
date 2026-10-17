@@ -18,6 +18,7 @@ export type ThreadActionMenuId =
   | "rename"
   | "regenerate-title"
   | "mark-unread"
+  | "stop-session"
   | "copy"
   | "copy-path"
   | "copy-branch"
@@ -78,6 +79,8 @@ export interface ThreadActionMenuState {
   readonly isRegeneratingTitle: boolean;
   /** Archive rejects a thread with an attached provider, so disable it here rather than let the action fail. */
   readonly isRunning: boolean;
+  /** A provider process is attached, so there is something to stop. */
+  readonly hasLiveSession: boolean;
   readonly supports: {
     readonly settlement: boolean;
     readonly autoSettleOptOut: boolean;
@@ -204,6 +207,19 @@ export function buildThreadActionMenuItems(
         { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
       ],
     },
+    // Ending the process is how a thread picks up changed MCP servers, provider
+    // settings and binaries, since sessions read them at spawn. It changes
+    // nothing visible until the next message, so it stays away from lifecycle.
+    ...(state.hasLiveSession
+      ? [
+          {
+            id: "stop-session" as const,
+            label: "Stop session",
+            icon: "refresh-cw",
+            separatorBefore: true,
+          },
+        ]
+      : []),
     { id: "project-settings", label: "Project settings", icon: "settings" },
     {
       id: "archive",
