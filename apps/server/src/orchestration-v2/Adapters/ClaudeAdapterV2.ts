@@ -1892,7 +1892,7 @@ type ClaudeToolItemType = Extract<
   "command_execution" | "file_change" | "dynamic_tool" | "web_search"
 >;
 
-interface ClaudeToolClassification {
+export interface ClaudeToolClassification {
   readonly known: boolean;
   readonly normalizedName: string;
   readonly itemType: ClaudeToolItemType;
@@ -1965,7 +1965,7 @@ const ClaudeNativeToolInputRecord = Schema.Record(Schema.String, Schema.Unknown)
 type ClaudeNativeToolInputRecord = typeof ClaudeNativeToolInputRecord.Type;
 const isClaudeNativeToolInputRecord = Schema.is(ClaudeNativeToolInputRecord);
 
-type ClaudeNativeToolInput =
+export type ClaudeNativeToolInput =
   | {
       readonly type: "record";
       readonly value: ClaudeNativeToolInputRecord;
@@ -1980,7 +1980,7 @@ const EMPTY_CLAUDE_NATIVE_TOOL_INPUT = {
   value: {},
 } satisfies ClaudeNativeToolInput;
 
-function claudeNativeToolInputFromUnknown(input: unknown): ClaudeNativeToolInput {
+export function claudeNativeToolInputFromUnknown(input: unknown): ClaudeNativeToolInput {
   return isClaudeNativeToolInputRecord(input)
     ? { type: "record", value: input }
     : { type: "non_record", value: input };
@@ -2115,7 +2115,7 @@ function fileNameFromClaudeTool(toolName: string, input: ClaudeNativeToolInput):
   );
 }
 
-type ClaudeNativeToolOutput =
+export type ClaudeNativeToolOutput =
   | {
       readonly type: "none";
     }
@@ -2129,7 +2129,7 @@ type ClaudeNativeToolOutput =
       readonly fallbackValue?: ClaudeToolResultOutput;
     };
 
-const NO_CLAUDE_NATIVE_TOOL_OUTPUT = { type: "none" } satisfies ClaudeNativeToolOutput;
+export const NO_CLAUDE_NATIVE_TOOL_OUTPUT = { type: "none" } satisfies ClaudeNativeToolOutput;
 
 function claudeNativeToolOutputFromToolResult(
   toolResult: ClaudeToolResultContentBlock,
@@ -2312,7 +2312,7 @@ function isClaudeTypedToolResultErrorContent(content: ClaudeTypedToolResultConte
   }
 }
 
-function isClaudeToolResultError(toolResult: ClaudeToolResultContentBlock): boolean {
+export function isClaudeToolResultError(toolResult: ClaudeToolResultContentBlock): boolean {
   switch (toolResult.type) {
     case "tool_result":
       return toolResult.is_error === true;
@@ -2380,7 +2380,7 @@ function isClaudeToolUseContentBlock(
   );
 }
 
-function claudeToolUseBlocksFromAssistantMessage(
+export function claudeToolUseBlocksFromAssistantMessage(
   message: SDKMessage,
 ): ReadonlyArray<ClaudeToolUseContentBlock> {
   if (message.type !== "assistant") {
@@ -2438,7 +2438,7 @@ function claudeToolResultBlocksFromUserMessage(
   return message.message.content.filter(isClaudeUserToolResultContentBlock);
 }
 
-function claudeToolResultEntriesFromMessage(message: SDKMessage): ReadonlyArray<{
+export function claudeToolResultEntriesFromMessage(message: SDKMessage): ReadonlyArray<{
   readonly toolResult: ClaudeToolResultContentBlock;
   readonly output: ClaudeNativeToolOutput;
 }> {
@@ -2619,7 +2619,7 @@ function isOverloadedResult(result: SDKResultMessage): boolean {
   return result.subtype === "success" && result.api_error_status === 529;
 }
 
-function terminalStatusFromResult(
+export function terminalStatusFromResult(
   message: SDKResultMessage,
   failureHint?: string,
 ): Extract<
@@ -2739,7 +2739,7 @@ function isClaudeTaskNotificationOriginResult(message: SDKMessage): message is S
   return message.type === "result" && message.origin?.kind === "task-notification";
 }
 
-function providerFailureFromResult(
+export function providerFailureFromResult(
   message: SDKResultMessage,
   completedAt: DateTime.Utc,
   failureHint?: string,
@@ -2823,7 +2823,8 @@ function providerFailureFromApiRetry(message: SDKAPIRetryMessage): Orchestration
   });
 }
 
-function buildAssistantArtifacts(input: {
+export function buildAssistantArtifacts(input: {
+  readonly driver?: ProviderDriverKind;
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
   readonly turnInput: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
@@ -2837,20 +2838,21 @@ function buildAssistantArtifacts(input: {
   readonly message: OrchestrationV2ConversationMessage;
   readonly turnItem: OrchestrationV2TurnItem;
 } {
+  const driver = input.driver ?? CLAUDE_PROVIDER;
   const nodeId = input.idAllocator.derive.nodeFromProviderItem({
-    driver: CLAUDE_PROVIDER,
+    driver,
     nativeItemId: input.nativeItemId,
   });
   const messageId = input.idAllocator.derive.messageFromProviderItem({
-    driver: CLAUDE_PROVIDER,
+    driver,
     nativeItemId: input.nativeItemId,
   });
   const turnItemId = input.idAllocator.derive.turnItemFromProviderItem({
-    driver: CLAUDE_PROVIDER,
+    driver,
     nativeItemId: input.nativeItemId,
   });
   const nativeItemRef = {
-    driver: CLAUDE_PROVIDER,
+    driver,
     nativeId: input.nativeItemId,
     strength: "strong" as const,
   };
@@ -2908,6 +2910,143 @@ function buildAssistantArtifacts(input: {
       streaming: false,
     },
   };
+}
+
+/** Fills a tool call's type-specific turn item fields from its Claude tool_use input and result. */
+export function buildClaudeToolTurnItem(input: {
+  readonly identity: Pick<
+    Extract<OrchestrationV2TurnItem, { readonly type: "dynamic_tool" }>,
+    | "id"
+    | "threadId"
+    | "runId"
+    | "nodeId"
+    | "providerThreadId"
+    | "providerTurnId"
+    | "nativeItemRef"
+    | "parentItemId"
+    | "ordinal"
+    | "status"
+    | "startedAt"
+    | "completedAt"
+    | "updatedAt"
+  >;
+  readonly toolName: string;
+  readonly classification: ClaudeToolClassification;
+  readonly toolInput: ClaudeNativeToolInput;
+  readonly output: ClaudeNativeToolOutput;
+  readonly presentation: ClaudeToolPresentation | undefined;
+  readonly toolNonExecutionKind?: string;
+}): OrchestrationV2TurnItem {
+  const readPath = ["read", "read file"].includes(input.classification.normalizedName)
+    ? firstStringInputField(input.toolInput, ["file_path", "path"])?.trim()
+    : undefined;
+  const nativeToolInput = claudeNativeToolInputValue(input.toolInput);
+  const searchTitle = ["grep", "glob", "ls"].includes(input.classification.normalizedName)
+    ? formatSearchToolLabel({
+        input:
+          nativeToolInput !== null &&
+          typeof nativeToolInput === "object" &&
+          !Array.isArray(nativeToolInput)
+            ? (nativeToolInput as Record<string, unknown>)
+            : undefined,
+      })
+    : undefined;
+  const itemBase = {
+    ...(input.toolNonExecutionKind === undefined
+      ? {}
+      : { toolNonExecutionKind: input.toolNonExecutionKind }),
+    ...input.identity,
+    title:
+      readPath !== undefined
+        ? formatReadToolLabel(readPath)
+        : (searchTitle ??
+          dynamicToolTitle(input.toolName, nativeToolInput) ??
+          input.presentation?.title ??
+          null),
+  } satisfies Pick<
+    OrchestrationV2TurnItem,
+    | "id"
+    | "threadId"
+    | "runId"
+    | "nodeId"
+    | "providerThreadId"
+    | "providerTurnId"
+    | "nativeItemRef"
+    | "parentItemId"
+    | "ordinal"
+    | "status"
+    | "title"
+    | "startedAt"
+    | "completedAt"
+    | "updatedAt"
+  >;
+  const viewedImagePath =
+    readPath &&
+    readPath.length <= 4096 &&
+    !/[\r\n]/.test(readPath) &&
+    isWorkspaceImagePreviewPath(readPath)
+      ? readPath
+      : undefined;
+  const itemType = input.classification.itemType;
+  const webSearchPatterns = webSearchPatternsFromClaudeTool({
+    toolInput: input.toolInput,
+    output: input.output,
+  });
+  const webSearchResults = webSearchResultsFromClaudeOutput(input.output);
+  const webFetchUrl = firstStringInputField(input.toolInput, ["url"])?.trim();
+  const outputValue = claudeNativeToolOutputValue(input.output);
+  const outputText =
+    itemType === "command_execution"
+      ? claudeCommandOutputText(input.output)
+      : claudeNativeToolOutputText(input.output);
+  const turnItem: OrchestrationV2TurnItem =
+    itemType === "command_execution"
+      ? {
+          ...itemBase,
+          type: "command_execution",
+          input: commandInputFromClaudeTool(input.toolName, input.toolInput),
+          ...(outputText.length === 0 ? {} : { output: outputText }),
+        }
+      : itemType === "file_change"
+        ? {
+            ...itemBase,
+            type: "file_change",
+            fileName: fileNameFromClaudeTool(input.toolName, input.toolInput),
+            ...(outputText.length === 0 ? {} : { diffStr: outputText }),
+          }
+        : itemType === "web_search"
+          ? {
+              ...itemBase,
+              type: "web_search",
+              ...(webSearchPatterns.length === 0 ? {} : { patterns: [...webSearchPatterns] }),
+              ...(webSearchResults.length > 0
+                ? { results: [...webSearchResults] }
+                : input.classification.normalizedName === "webfetch" && outputText.trim().length > 0
+                  ? {
+                      results: [
+                        {
+                          ...(webFetchUrl === undefined ? {} : { url: webFetchUrl }),
+                          snippet: outputText.slice(0, WEB_FETCH_SNIPPET_MAX_CHARS),
+                        },
+                      ],
+                    }
+                  : {}),
+            }
+          : {
+              ...itemBase,
+              type: "dynamic_tool",
+              ...(input.presentation?.toolIcon === undefined
+                ? {}
+                : { toolIcon: input.presentation.toolIcon }),
+              ...(input.presentation?.toolSource === undefined
+                ? {}
+                : { toolSource: input.presentation.toolSource }),
+              toolName: input.toolName,
+              ...(viewedImagePath === undefined ? {} : { viewedImagePath }),
+              input: claudeNativeToolInputValue(input.toolInput),
+              ...(outputValue === undefined ? {} : { output: outputValue }),
+            };
+  return turnItem;
 }
 
 const CLAUDE_USAGE_LIMIT_WINDOWS = {
@@ -4172,130 +4311,31 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             startedAt: input.startedAt,
             completedAt,
           };
-          const readPath = ["read", "read file"].includes(input.classification.normalizedName)
-            ? firstStringInputField(input.toolInput, ["file_path", "path"])?.trim()
-            : undefined;
-          const nativeToolInput = claudeNativeToolInputValue(input.toolInput);
-          const searchTitle = ["grep", "glob", "ls"].includes(input.classification.normalizedName)
-            ? formatSearchToolLabel({
-                input:
-                  nativeToolInput !== null &&
-                  typeof nativeToolInput === "object" &&
-                  !Array.isArray(nativeToolInput)
-                    ? (nativeToolInput as Record<string, unknown>)
-                    : undefined,
-              })
-            : undefined;
-          const itemBase = {
+          const turnItem = buildClaudeToolTurnItem({
+            identity: {
+              id: turnItemId,
+              threadId: input.threadId,
+              runId: input.runId,
+              nodeId,
+              providerThreadId: input.runId === null ? null : input.context.input.providerThread.id,
+              providerTurnId: input.runId === null ? null : input.context.providerTurnId,
+              nativeItemRef,
+              parentItemId: null,
+              ordinal: input.ordinal,
+              status: input.status,
+              startedAt: input.startedAt,
+              completedAt,
+              updatedAt: input.updatedAt,
+            },
+            toolName: input.toolName,
+            classification: input.classification,
+            toolInput: input.toolInput,
+            output: input.output,
+            presentation: input.presentation,
             ...(input.toolNonExecutionKind === undefined
               ? {}
               : { toolNonExecutionKind: input.toolNonExecutionKind }),
-            id: turnItemId,
-            threadId: input.threadId,
-            runId: input.runId,
-            nodeId,
-            providerThreadId: input.runId === null ? null : input.context.input.providerThread.id,
-            providerTurnId: input.runId === null ? null : input.context.providerTurnId,
-            nativeItemRef,
-            parentItemId: null,
-            ordinal: input.ordinal,
-            status: input.status,
-            title:
-              readPath !== undefined
-                ? formatReadToolLabel(readPath)
-                : (searchTitle ??
-                  dynamicToolTitle(input.toolName, nativeToolInput) ??
-                  input.presentation?.title ??
-                  null),
-            startedAt: input.startedAt,
-            completedAt,
-            updatedAt: input.updatedAt,
-          } satisfies Pick<
-            OrchestrationV2TurnItem,
-            | "id"
-            | "threadId"
-            | "runId"
-            | "nodeId"
-            | "providerThreadId"
-            | "providerTurnId"
-            | "nativeItemRef"
-            | "parentItemId"
-            | "ordinal"
-            | "status"
-            | "title"
-            | "startedAt"
-            | "completedAt"
-            | "updatedAt"
-          >;
-          const viewedImagePath =
-            readPath &&
-            readPath.length <= 4096 &&
-            !/[\r\n]/.test(readPath) &&
-            isWorkspaceImagePreviewPath(readPath)
-              ? readPath
-              : undefined;
-          const itemType = input.classification.itemType;
-          const webSearchPatterns = webSearchPatternsFromClaudeTool({
-            toolInput: input.toolInput,
-            output: input.output,
           });
-          const webSearchResults = webSearchResultsFromClaudeOutput(input.output);
-          const webFetchUrl = firstStringInputField(input.toolInput, ["url"])?.trim();
-          const outputValue = claudeNativeToolOutputValue(input.output);
-          const outputText =
-            itemType === "command_execution"
-              ? claudeCommandOutputText(input.output)
-              : claudeNativeToolOutputText(input.output);
-          const turnItem: OrchestrationV2TurnItem =
-            itemType === "command_execution"
-              ? {
-                  ...itemBase,
-                  type: "command_execution",
-                  input: commandInputFromClaudeTool(input.toolName, input.toolInput),
-                  ...(outputText.length === 0 ? {} : { output: outputText }),
-                }
-              : itemType === "file_change"
-                ? {
-                    ...itemBase,
-                    type: "file_change",
-                    fileName: fileNameFromClaudeTool(input.toolName, input.toolInput),
-                    ...(outputText.length === 0 ? {} : { diffStr: outputText }),
-                  }
-                : itemType === "web_search"
-                  ? {
-                      ...itemBase,
-                      type: "web_search",
-                      ...(webSearchPatterns.length === 0
-                        ? {}
-                        : { patterns: [...webSearchPatterns] }),
-                      ...(webSearchResults.length > 0
-                        ? { results: [...webSearchResults] }
-                        : input.classification.normalizedName === "webfetch" &&
-                            outputText.trim().length > 0
-                          ? {
-                              results: [
-                                {
-                                  ...(webFetchUrl === undefined ? {} : { url: webFetchUrl }),
-                                  snippet: outputText.slice(0, WEB_FETCH_SNIPPET_MAX_CHARS),
-                                },
-                              ],
-                            }
-                          : {}),
-                    }
-                  : {
-                      ...itemBase,
-                      type: "dynamic_tool",
-                      ...(input.presentation?.toolIcon === undefined
-                        ? {}
-                        : { toolIcon: input.presentation.toolIcon }),
-                      ...(input.presentation?.toolSource === undefined
-                        ? {}
-                        : { toolSource: input.presentation.toolSource }),
-                      toolName: input.toolName,
-                      ...(viewedImagePath === undefined ? {} : { viewedImagePath }),
-                      input: claudeNativeToolInputValue(input.toolInput),
-                      ...(outputValue === undefined ? {} : { output: outputValue }),
-                    };
           return { node, turnItem };
         };
 
