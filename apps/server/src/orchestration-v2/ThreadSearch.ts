@@ -26,7 +26,12 @@ export class ThreadSearchError extends Schema.TaggedError<ThreadSearchError>()(
   }
 }
 
-const SearchRequest = Schema.Struct({ pattern: Schema.String, limit: Schema.Int });
+const SearchRequest = Schema.Struct({
+  pattern: Schema.String,
+  needle: Schema.String,
+  includeActivity: Schema.Boolean,
+  limit: Schema.Int,
+});
 const SearchRow = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
@@ -34,6 +39,13 @@ const SearchRow = Schema.Struct({
   matchText: Schema.String,
   messageCreatedAt: Schema.NullOr(IsoDateTime),
 });
+
+// Activity output has no size bound in the projection, so the scan covers only
+// the newest rows and the trailing characters of each, like the live tail.
+const ACTIVITY_SCAN_ROWS = 5000;
+const ACTIVITY_SCAN_TAIL_CHARS = 256 * 1024;
+const ACTIVITY_SNIPPET_LEAD_CHARS = 100;
+const ACTIVITY_SNIPPET_WINDOW_CHARS = 600;
 
 function escapeLikePattern(value: string): string {
   return value.replaceAll("!", "!!").replaceAll("%", "!%").replaceAll("_", "!_");
@@ -75,7 +87,7 @@ export const make = Effect.gen(function* () {
   const searchRows = SqlSchema.findAll({
     Request: SearchRequest,
     Result: SearchRow,
-    execute: ({ pattern, limit }) => sql`
+    execute: ({ pattern, needle, includeActivity, limit }) => sql`
       WITH candidate AS (
         SELECT
           threads.thread_id,
@@ -96,6 +108,58 @@ export const make = Effect.gen(function* () {
           AND messages.streaming = 0
           AND messages.role IN ('user', 'assistant')
           AND json_extract(messages.payload_json, '$.text') LIKE ${pattern} ESCAPE '!'
+        ${
+          includeActivity
+            ? sql`
+        UNION ALL
+        SELECT
+          threads.thread_id,
+          threads.project_id,
+          'activity' AS role,
+          substr(
+            activity.haystack,
+            max(1, instr(lower(activity.haystack), ${needle}) - ${ACTIVITY_SNIPPET_LEAD_CHARS}),
+            ${ACTIVITY_SNIPPET_WINDOW_CHARS}
+          ) AS match_text,
+          activity.updated_at AS message_created_at,
+          activity.turn_item_id AS message_id,
+          threads.updated_at AS thread_updated_at
+        FROM (
+          SELECT
+            thread_id,
+            turn_item_id,
+            updated_at,
+            substr(
+              CASE type
+                WHEN 'command_execution' THEN
+                  coalesce(json_extract(payload_json, '$.input'), '') || char(10) ||
+                  coalesce(json_extract(payload_json, '$.output'), '')
+                WHEN 'dynamic_tool' THEN
+                  coalesce(json_extract(payload_json, '$.toolName'), '') || char(10) ||
+                  coalesce(json_extract(payload_json, '$.output'), '')
+                ELSE coalesce(json_extract(payload_json, '$.result'), '')
+              END,
+              ${-ACTIVITY_SCAN_TAIL_CHARS}
+            ) AS haystack
+          FROM orchestration_v2_projection_turn_items
+          WHERE turn_item_id IN (
+            SELECT turn_item_id
+            FROM orchestration_v2_projection_turn_items
+            WHERE type IN ('command_execution', 'dynamic_tool', 'subagent')
+            ORDER BY updated_at DESC
+            LIMIT ${ACTIVITY_SCAN_ROWS}
+          )
+        ) AS activity
+        INNER JOIN orchestration_v2_projection_threads AS threads
+          ON threads.thread_id = activity.thread_id
+        INNER JOIN projection_projects AS projects
+          ON projects.project_id = threads.project_id
+        WHERE threads.deleted_at IS NULL
+          AND threads.archived_at IS NULL
+          AND projects.deleted_at IS NULL
+          AND activity.haystack LIKE ${pattern} ESCAPE '!'`
+            : sql``
+        }
       ),
       ranked AS (
         SELECT
@@ -104,12 +168,12 @@ export const make = Effect.gen(function* () {
           role AS source,
           match_text,
           message_created_at,
-          CASE role WHEN 'user' THEN 0 ELSE 1 END AS match_rank,
+          CASE role WHEN 'user' THEN 0 WHEN 'assistant' THEN 1 ELSE 2 END AS match_rank,
           thread_updated_at,
           ROW_NUMBER() OVER (
             PARTITION BY thread_id
             ORDER BY
-              CASE role WHEN 'user' THEN 0 ELSE 1 END ASC,
+              CASE role WHEN 'user' THEN 0 WHEN 'assistant' THEN 1 ELSE 2 END ASC,
               message_created_at DESC,
               message_id ASC
           ) AS thread_match_rank
@@ -136,6 +200,8 @@ export const make = Effect.gen(function* () {
         .withTransaction(
           searchRows({
             pattern: `%${escapeLikePattern(input.query)}%`,
+            needle: foldAsciiCase(input.query),
+            includeActivity: input.includeActivityMatches === true,
             limit: input.limit ?? 50,
           }),
         )

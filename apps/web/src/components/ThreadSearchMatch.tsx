@@ -49,16 +49,16 @@ function HighlightedSearchText(props: { text: string; query: string }) {
 
 export function ThreadSearchMatchExcerpt(props: {
   match: {
-    readonly source: "user" | "assistant";
+    readonly source: "user" | "assistant" | "activity";
     readonly snippet: string;
     readonly query: string;
   };
 }) {
-  const isUser = props.match.source === "user";
+  const { source } = props.match;
   return (
     <span className="truncate text-xs text-muted-foreground/85">
-      <span className={isUser ? "text-info-foreground" : "text-success-foreground"}>
-        {isUser ? "You:" : "Agent:"}
+      <span className={source === "user" ? "text-info-foreground" : "text-success-foreground"}>
+        {source === "user" ? "You:" : source === "assistant" ? "Agent:" : "Output:"}
       </span>{" "}
       <HighlightedSearchText text={props.match.snippet} query={props.match.query} />
     </span>
