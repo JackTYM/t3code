@@ -2,11 +2,13 @@ import type {
   SubagentWorkflowGroup,
   RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import { formatEstimatedCost } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { ProviderDriverKind, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
 import { ChevronDownIcon, LoaderCircleIcon, SquareIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { AgentElapsed } from "./AgentElapsed";
+import type { SubagentCost } from "./useSubagentCosts";
 import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { ThreadRelationshipIcon } from "./ThreadRelationshipIcon";
@@ -54,8 +56,10 @@ function WorkflowMemberRow({
   driver,
   onOpen,
   isThreadAvailable,
+  cost,
 }: {
   member: RuntimeSubagent;
+  cost: SubagentCost | null;
   providerInstanceId: ProviderInstanceId;
   provider: ServerProvider | undefined;
   providers: ReadonlyArray<ServerProvider> | undefined;
@@ -82,6 +86,11 @@ function WorkflowMemberRow({
           <ThreadRelationshipIcon driver={driver} provider={provider} status={member.status} />
           <span className="min-w-0 flex-1 truncate">{member.title}</span>
           <span className="sr-only">{member.status}</span>
+          {cost ? (
+            <span className="shrink-0 text-2xs font-normal tabular-nums text-muted-foreground">
+              ~{formatEstimatedCost(cost.costUsd)}
+            </span>
+          ) : null}
           {member.startedAt ? (
             <span className="shrink-0 text-2xs font-normal tabular-nums text-muted-foreground">
               <AgentElapsed agent={member} />
@@ -101,6 +110,7 @@ function WorkflowMemberRow({
             status={member.status}
             result={member.result ?? member.error}
             progress={member.progress}
+            cost={cost}
           />
         </ThreadHoverCardPopup>
       </Tooltip>
@@ -120,6 +130,7 @@ export function ThreadLineageWorkflowRow({
   onStop,
   stopping,
   stopDisabled,
+  costOfMember,
 }: {
   readonly group: SubagentWorkflowGroup;
   readonly header: ReactNode;
@@ -132,6 +143,7 @@ export function ThreadLineageWorkflowRow({
   readonly onStop?: (() => void) | undefined;
   readonly stopping: boolean;
   readonly stopDisabled: boolean;
+  readonly costOfMember: (member: RuntimeSubagent) => SubagentCost | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [phaseOpen, setPhaseOpen] = useState<ReadonlyMap<number, boolean>>(() => new Map());
@@ -227,6 +239,7 @@ export function ThreadLineageWorkflowRow({
                         driver={driver}
                         onOpen={onOpenThread}
                         isThreadAvailable={isThreadAvailable}
+                        cost={costOfMember(member)}
                       />
                     ))}
                   </ul>
@@ -244,6 +257,7 @@ export function ThreadLineageWorkflowRow({
               driver={driver}
               onOpen={onOpenThread}
               isThreadAvailable={isThreadAvailable}
+              cost={costOfMember(member)}
             />
           ))}
           {phases.length === 0 && group.unphasedMembers.length === 0 ? (

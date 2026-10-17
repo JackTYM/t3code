@@ -4,6 +4,7 @@ import type {
   OrchestrationV2Subagent,
   OrchestrationV2SubagentWorkflow,
   OrchestrationV2TurnItem,
+  UsageModelRate,
 } from "@t3tools/contracts";
 import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
 
@@ -288,4 +289,50 @@ export function deriveWorkflowGroups(
 
     return { workflow, phases, unphasedMembers };
   });
+}
+
+export interface SubagentCostEstimate {
+  readonly costUsd: number;
+  /**
+   * False when the provider reported only a token total. That is priced at
+   * the model's input rate, so it is a rough figure, not a bill.
+   */
+  readonly hasTokenBreakdown: boolean;
+}
+
+/**
+ * Prices a subagent's tokens. Providers that report input, cached, and output
+ * counts (Codex) price exactly, treating cached tokens as a subset of input.
+ * Claude reports only a total, so those agents price at the input rate.
+ */
+export function estimateSubagentCost(
+  usage: SubagentUsage | null,
+  rate: UsageModelRate | null | undefined,
+): SubagentCostEstimate | null {
+  if (!usage || !rate) {
+    return null;
+  }
+  const { inputTokens, outputTokens } = usage;
+  const cachedInputTokens = usage.cachedInputTokens ?? 0;
+  if (inputTokens !== undefined && outputTokens !== undefined && cachedInputTokens <= inputTokens) {
+    return {
+      costUsd:
+        (inputTokens - cachedInputTokens) * rate.inputCostPerToken +
+        cachedInputTokens * rate.cacheReadCostPerToken +
+        outputTokens * rate.outputCostPerToken,
+      hasTokenBreakdown: true,
+    };
+  }
+  return { costUsd: usage.totalTokens * rate.inputCostPerToken, hasTokenBreakdown: false };
+}
+
+/** Callers prefix `~`; sub-cent amounts read as "<$0.01". */
+export function formatEstimatedCost(costUsd: number): string {
+  if (costUsd <= 0) {
+    return "$0.00";
+  }
+  if (costUsd < 0.01) {
+    return "<$0.01";
+  }
+  return costUsd < 100 ? `$${costUsd.toFixed(2)}` : `$${Math.round(costUsd)}`;
 }

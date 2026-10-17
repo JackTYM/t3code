@@ -8,6 +8,10 @@ import {
   type UsageProviderKind,
   type UsageSource,
   type UsagePricing,
+  type UsageModelRate,
+  type UsageModelRates,
+  type UsageModelRatesInput,
+  type UsageThreadCost,
   type UsageSummary,
   type UsageSummaryInput,
   UsageReadError,
@@ -41,7 +45,13 @@ import type {
   UsageRecord,
 } from "@t3tools/provider-core/server/usage";
 import { resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
-import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
+import {
+  createOverrideRateTable,
+  lookupRate,
+  parseRateTable,
+  priceUsage,
+  type RateTable,
+} from "./usagePricing.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -149,11 +159,31 @@ const decodeCachedSources = Schema.decodeUnknownOption(
   Schema.Struct({ sources: Schema.Record(Schema.String, CachedSource) }),
 );
 
+/** A provider session whose transcript should be priced, under the caller's own key. */
+export interface SessionCostRequest {
+  readonly key: string;
+  readonly provider: UsageProviderKind;
+  readonly sessionId: string;
+}
+
+type SessionCost = Pick<UsageThreadCost, "costUsd" | "costSource"> & {
+  readonly key: string;
+};
+
 export class UsageService extends Context.Service<
   UsageService,
   {
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     readonly refreshRates: Effect.Effect<UsagePricing>;
+    /** Rates for specific models, for clients that price token counts themselves. */
+    readonly readModelRates: (input: UsageModelRatesInput) => Effect.Effect<UsageModelRates>;
+    /**
+     * Prices whole transcripts the way the usage page does. Sessions with no
+     * transcript, or none that could be priced, are omitted.
+     */
+    readonly readSessionCosts: (
+      sessions: ReadonlyArray<SessionCostRequest>,
+    ) => Effect.Effect<ReadonlyArray<SessionCost>>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -180,6 +210,8 @@ const layerTest = Layer.succeed(
         scanDurationMs: 0,
       }),
     refreshRates: Effect.succeed(EMPTY_PRICING),
+    readModelRates: () => Effect.succeed({ rates: [] }),
+    readSessionCosts: () => Effect.succeed([]),
   }),
 );
 
@@ -498,6 +530,25 @@ export const make = Effect.gen(function* () {
       };
     });
 
+  // A scan of another window may have cached its own read of this file
+  // meanwhile. Then keep whichever read saw the later file, so a slower
+  // scan never replaces newer usage with older.
+  const storeFileUpdate = (
+    filePath: string,
+    update: { readonly entry: CachedFile; readonly replaces: CachedFile | undefined } | undefined,
+  ) => {
+    if (update === undefined) return;
+    const current = fileCache.get(filePath);
+    if (
+      current === update.replaces ||
+      current === undefined ||
+      !isLaterRead(current, update.entry)
+    ) {
+      fileCache.set(filePath, update.entry);
+      cacheDirty = true;
+    }
+  };
+
   interface ScannedDir {
     readonly provider: UsageProviderKind;
     readonly dir: string;
@@ -533,19 +584,7 @@ export const make = Effect.gen(function* () {
       { concurrency: TRANSCRIPT_READ_CONCURRENCY },
     );
     const parsedFiles = read.map(({ path, records, update }) => {
-      if (update === undefined) return { path, records };
-      // A scan of another window may have cached its own read of this file
-      // meanwhile. Then keep whichever read saw the later file, so a slower
-      // scan never replaces newer usage with older.
-      const current = fileCache.get(path);
-      if (
-        current === update.replaces ||
-        current === undefined ||
-        !isLaterRead(current, update.entry)
-      ) {
-        fileCache.set(path, update.entry);
-        cacheDirty = true;
-      }
+      storeFileUpdate(path, update);
       return { path, records };
     });
     const unread = failedPaths + read.filter((file) => file.failed).length;
@@ -826,7 +865,151 @@ export const make = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
-  return { readSummary, refreshRates, awaitPersisted } as const;
+  const readModelRates = Effect.fn("UsageService.readModelRates")(function* (
+    input: UsageModelRatesInput,
+  ) {
+    yield* ensureRates(false);
+    // Unreadable settings only cost the custom overrides and aliases; the table still prices.
+    const settings = yield* settingsService.getSettings.pipe(
+      Effect.map(Option.some),
+      Effect.orElseSucceed(() => Option.none<ServerSettingsValue>()),
+    );
+    const overrides = createOverrideRateTable(
+      Option.isSome(settings) ? settings.value.usagePriceOverrides : {},
+    );
+    const aliases = resolveModelAliases(
+      Option.isSome(settings) ? settings.value.usageModelAliases : {},
+    );
+    const priced: UsageModelRate[] = [];
+    for (const model of new Set(input.models)) {
+      const resolved = aliases.get(model) ?? model;
+      const rate = overrides.get(resolved.trim()) ?? lookupRate(rates, resolved);
+      if (rate === null) continue;
+      priced.push({
+        model,
+        inputCostPerToken: rate.inputCostPerToken,
+        outputCostPerToken: rate.outputCostPerToken,
+        cacheReadCostPerToken: rate.cacheReadCostPerToken,
+        cacheCreationCostPerToken: rate.cacheCreationCostPerToken,
+      });
+    }
+    return { rates: priced } satisfies UsageModelRates;
+  });
+
+  const readSessionCosts = Effect.fn("UsageService.readSessionCosts")(function* (
+    sessions: ReadonlyArray<SessionCostRequest>,
+  ) {
+    if (sessions.length === 0) return [];
+    const settings = yield* settingsService.getSettings.pipe(
+      Effect.map(Option.some),
+      Effect.orElseSucceed(() => Option.none<ServerSettingsValue>()),
+    );
+    if (Option.isNone(settings)) return [];
+
+    yield* ensureScanCacheLoaded;
+    yield* ensureRates(false);
+    const nowMs = yield* Clock.currentTimeMillis;
+    const overrides = createOverrideRateTable(settings.value.usagePriceOverrides);
+    const aliases = resolveModelAliases(settings.value.usageModelAliases);
+    const dirs = yield* resolveTranscriptDirs(
+      settings.value,
+      nowMs - CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+    ).pipe(Effect.provideContext(readerContext));
+
+    interface Tally {
+      costUsd: number;
+      records: number;
+      unpricedRecords: number;
+      providerReportedRecords: number;
+      readonly seen: Set<string>;
+    }
+    const tallies = new Map<string, Tally>();
+    for (const { provider, format, dir, fileName } of dirs) {
+      const wanted = sessions.filter((session) => session.provider === provider);
+      if (wanted.length === 0) continue;
+      const { files } = yield* Effect.promise(() =>
+        listTranscriptFiles(dir, 0, {
+          pathIncludesAny: wanted.map((session) => session.sessionId),
+          ...(fileName === undefined ? {} : { fileName }),
+        }),
+      );
+      const read = yield* Effect.forEach(
+        files,
+        (file) =>
+          readFileRecords(file.path, file.size, file.mtimeMs, provider, format).pipe(
+            Effect.map((result) => ({ file, ...result })),
+          ),
+        { concurrency: TRANSCRIPT_READ_CONCURRENCY },
+      );
+      for (const { file, records, update } of read) {
+        storeFileUpdate(file.path, update);
+        const owners = new Set(
+          wanted.filter((session) => file.path.includes(session.sessionId)).map(({ key }) => key),
+        );
+        const occurrences = new Map<string, number>();
+        for (const record of records) {
+          // Within one file the occurrence count keeps keys unique, as in the summary.
+          let dedupeKey = record.dedupeKey;
+          if (dedupeKey === null && sharedSessionProviders.has(provider)) {
+            const key = encodeUsageRecordKey([
+              record.provider,
+              record.sessionId,
+              record.timestampMs,
+              record.model,
+              record.totals,
+            ]);
+            const occurrence = (occurrences.get(key) ?? 0) + 1;
+            occurrences.set(key, occurrence);
+            dedupeKey = key + ":" + occurrence;
+          }
+          const model = aliases.get(record.model);
+          const { rateModel: _rateModel, ...unaliased } = record;
+          const priced = priceUsage(
+            rates,
+            model === undefined ? record : { ...unaliased, model },
+            overrides,
+          );
+          for (const key of owners) {
+            let tally = tallies.get(key);
+            if (tally === undefined) {
+              tally = {
+                costUsd: 0,
+                records: 0,
+                unpricedRecords: 0,
+                providerReportedRecords: 0,
+                seen: new Set(),
+              };
+              tallies.set(key, tally);
+            }
+            // A resumed or forked transcript repeats earlier messages.
+            if (dedupeKey !== null) {
+              if (tally.seen.has(dedupeKey)) continue;
+              tally.seen.add(dedupeKey);
+            }
+            tally.costUsd += priced.costUsd;
+            tally.records += 1;
+            if (priced.costSource === "unpriced") tally.unpricedRecords += 1;
+            if (priced.costSource === "providerReported") tally.providerReportedRecords += 1;
+          }
+        }
+      }
+    }
+    yield* schedulePersist;
+
+    const costs: SessionCost[] = [];
+    for (const [key, tally] of tallies) {
+      if (tally.records === 0 || tally.unpricedRecords === tally.records) continue;
+      costs.push({
+        key,
+        costUsd: tally.costUsd,
+        costSource:
+          tally.providerReportedRecords === tally.records ? "providerReported" : "modelPriced",
+      });
+    }
+    return costs;
+  });
+
+  return { readSummary, refreshRates, readModelRates, readSessionCosts, awaitPersisted } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

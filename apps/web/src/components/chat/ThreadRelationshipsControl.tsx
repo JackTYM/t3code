@@ -8,8 +8,10 @@ import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   deriveWorkflowGroups,
+  formatEstimatedCost,
   projectedSubagentsToRuntime,
   type RuntimeSubagent,
+  type SubagentWorkflowGroup,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
 import {
@@ -64,6 +66,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { AgentElapsed } from "./AgentElapsed";
 import { ThreadRelationshipIcon, threadRelationshipStatusLabel } from "./ThreadRelationshipIcon";
 import { ThreadLineageWorkflowRow } from "./ThreadLineageWorkflowRow";
+import { useSubagentCosts, type SubagentCost } from "./useSubagentCosts";
 
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -204,6 +207,25 @@ function currentSubagent<Agent extends RuntimeSubagent>(
   };
 }
 
+function sumCosts(costs: ReadonlyArray<SubagentCost | null>): SubagentCost | null {
+  const known = costs.filter((cost) => cost !== null);
+  return known.length === 0
+    ? null
+    : {
+        costUsd: known.reduce((sum, cost) => sum + cost.costUsd, 0),
+        approximate: known.some((cost) => cost.approximate),
+      };
+}
+
+function workflowCost(
+  group: SubagentWorkflowGroup,
+  costOfMember: (member: RuntimeSubagent) => SubagentCost | null,
+): SubagentCost | null {
+  return sumCosts(
+    [...group.phases.flatMap((phase) => phase.members), ...group.unphasedMembers].map(costOfMember),
+  );
+}
+
 export function ThreadRelationshipsPanel(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
@@ -290,6 +312,20 @@ export function ThreadRelationshipsPanel(props: {
       }),
     [graph, mergeTargetThreadId, props.threadId, subagentsByThreadId, workflowGroupsById],
   );
+  const subagentRows = relationshipRows.filter(
+    ({ edge }) => edge.kind === "subagent" && !isParentThreadRelationship(edge, props.threadId),
+  );
+  const workflowMembers = runtimeSubagents.filter((agent) => agent.kind === "workflow_agent");
+  const costs = useSubagentCosts({
+    environmentId: props.environmentId,
+    childThreadIds: [
+      ...subagentRows.map(({ threadId }) => threadId),
+      ...workflowMembers.flatMap((member) =>
+        member.childThreadId === null ? [] : [member.childThreadId as ThreadId],
+      ),
+    ],
+    members: workflowMembers,
+  });
   const canMerge = mergeTargetThreadId !== null && latestMergeBackRun !== null;
   const canDetach = projection ? canDetachThreadProviderSession(projection) : false;
 
@@ -383,6 +419,13 @@ export function ThreadRelationshipsPanel(props: {
       toastManager.add({ type: "error", title: "Could not stop workflow" });
     }
   };
+
+  const rowCostOf = (threadId: ThreadId): SubagentCost | null => {
+    const projectedAgent = subagentsByThreadId.get(threadId);
+    const group = projectedAgent && workflowGroupsById.get(projectedAgent.id);
+    return group ? workflowCost(group, costs.forMember) : costs.forThread(threadId);
+  };
+  const totalCost = sumCosts(subagentRows.map(({ threadId }) => rowCostOf(threadId)));
 
   const parentTitle =
     mergeTargetThreadId === null
@@ -483,6 +526,7 @@ export function ThreadRelationshipsPanel(props: {
                 ? "This related thread is unavailable"
                 : `Open ${relationship.toLowerCase()} in this chat`;
               const RelationshipPopup = agent ? ThreadHoverCardPopup : TooltipPopup;
+              const rowCost = isSubagent && !isParent ? rowCostOf(threadId) : null;
               const relationshipTooltip = agent ? (
                 <SubagentTooltipContent
                   title={threadTitle}
@@ -497,6 +541,7 @@ export function ThreadRelationshipsPanel(props: {
                   status={agent.status}
                   result={agent.result}
                   progress={agent.progress}
+                  cost={rowCost}
                   parentThread={currentThread ?? undefined}
                   childThread={node?.thread ?? undefined}
                   parentProject={currentProject}
@@ -521,6 +566,13 @@ export function ThreadRelationshipsPanel(props: {
                   {agent ? null : (
                     <ArrowRightIcon className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
                   )}
+                  {rowCost ? (
+                    <span
+                      className={`shrink-0 text-2xs font-normal tabular-nums text-muted-foreground ${trailingVisibilityClass}`}
+                    >
+                      ~{formatEstimatedCost(rowCost.costUsd)}
+                    </span>
+                  ) : null}
                   {agent &&
                   !failed &&
                   (deriveSubagentElapsedMs(agent, 0) !== null || canStopWorkflow) ? (
@@ -577,6 +629,7 @@ export function ThreadRelationshipsPanel(props: {
                     onStop={canStopWorkflow ? () => void stopWorkflow(agent.id) : undefined}
                     stopping={stoppingId === agent.id}
                     stopDisabled={stoppingId !== null}
+                    costOfMember={costs.forMember}
                     header={relationshipLink}
                   />
                 );
@@ -677,6 +730,15 @@ export function ThreadRelationshipsPanel(props: {
           }
         </ThreadLineageGroup>
       ))}
+      {totalCost ? (
+        <div className="flex items-center justify-between px-2.5 pt-1 text-2xs text-muted-foreground">
+          <span>Subagent cost</span>
+          <span className="tabular-nums">
+            {totalCost.approximate ? "≈" : "~"}
+            {formatEstimatedCost(totalCost.costUsd)}
+          </span>
+        </div>
+      ) : null}
     </ThreadDetailsSection>
   );
 }

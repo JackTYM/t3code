@@ -1956,4 +1956,108 @@ describe("UsageService", () => {
       );
     }).pipe(Effect.scoped),
   );
+
+  it.live("prices requested models from the table, letting custom prices win", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+
+      yield* Effect.gen(function* () {
+        const settingsService = yield* ServerSettings.ServerSettingsService;
+        const service = yield* UsageService.make;
+        yield* settingsService.updateSettings({
+          usagePriceOverrides: {
+            "custom-model": { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 },
+          },
+        });
+
+        const { rates } = yield* service.readModelRates({
+          models: ["table-model", "custom-model", "unknown-model", "table-model"],
+        });
+
+        assert.deepStrictEqual(rates.map((rate) => rate.model).toSorted(), [
+          "custom-model",
+          "table-model",
+        ]);
+        const table = rates.find((rate) => rate.model === "table-model");
+        assert.closeTo(table?.inputCostPerToken ?? -1, 0.000003, 1e-12);
+        assert.closeTo(table?.cacheReadCostPerToken ?? -1, 0.0000003, 1e-12);
+        const custom = rates.find((rate) => rate.model === "custom-model");
+        assert.closeTo(custom?.outputCostPerToken ?? -1, 0.000008, 1e-12);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          layerService({
+            prefix: "usage-service-model-rates-test",
+            home,
+            settings,
+            ratesDocument: {
+              "table-model": {
+                input_cost_per_token: 0.000003,
+                output_cost_per_token: 0.000015,
+                cache_read_input_token_cost: 0.0000003,
+              },
+            },
+          }),
+        ),
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "prices a session's transcripts by id, once per message, and omits sessions without one",
+    () =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        const sessionId = "623dde97-20fd-4920-93d5-e216a8861377";
+        const projectDir = NodePath.dirname(transcript);
+        const subagentDir = NodePath.join(projectDir, sessionId, "subagents");
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(subagentDir, { recursive: true });
+          await NodeFSP.writeFile(
+            NodePath.join(projectDir, `${sessionId}.jsonl`),
+            claudeLine(1, 5) + claudeLine(1, 5) + claudeLine(2, 7),
+          );
+          // A subagent transcript repeats a message the parent already holds.
+          await NodeFSP.writeFile(
+            NodePath.join(subagentDir, "agent-a.jsonl"),
+            claudeLine(2, 7) + claudeLine(3, 11),
+          );
+          // Another session's transcript must not leak into this one's cost.
+          await NodeFSP.writeFile(transcript, claudeLine(4, 1000));
+        });
+
+        yield* Effect.gen(function* () {
+          const service = yield* UsageService.make;
+          const costs = yield* service.readSessionCosts([
+            { key: "thread-a", provider: "claude", sessionId },
+            {
+              key: "thread-b",
+              provider: "claude",
+              sessionId: "00000000-0000-0000-0000-000000000000",
+            },
+          ]);
+
+          assert.strictEqual(costs.length, 1);
+          assert.strictEqual(costs[0]?.key, "thread-a");
+          // Three distinct messages: 30 input and 23 output tokens.
+          assert.closeTo(costs[0]?.costUsd ?? -1, 30e-6 + 46e-6, 1e-12);
+          assert.strictEqual(costs[0]?.costSource, "modelPriced");
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            layerService({
+              prefix: "usage-service-session-costs-test",
+              home,
+              settings,
+              ratesDocument: {
+                "claude-fable-5": {
+                  input_cost_per_token: 0.000001,
+                  output_cost_per_token: 0.000002,
+                },
+              },
+            }),
+          ),
+        );
+      }).pipe(Effect.scoped),
+  );
 });
