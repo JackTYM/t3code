@@ -12,7 +12,8 @@ import { resolveActiveThreadRun } from "./threadWorkflows.ts";
 
 type Projection = OrchestrationV2ThreadProjection;
 type Subagent = OrchestrationV2Subagent;
-type RunId = Projection["runs"][number]["id"];
+type Run = Projection["runs"][number];
+type RunId = Run["id"];
 
 export interface ThreadTurnSubagents {
   readonly runId: RunId | null;
@@ -20,6 +21,15 @@ export interface ThreadTurnSubagents {
   readonly subagents: ReadonlyArray<Subagent>;
   readonly liveCount: number;
   readonly settledCount: number;
+}
+
+export interface ThreadSubagentRunGroup {
+  readonly runId: RunId | null;
+  /** The turn the live pill describes: the active run, else the thread's latest. */
+  readonly isCurrentRun: boolean;
+  readonly requestedAt: Run["requestedAt"] | null;
+  readonly subagents: ReadonlyArray<Subagent>;
+  readonly liveCount: number;
 }
 
 export interface SubagentPillSegment {
@@ -61,6 +71,50 @@ export function deriveThreadTurnSubagents(
     else if (isTerminalSubagentStatus(subagent.status)) settledCount += 1;
   }
   return { runId, turnActive: activeRun !== null, subagents, liveCount, settledCount };
+}
+
+/**
+ * Every agent the thread has spawned, grouped by run with the newest run first.
+ * Unlike `deriveThreadTurnSubagents` this is not scoped to one turn, so settled
+ * agents from earlier runs stay reachable.
+ */
+export function deriveThreadSubagentRunGroups(
+  projection: Pick<Projection, "runs" | "subagents">,
+): ReadonlyArray<ThreadSubagentRunGroup> {
+  if (projection.subagents.length === 0) return [];
+  const runsById = new Map(projection.runs.map((run) => [run.id, run]));
+  const currentRunId = (
+    resolveActiveThreadRun(projection) ??
+    projection.runs.reduce<Run | null>(
+      (latest, run) => (latest === null || run.ordinal > latest.ordinal ? run : latest),
+      null,
+    )
+  )?.id;
+
+  const runOf = (runId: RunId | null) => (runId === null ? undefined : runsById.get(runId));
+  const byRun = new Map<RunId | null, Subagent[]>();
+  for (const subagent of projection.subagents) {
+    const group = byRun.get(subagent.runId);
+    if (group === undefined) byRun.set(subagent.runId, [subagent]);
+    else group.push(subagent);
+  }
+
+  return copySorted(
+    [...byRun.entries()],
+    // An agent with no known run sorts last rather than being dropped.
+    ([left], [right]) => (runOf(right)?.ordinal ?? 0) - (runOf(left)?.ordinal ?? 0),
+  ).map(([runId, agents]) => {
+    const subagents = copySorted(agents, (left, right) =>
+      compareAgentsNewestFirst(orderKeys(left), orderKeys(right)),
+    );
+    return {
+      runId,
+      isCurrentRun: runId !== null && runId === currentRunId,
+      requestedAt: runOf(runId)?.requestedAt ?? null,
+      subagents,
+      liveCount: subagents.filter((subagent) => isActiveSubagentStatus(subagent.status)).length,
+    };
+  });
 }
 
 export function resolveSubagentPillSegment(

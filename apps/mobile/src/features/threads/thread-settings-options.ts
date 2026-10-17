@@ -59,3 +59,11 @@ export function selectableChoices(
     (option) => !injected.has(option.id) && !HIDDEN_EFFORT_OPTION_IDS.has(option.id),
   );
 }
+
+/**
+ * Settings offers the Agents row only once the thread has spawned some; the
+ * live pill on the working control covers an in-flight turn.
+ */
+export function threadSettingsShowsAgentsRow(runGroups: ReadonlyArray<unknown>): boolean {
+  return runGroups.length > 0;
+}

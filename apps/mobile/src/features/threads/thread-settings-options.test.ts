@@ -1,7 +1,11 @@
 import type { ProviderOptionDescriptor } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { runtimeModeChoicesForSupportedModes, selectableChoices } from "./thread-settings-options";
+import {
+  runtimeModeChoicesForSupportedModes,
+  selectableChoices,
+  threadSettingsShowsAgentsRow,
+} from "./thread-settings-options";
 
 const effortDescriptor: Extract<ProviderOptionDescriptor, { type: "select" }> = {
   id: "effort",
@@ -31,5 +35,12 @@ describe("selectableChoices", () => {
 describe("runtimeModeChoicesForSupportedModes", () => {
   it("keeps controls usable when forward-compatible decoding removes every advertised mode", () => {
     expect(runtimeModeChoicesForSupportedModes([])).toHaveLength(4);
+  });
+});
+
+describe("threadSettingsShowsAgentsRow", () => {
+  it("is hidden until the thread has spawned an agent in any run", () => {
+    expect(threadSettingsShowsAgentsRow([])).toBe(false);
+    expect(threadSettingsShowsAgentsRow([{ runId: "an-older-run" }])).toBe(true);
   });
 });

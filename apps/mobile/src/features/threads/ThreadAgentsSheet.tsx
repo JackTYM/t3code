@@ -1,5 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { ThreadTurnSubagents } from "@t3tools/client-runtime/state/thread-subagents";
+import type {
+  ThreadSubagentRunGroup,
+  ThreadTurnSubagents,
+} from "@t3tools/client-runtime/state/thread-subagents";
 import {
   isOrchestrationV2WorkActive,
   type EnvironmentId,
@@ -22,6 +25,7 @@ import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { environmentThreadDetails } from "../../state/threads";
 import { NativeStackScreenOptions, nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
 import { SubagentRow } from "./SubagentRow";
+import { subagentRunGroupLabel } from "./thread-agents-presentation";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 
@@ -41,15 +45,28 @@ export function useThreadTurnSubagents(target: AgentsTarget | null): ThreadTurnS
   );
 }
 
+const EMPTY_RUN_GROUPS_ATOM = Atom.make<ReadonlyArray<ThreadSubagentRunGroup>>([]).pipe(
+  Atom.withLabel("mobile-thread-subagent-runs:empty"),
+);
+
+export function useThreadSubagentRunGroups(
+  target: AgentsTarget | null,
+): ReadonlyArray<ThreadSubagentRunGroup> {
+  return useAtomValue(
+    target === null
+      ? EMPTY_RUN_GROUPS_ATOM
+      : environmentThreadDetails.subagentRunGroupsAtom(target),
+  );
+}
+
 export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
   const { layout } = useAdaptiveWorkspaceLayout();
   const target = route.params;
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const theme = useUniwindTheme();
-  const turn = useThreadTurnSubagents(target);
-  const subagents = turn?.subagents ?? [];
-  const hasLiveAgent = (turn?.liveCount ?? 0) > 0;
+  const runGroups = useThreadSubagentRunGroups(target);
+  const hasLiveAgent = runGroups.some((group) => group.liveCount > 0);
 
   const openChildThread = (childThreadId: ThreadId) => {
     void Haptics.selectionAsync();
@@ -73,19 +90,27 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
       contentContainerClassName="px-5 pb-6"
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
     >
-      {subagents.length === 0 ? (
-        <Text className="pt-6 text-center text-sm text-foreground-muted">
-          No agents in this turn.
-        </Text>
+      {runGroups.length === 0 ? (
+        <Text className="pt-6 text-center text-sm text-foreground-muted">No agents yet.</Text>
       ) : (
-        subagents.map((subagent) => (
-          <AgentRow
-            key={subagent.id}
-            subagent={subagent}
-            environmentId={target.environmentId}
-            tickSeconds={hasLiveAgent}
-            onOpen={openChildThread}
-          />
+        runGroups.map((group) => (
+          <View key={group.runId ?? "no-run"}>
+            <Text
+              accessibilityRole="header"
+              className="pb-1 pt-4 text-sm font-t3-medium text-foreground-muted"
+            >
+              {subagentRunGroupLabel(group)}
+            </Text>
+            {group.subagents.map((subagent) => (
+              <AgentRow
+                key={subagent.id}
+                subagent={subagent}
+                environmentId={target.environmentId}
+                tickSeconds={hasLiveAgent}
+                onOpen={openChildThread}
+              />
+            ))}
+          </View>
         ))
       )}
     </ScrollView>

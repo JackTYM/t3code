@@ -15,6 +15,7 @@ import type {
   ProviderOptionSelection,
   RuntimeMode,
   ServerSettings,
+  ThreadId,
 } from "@t3tools/contracts";
 import type { LegendListRenderItemProps } from "@legendapp/list/react-native";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
@@ -24,7 +25,7 @@ import {
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
-import { useNavigation, useRoute, type RouteProp } from "@react-navigation/native";
+import { StackActions, useNavigation, useRoute, type RouteProp } from "@react-navigation/native";
 import { type NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as Haptics from "expo-haptics";
 import { AsyncResult } from "effect/reactivity";
@@ -247,10 +248,16 @@ type ThreadSettingsSessionProps = {
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  /** Present only when the thread has agents worth opening. */
+  readonly onOpenAgents?: () => void;
 };
 
-export type ExistingThreadSettingsRouteSession = ThreadSettingsSessionProps & {
+export type ExistingThreadSettingsRouteSession = Omit<
+  ThreadSettingsSessionProps,
+  "onOpenAgents"
+> & {
   readonly ownerId: string;
+  readonly agentsThreadId?: ThreadId;
 };
 
 type ExistingThreadSettingsRouteContextValue = {
@@ -303,6 +310,7 @@ type ThreadSettingsSessionValue = {
   readonly runtimeMode: RuntimeMode;
   readonly runtimeModeChoices: ReturnType<typeof runtimeModeChoicesForSupportedModes>;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  readonly onOpenAgents: (() => void) | undefined;
   readonly displayedDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly displayedModelSelection: ModelSelection | null;
   readonly reportedModelSelection: ModelSelection | null;
@@ -603,6 +611,7 @@ function ThreadSettingsSessionProvider(
       runtimeMode: compatibleRuntimeMode,
       runtimeModeChoices,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
+      onOpenAgents: props.onOpenAgents,
       displayedDescriptors,
       displayedModelSelection: pendingModel?.selection ?? props.selectedModel,
       reportedModelSelection: pendingModel ? null : (props.reportedModelSelection ?? null),
@@ -644,6 +653,7 @@ function ThreadSettingsSessionProvider(
       pressModel,
       providerFilter,
       props.onUpdateRuntimeMode,
+      props.onOpenAgents,
       providerGroups,
       manageHidden,
       toggleHidden,
@@ -939,6 +949,12 @@ function ThreadSettingsOptionsItem(props: {
           />
         </Animated.View>
       </Animated.View>
+
+      {session.onOpenAgents ? (
+        <View className="mx-4 mt-7 overflow-hidden rounded-2xl bg-grouped-card">
+          <DisclosureRow isLast label="Agents" value={undefined} onPress={session.onOpenAgents} />
+        </View>
+      ) : null}
 
       <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">Catalog</Text>
       <View className="mx-4 overflow-hidden rounded-2xl bg-grouped-card">
@@ -1558,9 +1574,28 @@ export function ExistingThreadSettingsRouteScreen() {
     return <View className="flex-1 bg-sheet" />;
   }
 
-  const { ownerId: _ownerId, ...settings } = session;
+  const { ownerId: _ownerId, agentsThreadId, ...settings } = session;
+  const environmentId = settings.environmentId;
 
-  return <ThreadSettingsPickerScreen {...settings} onClose={() => navigation.goBack()} />;
+  return (
+    <ThreadSettingsPickerScreen
+      {...settings}
+      {...(agentsThreadId !== undefined && environmentId !== null
+        ? {
+            // Replacing keeps one sheet on screen, and the composer's dismissal
+            // handling still runs when the agents sheet closes.
+            onOpenAgents: () =>
+              navigation.dispatch(
+                StackActions.replace("ThreadAgents", {
+                  environmentId,
+                  threadId: agentsThreadId,
+                }),
+              ),
+          }
+        : {})}
+      onClose={() => navigation.goBack()}
+    />
+  );
 }
 
 /**

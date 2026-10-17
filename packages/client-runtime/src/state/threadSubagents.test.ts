@@ -9,7 +9,11 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { deriveThreadTurnSubagents, resolveSubagentPillSegment } from "./threadSubagents.ts";
+import {
+  deriveThreadSubagentRunGroups,
+  deriveThreadTurnSubagents,
+  resolveSubagentPillSegment,
+} from "./threadSubagents.ts";
 
 const at = (iso: string) => DateTime.makeUnsafe(iso);
 
@@ -144,6 +148,101 @@ describe("deriveThreadTurnSubagents", () => {
     expect(turn?.liveCount).toBe(1);
     expect(turn?.settledCount).toBe(1);
     expect(turn?.subagents).toHaveLength(3);
+  });
+});
+
+describe("deriveThreadSubagentRunGroups", () => {
+  const ordinalRun = (id: string, ordinal: number, status: "running" | "completed") =>
+    ({ id: RunId.make(id), ordinal, status, requestedAt: at("2026-06-20T00:00:00.000Z") }) as never;
+
+  it("returns no groups for a thread that never spawned an agent", () => {
+    expect(
+      deriveThreadSubagentRunGroups({ runs: [ordinalRun("run-1", 1, "running")], subagents: [] }),
+    ).toEqual([]);
+  });
+
+  it("groups agents by run, newest run first, regardless of projection order", () => {
+    const groups = deriveThreadSubagentRunGroups({
+      runs: [
+        ordinalRun("run-2", 2, "completed"),
+        ordinalRun("run-1", 1, "completed"),
+        ordinalRun("run-3", 3, "completed"),
+      ],
+      subagents: [
+        subagent({ id: "a", runId: RunId.make("run-1") }),
+        subagent({ id: "c", runId: RunId.make("run-3") }),
+        subagent({ id: "b", runId: RunId.make("run-2") }),
+        subagent({ id: "a2", runId: RunId.make("run-1") }),
+      ],
+    });
+
+    expect(groups.map((group) => group.runId)).toEqual(["run-3", "run-2", "run-1"]);
+    expect(groups.map((group) => group.subagents.length)).toEqual([1, 1, 2]);
+  });
+
+  it("orders agents newest-first inside each group", () => {
+    const [group] = deriveThreadSubagentRunGroups({
+      runs: [ordinalRun("run-1", 1, "completed")],
+      subagents: [
+        subagent({ id: "early", status: "completed", startedAt: at("2026-06-20T00:00:01.000Z") }),
+        subagent({ id: "live", status: "running", startedAt: at("2026-06-20T00:00:00.000Z") }),
+        subagent({ id: "late", status: "completed", startedAt: at("2026-06-20T00:00:05.000Z") }),
+      ],
+    });
+
+    expect(group?.subagents.map((entry) => entry.id)).toEqual(["live", "late", "early"]);
+    expect(group?.liveCount).toBe(1);
+  });
+
+  it("marks the active run as current even when a newer-ordinal run has no agents", () => {
+    const groups = deriveThreadSubagentRunGroups({
+      runs: [ordinalRun("run-1", 1, "running"), ordinalRun("run-2", 2, "completed")],
+      subagents: [
+        subagent({ id: "a", runId: RunId.make("run-1") }),
+        subagent({ id: "b", runId: RunId.make("run-2") }),
+      ],
+    });
+
+    expect(groups.map((group) => [group.runId, group.isCurrentRun])).toEqual([
+      ["run-2", false],
+      ["run-1", true],
+    ]);
+  });
+
+  it("treats the latest run as current once nothing is active, and keeps older agents", () => {
+    const groups = deriveThreadSubagentRunGroups({
+      runs: [ordinalRun("run-1", 1, "completed"), ordinalRun("run-2", 2, "completed")],
+      subagents: [subagent({ id: "old", status: "completed", runId: RunId.make("run-1") })],
+    });
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.isCurrentRun).toBe(false);
+  });
+
+  it("keeps agents whose run is missing from the projection, after known runs", () => {
+    const groups = deriveThreadSubagentRunGroups({
+      runs: [ordinalRun("run-1", 1, "completed")],
+      subagents: [
+        subagent({ id: "orphan", runId: RunId.make("run-gone") }),
+        subagent({ id: "known", runId: RunId.make("run-1") }),
+      ],
+    });
+
+    expect(groups.map((group) => group.runId)).toEqual(["run-1", "run-gone"]);
+    expect(groups[1]?.requestedAt).toBeNull();
+  });
+
+  it("keeps agents that were never attached to a run in a trailing group", () => {
+    const groups = deriveThreadSubagentRunGroups({
+      runs: [ordinalRun("run-1", 1, "running")],
+      subagents: [
+        subagent({ id: "detached", runId: null }),
+        subagent({ id: "known", runId: RunId.make("run-1") }),
+      ],
+    });
+
+    expect(groups.map((group) => group.runId)).toEqual(["run-1", null]);
+    expect(groups[1]?.isCurrentRun).toBe(false);
   });
 });
 

@@ -126,6 +126,8 @@ import {
   type ExistingThreadSettingsRouteSession,
   useExistingThreadSettingsRoutePresentation,
 } from "./ThreadSettingsSheet";
+import { useThreadSubagentRunGroups } from "./ThreadAgentsSheet";
+import { threadSettingsShowsAgentsRow } from "./thread-settings-options";
 import {
   useThreadSettingsSheetPresentation,
   type NavigationWithFinishTransitioning,
@@ -632,6 +634,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     [currentModelOption?.capabilities, currentModelSelection.options],
   );
   const settingsOwnerId = composerOwnerKey;
+  const subagentRunGroups = useThreadSubagentRunGroups({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+  });
   const settingsRouteSession = useMemo<ExistingThreadSettingsRouteSession>(
     () => ({
       ownerId: settingsOwnerId,
@@ -655,8 +661,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       },
       runtimeMode: currentRuntimeMode,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
+      ...(threadSettingsShowsAgentsRow(subagentRunGroups)
+        ? { agentsThreadId: props.selectedThread.id }
+        : {}),
     }),
     [
+      subagentRunGroups,
+      props.selectedThread.id,
       currentModelSelection,
       props.reportedModelSelection,
       currentRuntimeMode,

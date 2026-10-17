@@ -225,8 +225,11 @@ it("does not notify the agents pill for unrelated projection updates", () => {
   const details = createEnvironmentThreadDetailAtoms(() => source);
   const registry = AtomRegistry.make();
   const dispose = registry.mount(details.turnSubagentsAtom(ref));
+  const disposeRunGroups = registry.mount(details.subagentRunGroupsAtom(ref));
   const before = registry.get(details.turnSubagentsAtom(ref));
+  const groupsBefore = registry.get(details.subagentRunGroupsAtom(ref));
   expect(before?.liveCount).toBe(1);
+  expect(groupsBefore.map((group) => group.runId)).toEqual(["active-run"]);
   registry.set(
     source,
     AsyncResult.success(
@@ -238,6 +241,8 @@ it("does not notify the agents pill for unrelated projection updates", () => {
     ),
   );
   expect(registry.get(details.turnSubagentsAtom(ref))).toBe(before);
+  expect(registry.get(details.subagentRunGroupsAtom(ref))).toBe(groupsBefore);
+  disposeRunGroups();
   dispose();
   registry.dispose();
 });
