@@ -51,7 +51,29 @@ export interface ProjectThreadAwarenessV2Input {
     | "status"
     | "title"
     | "updatedAt"
+    | "archivedAt"
+    | "settledOverride"
+    | "snoozedUntil"
   >;
+  /** Snooze windows are time-dependent, so the caller supplies the clock. */
+  readonly now: DateTime.Utc;
+}
+
+/**
+ * The roster is the active inbox, not every thread the environment holds. A
+ * parked thread's session went ready long ago, so without this it would render
+ * as a permanent Done row. Snooze is reversible and an agent blocked on the
+ * user outranks it, matching how the clients treat their inbox.
+ */
+function isThreadParkedForAwareness(
+  thread: ProjectThreadAwarenessV2Input["thread"],
+  phase: AgentAwarenessPhase,
+  now: DateTime.Utc,
+): boolean {
+  if (thread.archivedAt !== null || thread.settledOverride === "settled") return true;
+  if (thread.snoozedUntil == null) return false;
+  if (DateTime.toEpochMillis(thread.snoozedUntil) <= DateTime.toEpochMillis(now)) return false;
+  return phase !== "waiting_for_approval" && phase !== "waiting_for_input";
 }
 
 export function projectThreadAwarenessV2(
@@ -60,7 +82,7 @@ export function projectThreadAwarenessV2(
   const { environmentId, project, thread } = input;
   if (thread.lineage.relationshipToParent === "subagent") return null;
   const phase = resolveThreadAwarenessPhaseV2(thread);
-  if (phase === null) {
+  if (phase === null || isThreadParkedForAwareness(thread, phase, input.now)) {
     return null;
   }
   const detail =

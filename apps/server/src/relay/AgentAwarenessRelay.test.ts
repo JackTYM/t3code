@@ -104,6 +104,7 @@ describe("startup agent activity", () => {
     const ids = AgentAwarenessRelay.resolveAgentAwarenessRelayActiveThreadIds({
       environmentId: EnvironmentId.make("relay-env"),
       startedAt,
+      now: DateTime.makeUnsafe(startedAt),
       projects: [{ id: PROJECT_ID, title: "Project" }],
       threads: [
         shell(),
@@ -626,6 +627,44 @@ describe("AgentAwarenessRelay", () => {
       yield* relay.drain;
       assert.equal(publications.length, 8);
       assert.equal(publications[7]?.state?.threadTitle, "New update");
+    }),
+  );
+
+  it.effect("republishes a state identical to the last accepted one after a dropped publish", () =>
+    Effect.gen(function* () {
+      let unavailable = false;
+      const { relay, currentShell, publications } = yield* makeTestRelay({
+        respond: () =>
+          unavailable
+            ? new Response("relay unavailable", { status: 503 })
+            : Response.json({ ok: true, deliveries: [] }),
+      });
+      const finishedShell = shell({
+        status: "completed",
+        latestRunCompletedAt: DateTime.add(yield* DateTime.now, { seconds: 1 }),
+      });
+      yield* Ref.set(currentShell, finishedShell);
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.equal(publications.length, 1);
+
+      unavailable = true;
+      yield* Ref.set(currentShell, shell());
+      yield* relay.publishThread(THREAD_ID);
+      for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000]) {
+        yield* TestClock.adjust(delay);
+        yield* relay.drain;
+      }
+      assert.equal(publications.length, 7);
+
+      // The relay still holds the previous turn's "completed", so the new
+      // turn's identical completion must not be deduped against it.
+      unavailable = false;
+      yield* Ref.set(currentShell, finishedShell);
+      yield* relay.publishThread(THREAD_ID);
+      assert.equal(publications.length, 8);
+      assert.equal(publications[7]?.state?.phase, "completed");
     }),
   );
 
