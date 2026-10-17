@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-10-09T23:31:10Z",
+  "updatedAt": "2026-10-17T00:30:00Z",
   "compatibility": [
     {
       "driver": "codex",
@@ -86,6 +86,11 @@
         { "range": ">=0.80.5", "status": "supported" },
         { "range": "<0.80.5", "status": "unsupported" }
       ]
+    },
+    {
+      "driver": "claudeCloud",
+      "t3CodeRange": ">=0.0.46",
+      "ranges": []
     },
     {
       "driver": "muse",
