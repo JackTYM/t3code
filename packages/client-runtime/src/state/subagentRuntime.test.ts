@@ -134,6 +134,35 @@ describe("projectedSubagentsToRuntime workflow expansion", () => {
 });
 
 describe("deriveWorkflowGroups over a dynamic workflow", () => {
+  it("lists workflows newest-first, with live runs pinned above settled ones", () => {
+    const groups = groupsOf([
+      subagent({
+        id: "older-live",
+        startedAt: at("2026-08-01T10:00:00.000Z"),
+        workflow: { name: "wf", phases: [], agents: [] },
+      }),
+      subagent({
+        id: "newer-live",
+        startedAt: at("2026-08-01T10:05:00.000Z"),
+        workflow: { name: "wf", phases: [], agents: [] },
+      }),
+      subagent({
+        id: "settled",
+        status: "completed",
+        startedAt: at("2026-08-01T10:10:00.000Z"),
+        completedAt: at("2026-08-01T10:11:00.000Z"),
+        updatedAt: at("2026-08-01T10:11:00.000Z"),
+        workflow: { name: "wf", phases: [], agents: [] },
+      }),
+    ]);
+
+    expect(groups.map((group) => group.workflow.id)).toEqual([
+      "newer-live",
+      "older-live",
+      "settled",
+    ]);
+  });
+
   it("groups members under their phases and counts the run", () => {
     const groups = groupsOf([
       subagent({

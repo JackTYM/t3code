@@ -2,7 +2,12 @@ import * as DateTime from "effect/DateTime";
 import type { OrchestrationV2Subagent, OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import { copySorted } from "@t3tools/shared/Array";
 
-import { isActiveSubagentStatus, isTerminalSubagentStatus } from "./subagentRuntime.ts";
+import {
+  compareAgentsNewestFirst,
+  isActiveSubagentStatus,
+  isTerminalSubagentStatus,
+  type AgentOrderKeys,
+} from "./subagentRuntime.ts";
 import { resolveActiveThreadRun } from "./threadWorkflows.ts";
 
 type Projection = OrchestrationV2ThreadProjection;
@@ -22,8 +27,14 @@ export interface SubagentPillSegment {
   readonly accessibilityLabel: string;
 }
 
-function orderKey(subagent: Subagent): number {
-  return DateTime.toEpochMillis(subagent.startedAt ?? subagent.updatedAt);
+function orderKeys(subagent: Subagent): AgentOrderKeys {
+  return {
+    id: subagent.id,
+    status: subagent.status,
+    firstSeenAt: DateTime.formatIso(subagent.startedAt ?? subagent.updatedAt),
+    updatedAt: DateTime.formatIso(subagent.updatedAt),
+    completedAt: subagent.completedAt === null ? null : DateTime.formatIso(subagent.completedAt),
+  };
 }
 
 export function deriveThreadTurnSubagents(
@@ -39,7 +50,7 @@ export function deriveThreadTurnSubagents(
   const runId = activeRun?.id ?? latestUpdated.runId;
   const subagents = copySorted(
     projection.subagents.filter((subagent) => subagent.runId === runId),
-    (left, right) => orderKey(left) - orderKey(right) || left.id.localeCompare(right.id),
+    (left, right) => compareAgentsNewestFirst(orderKeys(left), orderKeys(right)),
   );
   if (subagents.length === 0) return null;
 
