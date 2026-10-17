@@ -183,6 +183,26 @@ const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function*
   });
 });
 
+/**
+ * A fork can record its own migration under id 53, so the migrator skips this
+ * build's PullRequestFilesViewed and the table never exists. That migration is
+ * idempotent, so run it directly and leave the fork's ledger row untouched.
+ */
+const repairForkedPullRequestFilesViewed = Effect.fn("repairForkedPullRequestFilesViewed")(
+  function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const tables = yield* sql`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
+    `;
+    if (tables.length === 0) return;
+    const rows = yield* sql<{ readonly name: string }>`
+      SELECT name FROM effect_sql_migrations WHERE migration_id = 53
+    `;
+    if (rows.length === 0 || rows[0]!.name === "PullRequestFilesViewed") return;
+    yield* Migration0053;
+  },
+);
+
 const run = Migrator.make({});
 
 export interface RunMigrationsOptions {
@@ -197,6 +217,9 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   const previewMigrations = includesV2 ? yield* reconcileV2PreviewMigration() : [];
   if (includesV2) {
     yield* assertV2MigrationsCanRun(toMigrationInclusive);
+  }
+  if (includesV2) {
+    yield* repairForkedPullRequestFilesViewed();
   }
   const executedMigrations = [
     ...previewMigrations,

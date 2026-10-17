@@ -96,6 +96,30 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect("creates the PullRequestFilesViewed table when a fork recorded its own id 53", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 52 });
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (53, 'ProjectionThreadsAsyncUserInput')
+      `;
+
+      assert.deepStrictEqual(
+        yield* runMigrations(),
+        migrationManifest.filter(([id]) => id >= 54),
+      );
+      assert.lengthOf(
+        yield* sql`SELECT name FROM sqlite_master WHERE name = 'pull_request_files_viewed'`,
+        1,
+      );
+      assert.deepStrictEqual(
+        (yield* history).find(([id]) => id === 53),
+        [53, "ProjectionThreadsAsyncUserInput"],
+      );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("only checks V2 migrations within the requested limit", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
