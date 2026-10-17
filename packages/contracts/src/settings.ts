@@ -264,6 +264,16 @@ export const BrowserLinkTarget = Schema.Literals(["system", "app"]);
 export type BrowserLinkTarget = typeof BrowserLinkTarget.Type;
 export const DEFAULT_BROWSER_LINK_TARGET: BrowserLinkTarget = "system";
 
+/**
+ * Where a clicked workspace file opens. "panel" is the default because that is
+ * what file links did before the setting existed. The non-panel targets act on
+ * the machine hosting the server, so clients that cannot reach it fall back to
+ * the panel.
+ */
+export const FileOpenTarget = Schema.Literals(["panel", "editor", "file-manager"]);
+export type FileOpenTarget = typeof FileOpenTarget.Type;
+export const DEFAULT_FILE_OPEN_TARGET: FileOpenTarget = "panel";
+
 export const LoadBalancingWeights = Schema.Record(
   TrimmedNonEmptyString,
   Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
@@ -331,6 +341,10 @@ export const ClientSettingsSchema = Schema.Struct({
 
   browserLinkTarget: BrowserLinkTarget.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_LINK_TARGET)),
+  ),
+
+  fileOpenTarget: FileOpenTarget.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_FILE_OPEN_TARGET)),
   ),
 
   browserAutoShowFloatingPreview: Schema.Boolean.pipe(
@@ -1531,6 +1545,7 @@ export const ClientSettingsPatch = Schema.Struct({
   browserRecordingShowKeyPresses: Schema.optionalKey(Schema.Boolean),
   browserRecordingShowMousePresses: Schema.optionalKey(Schema.Boolean),
   browserLinkTarget: Schema.optionalKey(BrowserLinkTarget),
+  fileOpenTarget: Schema.optionalKey(FileOpenTarget),
   browserAutoShowFloatingPreview: Schema.optionalKey(Schema.Boolean),
   browserProfiles: Schema.optionalKey(Schema.Array(BrowserProfile)),
   browserDefaultProfileId: Schema.optionalKey(BrowserProfileId),

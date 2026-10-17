@@ -15,6 +15,8 @@ import {
   DEFAULT_BROWSER_AUTO_SHOW_FLOATING_PREVIEW,
   DEFAULT_BROWSER_PROFILE_ID,
   DEFAULT_BROWSER_LINK_TARGET,
+  DEFAULT_FILE_OPEN_TARGET,
+  type FileOpenTarget,
   DEFAULT_BROWSER_RECORDING_FRAME_RATE,
   DEFAULT_BROWSER_VIEWPORT,
   DEFAULT_PREVIEW_APPEARANCE,
@@ -593,6 +595,55 @@ function BrowserLinkTargetSetting({ disabled }: { readonly disabled: boolean }) 
                 {LINK_TARGET_LABELS[target]}
               </SelectItem>
             ))}
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+const FILE_OPEN_TARGET_LABELS: Readonly<Record<FileOpenTarget, string>> = {
+  panel: "T3 Code",
+  editor: "Your editor",
+  "file-manager": "Your file manager",
+};
+
+function FileOpenTargetSetting() {
+  const fileOpenTarget = useClientSettings((settings) => settings.fileOpenTarget);
+  const updateSettings = useUpdatePrimarySettings();
+
+  return (
+    <SettingsRow
+      {...searchableSetting("file-open-target")}
+      description="Where files clicked in a thread, a diff, or search results open. Hold ⌘ or Ctrl while clicking to use the other destination. Your editor and file manager only open for a server on this machine; otherwise files open in T3 Code."
+      resetAction={
+        fileOpenTarget !== DEFAULT_FILE_OPEN_TARGET ? (
+          <SettingResetButton
+            label="file target"
+            onClick={() => updateSettings({ fileOpenTarget: DEFAULT_FILE_OPEN_TARGET })}
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={fileOpenTarget}
+          onValueChange={(value) => {
+            if (value === "panel" || value === "editor" || value === "file-manager") {
+              updateSettings({ fileOpenTarget: value });
+            }
+          }}
+        >
+          <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Open files in">
+            <SelectValue>{FILE_OPEN_TARGET_LABELS[fileOpenTarget]}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {(Object.keys(FILE_OPEN_TARGET_LABELS) as ReadonlyArray<FileOpenTarget>).map(
+              (target) => (
+                <SelectItem hideIndicator key={target} value={target}>
+                  {FILE_OPEN_TARGET_LABELS[target]}
+                </SelectItem>
+              ),
+            )}
           </SelectPopup>
         </Select>
       }
@@ -1492,6 +1543,9 @@ export function IntegrationsSettingsPanel() {
           previewDefaults
         )}
         <PullRequestLinksOpenInAppSetting />
+      </SettingsSection>
+      <SettingsSection id="files" title="Files">
+        <FileOpenTargetSetting />
       </SettingsSection>
       <DeviceIntegrationSettings />
     </SettingsPageContainer>

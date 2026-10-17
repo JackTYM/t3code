@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { useActiveProjectTarget, type ActiveProjectTarget } from "~/hooks/useActiveProjectTarget";
 import { useTheme } from "~/hooks/useTheme";
 import { cn } from "~/lib/utils";
-import { useRightPanelStore } from "~/rightPanelStore";
+import { useOpenFile } from "~/useOpenFile";
 import { useProjectContentSearch } from "~/state/queries";
 import { readEnvironmentScope } from "~/state/session";
 
@@ -106,6 +106,7 @@ function OpenContentSearchDialog(props: {
 }) {
   const { target } = props;
   const { resolvedTheme } = useTheme();
+  const openFile = useOpenFile({ threadRef: target.threadRef, cwd: target.cwd });
   const [query, setQuery] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [wholeWord, setWholeWord] = useState(false);
@@ -158,7 +159,7 @@ function OpenContentSearchDialog(props: {
       return;
     }
     props.onOpenChange(false);
-    useRightPanelStore.getState().openFile(target.threadRef, match.path, match.lineNumber);
+    openFile({ workspacePath: match.path, line: match.lineNumber });
   };
   const fileCount = useMemo(() => new Set(matches.map((match) => match.path)).size, [matches]);
   const showSearchStatus =

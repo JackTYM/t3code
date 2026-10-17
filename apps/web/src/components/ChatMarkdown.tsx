@@ -50,6 +50,7 @@ import {
   AuthPreviewOperateScope,
   type AssetResource,
   type EnvironmentId,
+  type FileOpenTarget,
   type ScopedThreadRef,
   type ServerProviderSkill,
   type ThreadPullRequestKey,
@@ -125,10 +126,7 @@ import { resolveProtocolRelativeMediaUrl } from "./media/mediaContent";
 import { WorkspaceEntryTooltip } from "./chat/WorkspaceEntryIcon";
 import { FileTagChipContent } from "./chat/FileTagChip";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
-import {
-  revealInFileExplorerLabelForKind,
-  revealInFileExplorerLabelForOs,
-} from "./preview/fileExplorerLabel";
+import { revealInFileManagerLabelForEnvironment } from "./preview/fileExplorerLabel";
 import {
   resolveExternalWebLinkHost,
   showExternalLinkContextMenu,
@@ -170,7 +168,6 @@ import {
   resolveMarkdownFileLinkMeta,
   rewriteMarkdownFileUriHref,
   shouldOpenMarkdownFileLinkInBrowserByDefault,
-  shouldOpenMarkdownFileLinkInEditor,
   type MarkdownFileLinkMeta,
 } from "../markdown-links";
 import { isMarkdownFileLinkLabel } from "@t3tools/shared/markdownLinks";
@@ -178,7 +175,8 @@ import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { useAssetUrlRefresh, useAssetUrlState } from "../assets/assetUrls";
 import { cn } from "../lib/utils";
-import { useRemoteOpenResolution, type RemoteOpenMode } from "../remoteOpen";
+import { useRemoteOpenResolution } from "../remoteOpen";
+import { canUseFileShellActions, resolveFileOpenTarget } from "../fileOpenTarget";
 import { useRightPanelStore } from "../rightPanelStore";
 import { readThreadShell, useProjects } from "../state/entities";
 import { serverEnvironment } from "../state/server";
@@ -242,14 +240,6 @@ export interface ChatMarkdownContextReference {
   kind: string;
   contextId: string;
   label: string;
-}
-
-export function canUseMarkdownFileShellActions(
-  environmentId: EnvironmentId | null,
-  remoteOpenMode: RemoteOpenMode,
-  isRemoteOpenResolved: boolean,
-): boolean {
-  return environmentId !== null && isRemoteOpenResolved && remoteOpenMode === "local-exec";
 }
 
 export function hasMarkdownFilePrimaryAction(input: {
@@ -1169,6 +1159,9 @@ interface MarkdownFileLinkProps {
   onOpen?: ((targetPath: string) => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   onOpenInPanel: (panelPath: string, line: number | undefined) => void;
   openInEditorMenuLabel: string;
+  fileOpenPreference: FileOpenTarget;
+  /** Whether `onOpen` has an editor to resolve to, so "editor" is reachable. */
+  canOpenInPreferredEditor: boolean;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   onOpenMedia?: (() => void) | undefined;
   onReveal?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
@@ -1874,6 +1867,8 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   onOpen,
   onOpenInPanel,
   openInEditorMenuLabel,
+  fileOpenPreference,
+  canOpenInPreferredEditor,
   onOpenInBrowser,
   onOpenMedia,
   onReveal,
@@ -2155,8 +2150,18 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                if (onOpen && shouldOpenMarkdownFileLinkInEditor(event)) {
+                const target = resolveFileOpenTarget({
+                  event,
+                  preference: fileOpenPreference,
+                  canOpenInEditor: Boolean(onOpen) && canOpenInPreferredEditor,
+                  canRevealInFileManager: onReveal !== undefined,
+                });
+                if (target === "editor") {
                   handleOpenInEditor();
+                  return;
+                }
+                if (target === "file-manager") {
+                  handleRevealInFileManager();
                   return;
                 }
                 if (useBrowserPrimaryAction) {
@@ -2223,6 +2228,8 @@ function areMarkdownFileLinkPropsEqual(
     previous.onOpen === next.onOpen &&
     previous.onOpenInPanel === next.onOpenInPanel &&
     previous.openInEditorMenuLabel === next.openInEditorMenuLabel &&
+    previous.fileOpenPreference === next.fileOpenPreference &&
+    previous.canOpenInPreferredEditor === next.canOpenInPreferredEditor &&
     previous.onOpenInBrowser === next.onOpenInBrowser &&
     previous.onOpenMedia === next.onOpenMedia &&
     previous.onReveal === next.onReveal &&
@@ -2275,7 +2282,7 @@ function useChatMarkdownState({
   const remoteOpen = useRemoteOpenResolution(environmentId);
   const canUseShellActions =
     canOperateHost &&
-    canUseMarkdownFileShellActions(environmentId, remoteOpen.state.mode, remoteOpen.isResolved);
+    canUseFileShellActions(environmentId, remoteOpen.state.mode, remoteOpen.isResolved);
   const preparedConnection = usePreparedConnection(environmentId);
   const openMarkdownMedia = useCallback(
     (source: string, resolvedFilePath?: string, clickedImage?: HTMLImageElement | null) => {
@@ -2324,18 +2331,15 @@ function useChatMarkdownState({
   const availableEditors = serverConfig?.availableEditors ?? [];
   const [preferredEditor] = usePreferredEditor(availableEditors);
   const preferredEditorMenuLabel = openInEditorMenuLabel(preferredEditor);
+  const fileOpenPreference = useClientSettings((settings) => settings.fileOpenTarget);
   const openInPreferredEditor = useOpenInPreferredEditor(environmentId, availableEditors);
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, {
     reportFailure: false,
   });
-  const revealInFileManagerLabel =
-    environmentId !== null &&
-    serverConfig?.shellRevealInFileManager === true &&
-    serverConfig.availableEditors.includes("file-manager")
-      ? serverConfig.shellRevealInFileManagerKind === undefined
-        ? revealInFileExplorerLabelForOs(serverConfig.environment.platform.os)
-        : revealInFileExplorerLabelForKind(serverConfig.shellRevealInFileManagerKind)
-      : undefined;
+  const revealInFileManagerLabel = revealInFileManagerLabelForEnvironment(
+    environmentId,
+    serverConfig,
+  );
   const revealFileInFileManager = useCallback(
     (filePath: string) => {
       if (environmentId === null) {
@@ -2603,6 +2607,8 @@ function useChatMarkdownState({
               : undefined
           }
           openInEditorMenuLabel={preferredEditorMenuLabel}
+          fileOpenPreference={fileOpenPreference}
+          canOpenInPreferredEditor={preferredEditor !== null}
           onReveal={
             canUseShellActions && revealInFileManagerLabel !== undefined
               ? () => revealMarkdownFileInFileManager(fileLinkMeta)
@@ -2625,10 +2631,12 @@ function useChatMarkdownState({
       canOperatePreview,
       environmentId,
       fileLinkParentSuffixByPath,
+      fileOpenPreference,
       openFileInPanel,
       openInPreferredEditor,
       openMarkdownFileInPreview,
       openMarkdownMedia,
+      preferredEditor,
       preferredEditorMenuLabel,
       resolvedTheme,
       revealInFileManagerLabel,

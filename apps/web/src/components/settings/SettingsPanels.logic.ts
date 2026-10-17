@@ -114,6 +114,7 @@ export type BrowserDefaultSettings = Pick<
   | "browserRecordingShowKeyPresses"
   | "browserRecordingShowMousePresses"
   | "browserLinkTarget"
+  | "fileOpenTarget"
   | "browserAutoShowFloatingPreview"
   | "pullRequestLinksOpenInApp"
 >;
@@ -151,6 +152,9 @@ export function getChangedBrowserSettingLabels(settings: BrowserDefaultSettings)
     ...(settings.browserRecordingShowMousePresses ? ["Recording mouse presses"] : []),
     ...(settings.browserLinkTarget !== DEFAULT_UNIFIED_SETTINGS.browserLinkTarget
       ? ["Open links in"]
+      : []),
+    ...(settings.fileOpenTarget !== DEFAULT_UNIFIED_SETTINGS.fileOpenTarget
+      ? ["Open files in"]
       : []),
     ...(settings.browserAutoShowFloatingPreview !==
     DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview

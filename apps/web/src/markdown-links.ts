@@ -8,7 +8,6 @@ import {
 import { parseFileUrlHref, splitFilePathPosition } from "@t3tools/shared/fileLinks";
 
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
-import { isTerminalLinkActivation } from "./terminal-links";
 
 export interface MarkdownFileLinkMeta {
   filePath: string;
@@ -18,13 +17,6 @@ export interface MarkdownFileLinkMeta {
   basename: string;
   line?: number;
   column?: number;
-}
-
-export function shouldOpenMarkdownFileLinkInEditor(
-  event: Pick<MouseEvent, "metaKey" | "ctrlKey">,
-  platform?: string,
-): boolean {
-  return isTerminalLinkActivation(event, platform);
 }
 
 export function shouldOpenMarkdownFileLinkInBrowserByDefault(path: string): boolean {
