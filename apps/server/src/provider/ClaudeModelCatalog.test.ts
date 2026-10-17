@@ -122,10 +122,14 @@ describe("Claude model catalog", () => {
 
   it("filters models at runtime-version boundaries and derives the upgrade message", () => {
     const catalog = catalogFromManifest(manifest());
-    assert.deepStrictEqual(resolveClaudeModelsForVersion(catalog, "3.1.9"), []);
+    // `opusplan` is code-defined and old enough to be offered at every version here.
+    assert.deepStrictEqual(
+      resolveClaudeModelsForVersion(catalog, "3.1.9").map((model) => model.slug),
+      ["opusplan"],
+    );
     assert.deepStrictEqual(
       resolveClaudeModelsForVersion(catalog, "3.2.0").map((model) => model.slug),
-      ["claude-synthetic-next"],
+      ["claude-synthetic-next", "opusplan"],
     );
     assert.deepStrictEqual(resolveClaudeUpdateRequiredModels(catalog, "3.1.9"), [
       { slug: "claude-synthetic-next", name: "Claude Synthetic Next", minVersion: "3.2.0" },
@@ -241,7 +245,7 @@ describe("Claude model catalog", () => {
     );
     assert.deepStrictEqual(
       resolveClaudeModelsForVersion(catalog, "3.2.0").map((model) => model.slug),
-      ["claude-synthetic-next", "claude-custom-tuned"],
+      ["claude-synthetic-next", "opusplan", "claude-custom-tuned"],
     );
   });
 });
@@ -313,5 +317,31 @@ describe("account-gated Claude models", () => {
     assert.isTrue(
       resolveClaudeModelsForVersion(catalog, "3.2.0").some((model) => model.slug === MYTHOS),
     );
+  });
+});
+
+describe("opusplan", () => {
+  const catalog = catalogFromManifest(manifest());
+
+  it("lists for every account on a CLI that knows it, and not on an older one", () => {
+    const slugs = (version: string) =>
+      resolveClaudeModelsForVersion(catalog, version).map((model) => model.slug);
+    assert.include(slugs("2.1.270"), "opusplan");
+    assert.notInclude(slugs("2.1.269"), "opusplan");
+    assert.isTrue(listUngatedClaudeModels(catalog).some((model) => model.slug === "opusplan"));
+  });
+
+  it("is sent to the SDK as the bare alias with a fixed 1M window", () => {
+    const selection = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opusplan" };
+    assert.strictEqual(resolveClaudeCatalogApiModelId(catalog, selection), "opusplan");
+    assert.strictEqual(resolveClaudeCatalogContextWindowTokens(catalog, selection), 1_000_000);
+  });
+
+  it("keeps Opus-only controls off and treats ultrathink as prompt-injected", () => {
+    const ids = getClaudeCatalogModelCapabilities(catalog, "opusplan").optionDescriptors?.map(
+      (descriptor) => descriptor.id,
+    );
+    assert.deepStrictEqual(ids, ["effort"]);
+    assert.strictEqual(normalizeClaudeCatalogEffort(catalog, "ultrathink", "opusplan"), undefined);
   });
 });

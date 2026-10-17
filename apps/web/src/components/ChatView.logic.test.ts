@@ -27,6 +27,7 @@ import {
 import type { CodexArtifactTemplate } from "@t3tools/shared/codexArtifactTemplates";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { Atom, AsyncResult } from "effect/reactivity";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -231,6 +232,19 @@ describe("resolveEffectiveInteractionMode", () => {
     expect(
       resolveEffectiveInteractionMode({
         planModeEnabled: true,
+        composerInteractionMode: null,
+        threadInteractionMode: "plan",
+      }),
+    ).toBe("plan");
+  });
+
+  // Clients render with DEFAULT_CLIENT_SETTINGS before persisted settings
+  // arrive. Reading the real default (not a literal) fails if it flips to off,
+  // which would run an early send on a plan thread as build.
+  it("does not clamp a persisted plan thread before client settings hydrate", () => {
+    expect(
+      resolveEffectiveInteractionMode({
+        planModeEnabled: DEFAULT_CLIENT_SETTINGS.planModeEnabled,
         composerInteractionMode: null,
         threadInteractionMode: "plan",
       }),

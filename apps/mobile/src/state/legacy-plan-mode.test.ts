@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  resolveLegacyPlanModeEnabled,
   resolvePendingTaskInteractionMode,
   resolveProviderInteractionMode,
 } from "./legacy-plan-mode";
@@ -22,71 +23,52 @@ describe("resolveProviderInteractionMode", () => {
   });
 });
 
+describe("resolveLegacyPlanModeEnabled", () => {
+  it("enables plan mode on a device that never set the preference", () => {
+    expect(resolveLegacyPlanModeEnabled({ preference: undefined })).toBe(true);
+  });
+
+  it("honors an explicit choice", () => {
+    expect(resolveLegacyPlanModeEnabled({ preference: false })).toBe(false);
+    expect(resolveLegacyPlanModeEnabled({ preference: true })).toBe(true);
+  });
+});
+
 describe("resolvePendingTaskInteractionMode", () => {
-  it.each([false, true])(
-    "clears a queued unsupported plan mode with preferenceLoaded=%s",
-    (preferenceLoaded) => {
-      expect(
-        resolvePendingTaskInteractionMode({
-          preferenceLoaded,
-          planModeEnabled: true,
-          draftInteractionMode: "plan",
-          queuedInteractionMode: "plan",
-          provider: { showInteractionModeToggle: false },
-        }),
-      ).toBe("default");
-    },
-  );
-
-  it("preserves a queued plan task while the preference is still loading", () => {
+  it("clears a queued plan mode the provider cannot use", () => {
     expect(
       resolvePendingTaskInteractionMode({
-        preferenceLoaded: false,
-        planModeEnabled: false,
-        draftInteractionMode: "plan",
-        queuedInteractionMode: "plan",
-      }),
-    ).toBe("plan");
-  });
-
-  it("forces build mode once the disabled preference has loaded", () => {
-    expect(
-      resolvePendingTaskInteractionMode({
-        preferenceLoaded: true,
-        planModeEnabled: false,
-        draftInteractionMode: "plan",
-        queuedInteractionMode: "plan",
-      }),
-    ).toBe("default");
-  });
-
-  it("keeps a fresh draft in build mode while the preference is loading", () => {
-    expect(
-      resolvePendingTaskInteractionMode({
-        preferenceLoaded: false,
-        planModeEnabled: false,
-        draftInteractionMode: "plan",
-        queuedInteractionMode: undefined,
-      }),
-    ).toBe("default");
-  });
-
-  it("honors the draft's mode when the plan preference is enabled", () => {
-    expect(
-      resolvePendingTaskInteractionMode({
-        preferenceLoaded: true,
         planModeEnabled: true,
         draftInteractionMode: "plan",
-        queuedInteractionMode: undefined,
+        provider: { showInteractionModeToggle: false },
       }),
+    ).toBe("default");
+  });
+
+  it("forces build mode when the device opted out of plan mode", () => {
+    expect(
+      resolvePendingTaskInteractionMode({ planModeEnabled: false, draftInteractionMode: "plan" }),
+    ).toBe("default");
+  });
+
+  it("honors the draft's mode when plan mode is enabled", () => {
+    expect(
+      resolvePendingTaskInteractionMode({ planModeEnabled: true, draftInteractionMode: "plan" }),
     ).toBe("plan");
     expect(
       resolvePendingTaskInteractionMode({
-        preferenceLoaded: true,
         planModeEnabled: true,
         draftInteractionMode: undefined,
-        queuedInteractionMode: "plan",
       }),
     ).toBe("default");
+  });
+
+  it("sends an edited queued plan task in plan mode before the preference store is read", () => {
+    expect(
+      resolvePendingTaskInteractionMode({
+        planModeEnabled: resolveLegacyPlanModeEnabled({ preference: undefined }),
+        draftInteractionMode: "plan",
+      }),
+    ).toBe("plan");
   });
 });

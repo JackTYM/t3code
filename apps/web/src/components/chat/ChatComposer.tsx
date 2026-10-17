@@ -1110,6 +1110,7 @@ import {
   hasCurrentProviderWorkspaceSnapshot,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
+  withInteractionModeCommandPrecedence,
 } from "@t3tools/client-runtime/providerSkills";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useDelayedStatus } from "../../hooks/useDelayedStatus";
@@ -2627,9 +2628,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         selectedProviderSkills,
         settings.showSkillsInSlashMenu,
       );
-      const providerSlashCommandItems = getProviderSlashCommandsForSlashMenu(
-        selectedProviderSlashCommands,
-        slashMenuSkills,
+      const providerSlashCommandItems = withInteractionModeCommandPrecedence(
+        getProviderSlashCommandsForSlashMenu(selectedProviderSlashCommands, slashMenuSkills),
+        planModeUiEnabled,
       ).map((command) => ({
         id: `provider-slash-command:${selectedProvider}:${command.name}`,
         type: "provider-slash-command" as const,
