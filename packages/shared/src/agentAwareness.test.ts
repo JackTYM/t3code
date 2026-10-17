@@ -12,6 +12,7 @@ import * as DateTime from "effect/DateTime";
 import { projectThreadAwarenessV2 } from "./agentAwareness.ts";
 
 const NOW = "2026-05-22T12:00:00.000Z";
+const now = DateTime.makeUnsafe(NOW);
 
 const project = {
   title: "t3code",
@@ -28,6 +29,9 @@ describe("projectThreadAwarenessV2", () => {
         | "pendingBackgroundTasks"
         | "pendingRuntimeRequest"
         | "lineage"
+        | "archivedAt"
+        | "settledOverride"
+        | "snoozedUntil"
       >
     > = {},
   ) => ({
@@ -42,6 +46,9 @@ describe("projectThreadAwarenessV2", () => {
     status: "running" as const,
     pendingRuntimeRequest: null,
     updatedAt,
+    archivedAt: null,
+    settledOverride: null,
+    snoozedUntil: null,
     ...overrides,
   });
 
@@ -50,6 +57,7 @@ describe("projectThreadAwarenessV2", () => {
       projectThreadAwarenessV2({
         environmentId: "env-1" as EnvironmentId,
         project,
+        now,
         thread: v2Thread(),
       }),
     ).toMatchObject({ phase: "running", headline: "Agent is working" });
@@ -62,6 +70,7 @@ describe("projectThreadAwarenessV2", () => {
         projectThreadAwarenessV2({
           environmentId: "env-1" as EnvironmentId,
           project,
+          now,
           thread: v2Thread({
             status,
             lineage: {
@@ -80,6 +89,7 @@ describe("projectThreadAwarenessV2", () => {
       projectThreadAwarenessV2({
         environmentId: "env-1" as EnvironmentId,
         project,
+        now,
         thread: v2Thread({ status: "cancelled", activityRunStatus: "running" }),
       }),
     ).toMatchObject({ phase: "running", headline: "Agent is working" });
@@ -101,6 +111,7 @@ describe("projectThreadAwarenessV2", () => {
       projectThreadAwarenessV2({
         environmentId: "env-1" as EnvironmentId,
         project,
+        now,
         thread: v2Thread({ status: "completed", pendingBackgroundTasks: tasks }),
       }),
     ).toMatchObject({ phase });
@@ -111,6 +122,7 @@ describe("projectThreadAwarenessV2", () => {
       projectThreadAwarenessV2({
         environmentId: "env-1" as EnvironmentId,
         project,
+        now,
         thread: v2Thread({
           pendingRuntimeRequest: {
             id: RuntimeRequestId.make("request-1"),
@@ -127,6 +139,7 @@ describe("projectThreadAwarenessV2", () => {
       projectThreadAwarenessV2({
         environmentId: "env-1" as EnvironmentId,
         project,
+        now,
         thread: v2Thread({
           pendingRuntimeRequest: {
             id: RuntimeRequestId.make("request-auth-refresh"),
@@ -136,5 +149,63 @@ describe("projectThreadAwarenessV2", () => {
         }),
       }),
     ).toMatchObject({ phase: "running", headline: "Agent is working" });
+  });
+
+  const wakesLater = DateTime.makeUnsafe("2026-05-22T18:00:00.000Z");
+  const pendingApproval = {
+    id: RuntimeRequestId.make("request-approval"),
+    kind: "command_approval" as const,
+    createdAt: updatedAt,
+  };
+
+  it.each([
+    ["archived", { archivedAt: updatedAt }],
+    ["settled", { settledOverride: "settled" as const }],
+    ["snoozed", { snoozedUntil: wakesLater }],
+  ])("keeps %s threads off the roster", (_label, parked) => {
+    expect(
+      projectThreadAwarenessV2({
+        environmentId: "env-1" as EnvironmentId,
+        project,
+        now,
+        thread: v2Thread({ status: "completed", ...parked }),
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps a snoozed thread blocked on the user on the roster", () => {
+    expect(
+      projectThreadAwarenessV2({
+        environmentId: "env-1" as EnvironmentId,
+        project,
+        now,
+        thread: v2Thread({ snoozedUntil: wakesLater, pendingRuntimeRequest: pendingApproval }),
+      }),
+    ).toMatchObject({ phase: "waiting_for_approval" });
+  });
+
+  it("restores a snoozed thread once its wake time has passed", () => {
+    expect(
+      projectThreadAwarenessV2({
+        environmentId: "env-1" as EnvironmentId,
+        project,
+        now,
+        thread: v2Thread({
+          status: "completed",
+          snoozedUntil: DateTime.makeUnsafe("2026-05-22T06:00:00.000Z"),
+        }),
+      }),
+    ).toMatchObject({ phase: "completed" });
+  });
+
+  it("does not park a thread the user explicitly reactivated", () => {
+    expect(
+      projectThreadAwarenessV2({
+        environmentId: "env-1" as EnvironmentId,
+        project,
+        now,
+        thread: v2Thread({ status: "completed", settledOverride: "active" }),
+      }),
+    ).toMatchObject({ phase: "completed" });
   });
 });

@@ -174,6 +174,9 @@ function resolveAgentActivityPublishingStartupState(input: {
 
 const RELAY_AGENT_ACTIVITY_DETAIL_MAX_LENGTH = 160;
 const REDACTED_RELAY_AGENT_FAILURE_DETAIL = "The agent run failed.";
+/** Real identities are `"null"` or JSON, so this never compares equal to one. */
+const PUBLISH_FAILED_IDENTITY = "publish-failed";
+
 const RELAY_AGENT_ACTIVITY_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
 
 function sanitizeRelayAgentActivityState(
@@ -291,6 +294,7 @@ function resolveAgentAwarenessRelayPublishSnapshot(input: {
   readonly threadId: ThreadId;
   readonly thread: Option.Option<OrchestrationV2ThreadShell>;
   readonly project: Option.Option<Project>;
+  readonly now: DateTime.Utc;
 }): {
   readonly projectId: string | null;
   readonly state: RelayAgentActivityState | null;
@@ -317,6 +321,7 @@ function resolveAgentAwarenessRelayPublishSnapshot(input: {
         environmentId: input.environmentId,
         project: input.project.value,
         thread: input.thread.value,
+        now: input.now,
       }),
     ),
     reason: "snapshot",
@@ -333,6 +338,7 @@ function terminalWorkSinceStart(thread: OrchestrationV2ThreadShell, startedAt: n
 export function resolveAgentAwarenessRelayActiveThreadIds(input: {
   readonly environmentId: EnvironmentId;
   readonly startedAt: number;
+  readonly now: DateTime.Utc;
   readonly projects: ReadonlyArray<Pick<Project, "id" | "title">>;
   readonly threads: ReadonlyArray<OrchestrationV2ThreadShell>;
 }): ReadonlyArray<ThreadId> {
@@ -347,6 +353,7 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
         environmentId: input.environmentId,
         project,
         thread,
+        now: input.now,
       });
       return (
         state !== null &&
@@ -536,6 +543,7 @@ export const make = Effect.gen(function* () {
       threadId,
       thread,
       project,
+      now: yield* DateTime.now,
     });
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
@@ -660,6 +668,13 @@ export const make = Effect.gen(function* () {
       // Keep the exhausted budget until fresh activity or a successful publish
       // clears it; an old confirmation timer must not start another retry series.
       yield* Effect.logWarning("agent activity publish retry budget exhausted", { threadId });
+      // The relay now holds an older state than the recorded identity names. The
+      // identity ignores updatedAt, so the next turn's identical "completed"
+      // would dedupe as unchanged and leave the card stuck on the dropped turn.
+      yield* Ref.update(publishedStateByThreadRef, (publishedStates) => {
+        if (!publishedStates.has(threadId)) return publishedStates;
+        return new Map(publishedStates).set(threadId, PUBLISH_FAILED_IDENTITY);
+      });
       return;
     }
     const retry = {
@@ -712,6 +727,7 @@ export const make = Effect.gen(function* () {
     const activeThreadIds = resolveAgentAwarenessRelayActiveThreadIds({
       environmentId,
       startedAt,
+      now: yield* DateTime.now,
       projects: projectSnapshot.projects,
       threads: shellSnapshot.threads,
     });
