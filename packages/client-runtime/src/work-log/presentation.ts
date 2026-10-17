@@ -605,6 +605,7 @@ function summaryActionPriority(action: ToolGroupAction | T3McpToolSummaryAction)
     case "thread-merge":
     case "thread-organize":
     case "thread-update":
+    case "mcp-server-repair":
     case "queue-edit":
     case "queue-cancel":
     case "queue-reorder":

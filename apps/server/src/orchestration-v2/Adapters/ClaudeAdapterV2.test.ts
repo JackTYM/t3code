@@ -2343,6 +2343,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly nativeSessionId?: string;
     readonly settings?: ClaudeSettings;
     readonly freshQueueOnReopen?: boolean;
+    readonly mcpControl?: Pick<
+      ClaudeAdapterV2.ClaudeAgentSdkQuerySession,
+      "mcpServerStatus" | "reconnectMcpServer" | "toggleMcpServer"
+    >;
   }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -2459,6 +2463,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 stopTask: options?.stopTask ?? (() => Effect.void),
                 interrupt: options?.interrupt ?? Effect.void,
                 close: options?.close?.(sdkMessages) ?? Effect.void,
+                ...options?.mcpControl,
               };
             }),
           forkSession: () => Effect.die("unused forkSession"),
@@ -2534,6 +2539,173 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
+
+  describe("MCP server control", () => {
+    const withServices = <A, E>(
+      effect: Effect.Effect<
+        A,
+        E,
+        | Scope.Scope
+        | IdAllocator.IdAllocatorV2
+        | McpProviderSessions.McpProviderSessions
+        | NodeServices.NodeServices
+      >,
+    ) =>
+      effect.pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      );
+    const startMcpTurn = (harness: Effect.Success<typeof makeWakeHarness>) =>
+      Effect.gen(function* () {
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("mcp-control"),
+            text: "hello",
+            attachments: [],
+          }),
+        );
+        return harness.runtime.mcpServers!;
+      });
+
+    it.effect("maps the CLI's statuses without forwarding server config", () =>
+      withServices(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarnessWithOptions({
+            mcpControl: {
+              mcpServerStatus: Effect.succeed([
+                {
+                  name: "docs",
+                  status: "needs-auth",
+                  scope: "local",
+                  config: {
+                    type: "http",
+                    url: "https://mcp.example.com/sse?token=secret",
+                    headers: { Authorization: "Bearer secret" },
+                  },
+                },
+                {
+                  name: "blender",
+                  status: "connected",
+                  scope: "user",
+                  serverInfo: { name: "blender", version: "1.4.0" },
+                },
+                { name: "konnect", status: "failed", error: "spawn konnect ENOENT" },
+                // A newer CLI's state must not make a server vanish from the list.
+                { name: "future", status: "reauthenticating" as "failed" },
+              ]),
+            },
+          });
+          const control = yield* startMcpTurn(harness);
+          assert.deepEqual(yield* control.list({ providerThread: harness.providerThread }), {
+            status: "available",
+            servers: [
+              {
+                name: "docs",
+                state: "needs-auth",
+                scope: "local",
+                version: null,
+                error: null,
+                host: "mcp.example.com",
+              },
+              {
+                name: "blender",
+                state: "connected",
+                scope: "user",
+                version: "1.4.0",
+                error: null,
+                host: null,
+              },
+              {
+                name: "konnect",
+                state: "failed",
+                scope: null,
+                version: null,
+                error: "spawn konnect ENOENT",
+                host: null,
+              },
+              {
+                name: "future",
+                state: "failed",
+                scope: null,
+                version: null,
+                error: null,
+                host: null,
+              },
+            ],
+          });
+        }),
+      ),
+    );
+
+    it.effect("reports a stopped session before any query has run", () =>
+      withServices(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          assert.deepEqual(
+            yield* harness.runtime.mcpServers!.list({ providerThread: harness.providerThread }),
+            { status: "unavailable", reason: "session-stopped" },
+          );
+        }),
+      ),
+    );
+
+    it.effect("reports unsupported, not an empty list, when the query cannot answer", () =>
+      withServices(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const control = yield* startMcpTurn(harness);
+          assert.deepEqual(yield* control.list({ providerThread: harness.providerThread }), {
+            status: "unavailable",
+            reason: "session-unsupported",
+          });
+          const failure = yield* control
+            .reconnect({ providerThread: harness.providerThread, server: "docs" })
+            .pipe(Effect.flip);
+          assert.equal(failure._tag, "ProviderAdapterProtocolError");
+        }),
+      ),
+    );
+
+    it.effect("forwards reconnect and toggles, keeping the CLI's error as the cause", () =>
+      withServices(
+        Effect.gen(function* () {
+          const calls: Array<string> = [];
+          const harness = yield* makeWakeHarnessWithOptions({
+            mcpControl: {
+              reconnectMcpServer: (name) =>
+                name === "docs"
+                  ? Effect.fail(
+                      new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                        method: "reconnectMcpServer",
+                        cause: new Error("Server status: needs-auth"),
+                      }),
+                    )
+                  : Effect.sync(() => void calls.push(`reconnect:${name}`)),
+              toggleMcpServer: (name, enabled) =>
+                Effect.sync(() => void calls.push(`${enabled ? "enable" : "disable"}:${name}`)),
+            },
+          });
+          const control = yield* startMcpTurn(harness);
+          const providerThread = harness.providerThread;
+          yield* control.reconnect({ providerThread, server: "blender" });
+          yield* control.setEnabled({ providerThread, server: "blender", enabled: false });
+          yield* control.setEnabled({ providerThread, server: "blender", enabled: true });
+          assert.deepEqual(calls, ["reconnect:blender", "disable:blender", "enable:blender"]);
+
+          const failure = yield* control
+            .reconnect({ providerThread, server: "docs" })
+            .pipe(Effect.flip);
+          assert.equal(failure._tag, "ProviderAdapterProtocolError");
+          assert.instanceOf(failure.cause, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError);
+        }),
+      ),
+    );
+  });
 
   it.effect.each([
     { isError: false, title: "Check weather" },

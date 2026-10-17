@@ -1,5 +1,6 @@
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { claudeTaskOutputRoot, tailClaudeTaskOutput } from "./ClaudeTaskOutputTail.ts";
+import { toMcpServerStatus } from "./claudeMcpServers.ts";
 import {
   dynamicToolTitle,
   formatReadToolLabel,
@@ -23,6 +24,7 @@ import {
   type ForkSessionOptions,
   type ForkSessionResult,
   getSubagentMessages,
+  type McpServerStatus as ClaudeMcpServerStatus,
   query,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
@@ -94,6 +96,7 @@ import * as Crypto from "effect/Crypto";
 import * as Hex from "effect/encoding/Hex";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
@@ -232,6 +235,8 @@ const CLAUDE_SCRIPT_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx"];
 // The SDK puts no deadline on control requests. The CLI answers
 // mcp_set_servers once each server connected or hit its own 30 s timeout.
 const CLAUDE_MCP_REGISTRATION_TIMEOUT = "90 seconds";
+// Reading statuses needs no connection work, so it should answer promptly.
+const CLAUDE_MCP_STATUS_TIMEOUT = "10 seconds";
 
 /**
  * When the CLI exits it stops the MCP servers it started, but not their children: a plugin's
@@ -420,6 +425,19 @@ export interface ClaudeAgentSdkQuerySession {
   ) => Effect.Effect<boolean, ClaudeAgentSdkQueryRunnerError>;
   readonly interrupt: Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
   readonly close: Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
+  // Optional: a query handle without them reads as a session that cannot manage
+  // its MCP servers, which is also what every test fake that omits them means.
+  readonly mcpServerStatus?: Effect.Effect<
+    ReadonlyArray<ClaudeMcpServerStatus>,
+    ClaudeAgentSdkQueryRunnerError
+  >;
+  readonly reconnectMcpServer?: (
+    serverName: string,
+  ) => Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
+  readonly toggleMcpServer?: (
+    serverName: string,
+    enabled: boolean,
+  ) => Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
 }
 
 type ClaudeQueryStreamExit = Exit.Exit<void, ClaudeAgentSdkQueryRunnerError>;
@@ -491,6 +509,24 @@ function queryRunnerError(cause: unknown, method: string): ClaudeAgentSdkQueryRu
   return isClaudeAgentSdkQueryRunnerError(cause)
     ? cause
     : new ClaudeAgentSdkQueryRunnerError({ cause, method });
+}
+
+// The SDK puts no deadline on control requests, and a CLI that never answers
+// must not leave the MCP panel waiting forever.
+function claudeMcpControlRequest<A>(
+  method: string,
+  timeout: Duration.Input,
+  request: () => Promise<A>,
+): Effect.Effect<A, ClaudeAgentSdkQueryRunnerError> {
+  return Effect.tryPromise({
+    try: request,
+    catch: (cause) => queryRunnerError(cause, method),
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: timeout,
+      orElse: () => Effect.fail(queryRunnerError(`Claude Code did not answer ${method}.`, method)),
+    }),
+  );
 }
 
 function closeClaudeQuery(queryRuntime: ClaudeQuery) {
@@ -584,6 +620,23 @@ export type ClaudeAgentSdkProtocolLogEvent =
       readonly payload: {
         readonly type: "query.background_tasks";
         readonly toolUseId: string;
+      };
+    }
+  | {
+      readonly direction: "outgoing";
+      readonly stage: "decoded";
+      readonly payload: {
+        readonly type: "query.reconnect_mcp_server";
+        readonly serverName: string;
+      };
+    }
+  | {
+      readonly direction: "outgoing";
+      readonly stage: "decoded";
+      readonly payload: {
+        readonly type: "query.toggle_mcp_server";
+        readonly serverName: string;
+        readonly enabled: boolean;
       };
     }
   | {
@@ -927,6 +980,37 @@ export const layerQueryRunner: Layer.Layer<
                 }),
               ),
             ),
+          // Statuses are not logged: the CLI's mcp_status response can echo
+          // request headers.
+          mcpServerStatus: claudeMcpControlRequest(
+            "mcpServerStatus",
+            CLAUDE_MCP_STATUS_TIMEOUT,
+            () => queryRuntime.mcpServerStatus(),
+          ),
+          reconnectMcpServer: (serverName) =>
+            logProtocolEvent({
+              direction: "outgoing",
+              stage: "decoded",
+              payload: { type: "query.reconnect_mcp_server", serverName },
+            }).pipe(
+              Effect.andThen(
+                claudeMcpControlRequest("reconnectMcpServer", CLAUDE_MCP_REGISTRATION_TIMEOUT, () =>
+                  queryRuntime.reconnectMcpServer(serverName),
+                ),
+              ),
+            ),
+          toggleMcpServer: (serverName, enabled) =>
+            logProtocolEvent({
+              direction: "outgoing",
+              stage: "decoded",
+              payload: { type: "query.toggle_mcp_server", serverName, enabled },
+            }).pipe(
+              Effect.andThen(
+                claudeMcpControlRequest("toggleMcpServer", CLAUDE_MCP_REGISTRATION_TIMEOUT, () =>
+                  queryRuntime.toggleMcpServer(serverName, enabled),
+                ),
+              ),
+            ),
           interrupt: Effect.tryPromise({
             try: () => queryRuntime.interrupt(),
             catch: (cause) => queryRunnerError(cause, "interrupt"),
@@ -1184,6 +1268,7 @@ export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__t3_pending_request_read",
   "mcp__t3-code__t3_thread_configuration",
   "mcp__t3-code__t3_thread_transfers",
+  "mcp__t3-code__t3_mcp_servers",
   "mcp__t3-code__t3_worktree_status",
   "mcp__t3-code__t3_worktree_list",
   "mcp__t3-code__t3_project_list",
@@ -8696,8 +8781,70 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         });
         yield* Effect.addFinalizer(() => closeSession());
 
+        // MCP connections belong to the CLI process, so only the query currently
+        // running this provider thread can describe or repair them.
+        const liveMcpQuery = (providerThread: OrchestrationV2ProviderThread) =>
+          Ref.get(queryContext).pipe(
+            Effect.map((live) =>
+              live === null ||
+              live.stopping ||
+              live.nativeThreadId !== providerThread.nativeThreadRef?.nativeId
+                ? null
+                : live.query,
+            ),
+          );
+        const mcpServerControlFailed = (detail: string) => (cause: unknown) =>
+          new ProviderAdapter.ProviderAdapterProtocolError({
+            driver: CLAUDE_PROVIDER,
+            detail,
+            cause,
+          });
+        const mcpServers: ProviderAdapter.ProviderAdapterV2McpServers = {
+          list: ({ providerThread }) =>
+            Effect.gen(function* () {
+              const query = yield* liveMcpQuery(providerThread);
+              if (query === null) {
+                return { status: "unavailable", reason: "session-stopped" } as const;
+              }
+              if (query.mcpServerStatus === undefined) {
+                return { status: "unavailable", reason: "session-unsupported" } as const;
+              }
+              const statuses = yield* query.mcpServerStatus.pipe(
+                Effect.mapError(mcpServerControlFailed("Claude MCP status request failed")),
+              );
+              return { status: "available", servers: statuses.map(toMcpServerStatus) } as const;
+            }),
+          reconnect: ({ providerThread, server }) =>
+            Effect.gen(function* () {
+              const reconnect = (yield* liveMcpQuery(providerThread))?.reconnectMcpServer;
+              if (reconnect === undefined) {
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: "No live Claude query can reconnect MCP servers",
+                });
+              }
+              yield* reconnect(server).pipe(
+                Effect.mapError(mcpServerControlFailed("Claude MCP reconnect request failed")),
+              );
+            }),
+          setEnabled: ({ providerThread, server, enabled }) =>
+            Effect.gen(function* () {
+              const toggle = (yield* liveMcpQuery(providerThread))?.toggleMcpServer;
+              if (toggle === undefined) {
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: "No live Claude query can enable or disable MCP servers",
+                });
+              }
+              yield* toggle(server, enabled).pipe(
+                Effect.mapError(mcpServerControlFailed("Claude MCP toggle request failed")),
+              );
+            }),
+        };
+
         const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
           instanceId: adapterOptions.instanceId,
+          mcpServers,
           driver: CLAUDE_PROVIDER,
           providerSessionId: input.providerSessionId,
           providerSession: session,

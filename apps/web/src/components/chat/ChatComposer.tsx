@@ -2605,6 +2605,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           label: "/model",
           description: "Switch response model for this thread",
         },
+        // A draft has no provider session, so it has no MCP servers to show.
+        ...(routeKind === "server"
+          ? ([
+              {
+                id: "slash:mcp",
+                type: "slash-command",
+                command: "mcp",
+                label: "/mcp",
+                description: "See and repair this session's MCP servers",
+              },
+            ] as const)
+          : []),
         ...(planModeUiEnabled
           ? ([
               {
@@ -2742,6 +2754,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     pullRequestProjectId,
     pullRequestRepository,
     pullRequestTriggerNumber,
+    routeKind,
     selectedProvider,
     selectedProviderSkills,
     selectedProviderSlashCommands,
@@ -3828,6 +3841,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         if (applied) {
           setComposerHighlightedItemId(null);
           setIsComposerModelPickerOpen(true);
+        }
+        return;
+      }
+      if (item.command === "mcp") {
+        const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+          expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+          focusEditorAfterReplace: false,
+        });
+        if (applied) {
+          setComposerHighlightedItemId(null);
+          useRightPanelStore.getState().open(routeThreadRef, "mcp");
         }
         return;
       }

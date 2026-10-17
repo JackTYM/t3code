@@ -232,6 +232,21 @@ Provider commands must start the message to run. T3 Code commands such as
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it. Web and desktop also offer compaction from the context meter.
 
+## MCP servers
+
+On web and desktop, pick `/mcp` in a thread to open the MCP servers panel. It
+lists the MCP servers the thread's running agent session connected to, with each
+server's state and, when it failed, the server's own error.
+
+**Reconnect** retries a server that failed. **Disable** and **Enable** turn a
+server off or on for the rest of the session; your MCP configuration files are not
+changed. Reconnecting cannot sign you in to a server that needs it: sign in from
+the provider's own CLI, then press **Reconnect** to pick up the result.
+
+The panel works with Claude threads that have a running session. Send a message to
+start one. Codex and other providers do not report their MCP servers to T3 Code
+yet. Agents can check and repair servers too, through T3 Code's MCP tools.
+
 ## Goals
 
 With Codex and Claude, send `/goal` followed by what "done" means, for example

@@ -296,6 +296,7 @@ import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavaila
 import { RightPanelTabs } from "./RightPanelTabs";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
+import { McpServersPanel } from "./mcp/McpServersPanel";
 import { useDeviceState } from "~/state/device";
 import { DeviceSetup } from "./device/DeviceSetup";
 import { Dialog } from "./ui/dialog";
@@ -10636,6 +10637,11 @@ export default function ChatView(props: ChatViewProps) {
       />
     ) : renderedRightPanelSurface?.kind === "pull-requests" && activeThreadRef ? (
       <ThreadPullRequestsPanel threadRef={activeThreadRef} />
+    ) : renderedRightPanelSurface?.kind === "mcp" && activeThreadRef ? (
+      <McpServersPanel
+        environmentId={activeThreadRef.environmentId}
+        threadId={activeThreadRef.threadId}
+      />
     ) : renderedRightPanelSurface?.kind === "device" ? (
       <Suspense fallback={null}>
         <DevicePanel

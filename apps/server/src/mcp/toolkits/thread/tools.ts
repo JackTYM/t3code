@@ -12,6 +12,7 @@ import {
   RuntimeRequestId,
   ProviderUserInputAnswers,
   IsoDateTime,
+  McpServerList,
   OrchestratorMcpFailure,
   OrchestrationV2DispatchCommandResult,
   ThreadId,
@@ -23,6 +24,7 @@ import * as Crypto from "effect/Crypto";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 
+import * as SessionMcpServers from "../../../mcpServers/SessionMcpServers.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -271,7 +273,32 @@ const ScheduledTaskRunTool = Tool.make("run_scheduled_task_now", {
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
 
+const McpServersTool = Tool.make("t3_mcp_servers", {
+  ...commandTool,
+  description:
+    "List the MCP servers of a thread's running provider session with their connection state and error text. Omit threadId for this thread. status=unavailable means the session could not be asked (stopped, or the provider cannot report MCP servers), not that it has none.",
+  parameters: Schema.Struct({ threadId: Schema.optional(ThreadId) }),
+  success: McpServerList,
+  dependencies: [...commandTool.dependencies, SessionMcpServers.SessionMcpServers],
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+const McpServerRepairTool = Tool.make("t3_mcp_server_repair", {
+  ...commandTool,
+  description:
+    "Reconnect, enable, or disable one MCP server of a thread's running provider session, for the rest of that session only; configuration files are not changed. Omit threadId for this thread. Reconnect cannot sign a server in.",
+  parameters: Schema.Struct({
+    threadId: Schema.optional(ThreadId),
+    server: TrimmedNonEmptyString,
+    action: Schema.Literals(["reconnect", "enable", "disable"]),
+  }),
+  success: Schema.Struct({}),
+  dependencies: [...commandTool.dependencies, SessionMcpServers.SessionMcpServers],
+}).annotate(Tool.Destructive, true);
+
 export const ThreadToolkit = Toolkit.make(
+  McpServersTool,
+  McpServerRepairTool,
   ScheduledTaskRunTool,
   ThreadSearchTool,
   ThreadForkTool,

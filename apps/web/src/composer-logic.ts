@@ -12,7 +12,7 @@ import {
 import { resolveShortcutCommand, type ShortcutEventLike } from "./keybindings";
 
 export type ComposerTriggerKind = "path" | "pull-request" | "slash-command" | "skill";
-export type ComposerSlashCommand = "model" | "plan" | "default";
+export type ComposerSlashCommand = "model" | "mcp" | "plan" | "default";
 export type ComposerSubmissionIntent = "foreground" | "background" | "alternate";
 
 export interface ComposerTrigger {
@@ -335,7 +335,7 @@ export function composerStateAtPromptEnd(
  */
 export function parseComposerInteractionModeCommand(
   text: string,
-): { mode: Exclude<ComposerSlashCommand, "model">; remainder: string } | null {
+): { mode: Exclude<ComposerSlashCommand, "model" | "mcp">; remainder: string } | null {
   const match = /^\/(plan|default)(?:\s+([\s\S]*?))?\s*$/i.exec(text.trim());
   if (!match) {
     return null;

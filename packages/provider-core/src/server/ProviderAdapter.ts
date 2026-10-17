@@ -1,4 +1,4 @@
-import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
+import type { McpServerList, OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
   ChatAttachment,
   CheckpointId,
@@ -526,6 +526,29 @@ export interface ProviderAdapterV2McpApps {
   }) => Effect.Effect<{ readonly contents: ReadonlyArray<unknown> }, ProviderAdapterV2Error>;
 }
 
+/**
+ * Lifecycle of the MCP servers a live session connected to, as opposed to
+ * {@link ProviderAdapterV2McpApps}, which calls tools on them.
+ */
+export interface ProviderAdapterV2McpServers {
+  /**
+   * Reports `unavailable` when this particular session cannot be asked, such as
+   * a CLI that predates the control, rather than an empty list.
+   */
+  readonly list: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+  }) => Effect.Effect<McpServerList, ProviderAdapterV2Error>;
+  readonly reconnect: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly server: string;
+  }) => Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly setEnabled: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly server: string;
+    readonly enabled: boolean;
+  }) => Effect.Effect<void, ProviderAdapterV2Error>;
+}
+
 export type ProviderAdapterV2SubagentOutcome = {
   readonly status: "completed" | "failed" | "cancelled";
   readonly completedAt: NonNullable<OrchestrationV2Subagent["completedAt"]>;
@@ -620,6 +643,8 @@ export interface ProviderAdapterV2SessionRuntime {
    * calls stay plain tool rows.
    */
   readonly mcpApps?: ProviderAdapterV2McpApps;
+  /** Absent means this provider's MCP servers cannot be seen or repaired from T3. */
+  readonly mcpServers?: ProviderAdapterV2McpServers;
   readonly rollbackThread: (
     input: ProviderAdapterV2RollbackThreadInput,
   ) => Effect.Effect<ProviderAdapterV2ThreadSnapshot, ProviderAdapterV2Error>;

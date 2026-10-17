@@ -26,6 +26,7 @@ import * as VcsStatusBroadcaster from "../../../vcs/VcsStatusBroadcaster.ts";
 import * as ServerSecretStore from "../../../auth/ServerSecretStore.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as ThreadLaunchService from "../../../orchestration-v2/ThreadLaunchService.ts";
+import * as SessionMcpServers from "../../../mcpServers/SessionMcpServers.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as PreviewManager from "../../../preview/Manager.ts";
 import * as SourceControlRepositoryService from "../../../sourceControl/SourceControlRepositoryService.ts";
@@ -57,6 +58,7 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({}),
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
   Layer.mock(ThreadSearch.ThreadSearch)({}),
+  Layer.mock(SessionMcpServers.SessionMcpServers)({}),
 );
 
 const ToolsListPayload = Schema.fromJsonString(
