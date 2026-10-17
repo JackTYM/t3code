@@ -94,6 +94,36 @@ export function isLiveSubagentTurnItem(item: OrchestrationV2TurnItem): boolean {
   return item.type === "subagent" && isOrchestrationV2WorkActive(item.status);
 }
 
+export type AgentOrderKeys = Pick<
+  RuntimeSubagent,
+  "id" | "status" | "firstSeenAt" | "updatedAt" | "completedAt"
+>;
+
+/**
+ * Newest-first order shared by every agent list. Live agents pin to the top,
+ * newest spawn first; their keys never change while they update, so rows do
+ * not jump under the cursor. Idle sits below them, and settled agents sort by
+ * when they ended, so the work that just finished is nearest the top.
+ */
+export function compareAgentsNewestFirst(a: AgentOrderKeys, b: AgentOrderKeys): number {
+  const tierA = agentOrderTier(a.status);
+  const tierB = agentOrderTier(b.status);
+  if (tierA !== tierB) {
+    return tierA - tierB;
+  }
+  const endedDelta = tierA === 0 ? 0 : agentEndedAt(b).localeCompare(agentEndedAt(a));
+  return endedDelta || b.firstSeenAt.localeCompare(a.firstSeenAt) || a.id.localeCompare(b.id);
+}
+
+function agentOrderTier(status: RuntimeSubagentStatus): number {
+  return isActiveSubagentStatus(status) ? 0 : status === "idle" ? 1 : 2;
+}
+
+/** Idle agents never get a completedAt; updatedAt is when they last did work. */
+function agentEndedAt(agent: AgentOrderKeys): string {
+  return agent.completedAt ?? agent.updatedAt;
+}
+
 export interface SubagentWorkflowGroup {
   readonly workflow: RuntimeSubagent;
   readonly phases: ReadonlyArray<{
@@ -235,7 +265,7 @@ export function deriveWorkflowGroups(
 ): ReadonlyArray<SubagentWorkflowGroup> {
   const workflows = agents
     .filter((agent) => agent.kind === "workflow")
-    .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id));
+    .sort(compareAgentsNewestFirst);
   const members = groupBy(
     agents.filter((agent) => agent.kind !== "workflow" && agent.parentAgentId !== null),
     (agent) => agent.parentAgentId!,

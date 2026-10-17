@@ -51,7 +51,7 @@ describe("deriveThreadTurnSubagents", () => {
     expect(deriveThreadTurnSubagents({ runs: [activeRun], subagents: [] })).toBeNull();
   });
 
-  it("scopes the roster to the active run and orders it by start time", () => {
+  it("scopes the roster to the active run and orders it newest-first", () => {
     const turn = deriveThreadTurnSubagents({
       runs: [run("run-0", "completed"), activeRun],
       subagents: [
@@ -62,8 +62,54 @@ describe("deriveThreadTurnSubagents", () => {
     });
 
     expect(turn?.runId).toBe("run-1");
-    expect(turn?.subagents.map((entry) => entry.id)).toEqual(["a", "b"]);
+    expect(turn?.subagents.map((entry) => entry.id)).toEqual(["b", "a"]);
     expect(turn?.turnActive).toBe(true);
+  });
+
+  it("pins live agents above idle, and idle above settled agents", () => {
+    const turn = deriveThreadTurnSubagents({
+      runs: [activeRun],
+      subagents: [
+        subagent({
+          id: "settled",
+          status: "completed",
+          startedAt: at("2026-06-20T00:00:09.000Z"),
+          completedAt: at("2026-06-20T00:00:10.000Z"),
+          updatedAt: at("2026-06-20T00:00:10.000Z"),
+        }),
+        subagent({ id: "idle", status: "idle", startedAt: at("2026-06-20T00:00:03.000Z") }),
+        subagent({ id: "live", status: "running", startedAt: at("2026-06-20T00:00:01.000Z") }),
+      ],
+    });
+
+    expect(turn?.subagents.map((entry) => entry.id)).toEqual(["live", "idle", "settled"]);
+  });
+
+  it("orders settled agents by when they ended, most recent first", () => {
+    const turn = deriveThreadTurnSubagents({
+      runs: [activeRun],
+      subagents: [
+        subagent({
+          id: "started-later-ended-earlier",
+          status: "completed",
+          startedAt: at("2026-06-20T00:00:05.000Z"),
+          completedAt: at("2026-06-20T00:00:06.000Z"),
+          updatedAt: at("2026-06-20T00:00:06.000Z"),
+        }),
+        subagent({
+          id: "started-earlier-ended-later",
+          status: "failed",
+          startedAt: at("2026-06-20T00:00:01.000Z"),
+          completedAt: at("2026-06-20T00:00:09.000Z"),
+          updatedAt: at("2026-06-20T00:00:09.000Z"),
+        }),
+      ],
+    });
+
+    expect(turn?.subagents.map((entry) => entry.id)).toEqual([
+      "started-earlier-ended-later",
+      "started-later-ended-earlier",
+    ]);
   });
 
   it("falls back to the most recently updated agent's run once the turn settles", () => {
