@@ -748,13 +748,7 @@ function OpenCommandPaletteDialog(props: {
   const threadSearch = useThreadSearch(environmentIds, threadSearchQuery);
   const threadContentMatchByKey = useMemo(
     () =>
-      new Map(
-        threadSearch.matches.flatMap((match) =>
-          match.source === "user" || match.source === "assistant"
-            ? [[threadSearchMatchKey(match), match] as const]
-            : [],
-        ),
-      ),
+      new Map(threadSearch.matches.map((match) => [threadSearchMatchKey(match), match] as const)),
     [threadSearch.matches],
   );
   const [browseGeneration, setBrowseGeneration] = useState(0);
@@ -1352,7 +1346,7 @@ function OpenCommandPaletteDialog(props: {
               threadId: thread.id,
             }),
           );
-          return match && (match.source === "user" || match.source === "assistant")
+          return match
             ? {
                 source: match.source,
                 snippet: match.snippet,

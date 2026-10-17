@@ -5,6 +5,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnItemId,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -119,7 +120,114 @@ const message = (
   },
 });
 
+const commandItem = (
+  threadId: ThreadId,
+  id: string,
+  input: string,
+  output: string,
+  minute = 1,
+): OrchestrationV2DomainEvent => ({
+  id: EventId.make(`item:${id}`),
+  type: "turn-item.updated",
+  threadId,
+  occurredAt: at(minute),
+  payload: {
+    id: TurnItemId.make(id),
+    threadId,
+    runId: null,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: minute,
+    status: "completed",
+    title: null,
+    startedAt: at(minute),
+    completedAt: at(minute),
+    updatedAt: at(minute),
+    type: "command_execution",
+    input,
+    output,
+  },
+});
+
 it.layer(layerTest)("ThreadSearch", (it) => {
+  it.effect("matches command output only when activity matches are requested", () =>
+    Effect.gen(function* () {
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const search = yield* ThreadSearch.ThreadSearch;
+      const project = ProjectId.make("project:search-activity");
+      yield* createProject(project);
+      const messageThread = ThreadId.make("thread:activity-message");
+      const activityThread = ThreadId.make("thread:activity-only");
+      const archived = ThreadId.make("thread:activity-archived");
+      const longOutput = `${"x".repeat(2000)} zebra-token ${"y".repeat(2000)}`;
+      yield* Effect.forEach(
+        [
+          thread(messageThread, project),
+          message(messageThread, "activity-message", "user", "zebra-token in a message"),
+          commandItem(messageThread, "item:message-thread", "ls", "zebra-token listing"),
+          thread(activityThread, project),
+          commandItem(activityThread, "item:activity-thread", "cat log", longOutput),
+          thread(archived, project, { archivedAt: at(1) }),
+          commandItem(archived, "item:archived", "cat log", "zebra-token archived"),
+        ],
+        projections.apply,
+        { discard: true },
+      );
+
+      assert.deepEqual(
+        (yield* search.search({ query: "zebra-token" })).matches.map((match) => match.threadId),
+        [messageThread],
+      );
+
+      const result = yield* search.search({ query: "ZEBRA-TOKEN", includeActivityMatches: true });
+      assert.deepEqual(
+        result.matches.map((match) => [match.threadId, match.source]),
+        [
+          [messageThread, "user"],
+          [activityThread, "activity"],
+        ],
+      );
+      const snippet = result.matches[1]!.snippet;
+      assert.isAtMost(snippet.length, 240);
+      assert.include(snippet, "zebra-token");
+    }),
+  );
+
+  it.effect("ignores activity rows beyond the newest scan window", () =>
+    Effect.gen(function* () {
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const search = yield* ThreadSearch.ThreadSearch;
+      const sql = yield* SqlClient.SqlClient;
+      const project = ProjectId.make("project:search-window");
+      const threadId = ThreadId.make("thread:window");
+      yield* createProject(project);
+      yield* Effect.forEach(
+        [
+          thread(threadId, project),
+          commandItem(threadId, "item:window-old", "old", "ancient-needle", 1),
+        ],
+        projections.apply,
+        { discard: true },
+      );
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_turn_items
+          (turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json)
+        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5000)
+        SELECT 'item:window-new-' || i, ${threadId}, 2, 'command_execution', 'completed',
+          '2026-09-28T00:00:00.000Z', '{"type":"command_execution","input":"x","output":"y"}'
+        FROM n
+      `;
+      const result = yield* search.search({
+        query: "ancient-needle",
+        includeActivityMatches: true,
+      });
+      assert.deepEqual(result.matches, []);
+    }),
+  );
+
   it.effect("returns one finished user or assistant match per active thread", () =>
     Effect.gen(function* () {
       const projections = yield* ProjectionStore.ProjectionStoreV2;

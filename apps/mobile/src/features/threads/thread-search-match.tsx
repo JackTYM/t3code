@@ -37,7 +37,7 @@ export function ThreadSearchMatchExcerpt(props: {
               : "text-adaptive-emerald-600-400",
         )}
       >
-        {isUser ? "You:" : "Agent:"}{" "}
+        {isUser ? "You:" : props.match.source === "assistant" ? "Agent:" : "Output:"}{" "}
       </Text>
       {parts.map((part) => (
         <Text

@@ -8,7 +8,10 @@ import {
   TrimmedString,
 } from "./baseSchemas.ts";
 
-export const OrchestrationThreadSearchSource = Schema.Literals(["user", "assistant"]);
+// `activity` is tool and command output. It is only returned to callers that set
+// `includeActivityMatches`: the literal set is closed, so a client built before
+// activity search would fail to decode the whole response if it saw one.
+export const OrchestrationThreadSearchSource = Schema.Literals(["user", "assistant", "activity"]);
 export type OrchestrationThreadSearchSource = typeof OrchestrationThreadSearchSource.Type;
 
 // The server's SQLite client is synchronous and single-connection. Bound both
@@ -16,6 +19,7 @@ export type OrchestrationThreadSearchSource = typeof OrchestrationThreadSearchSo
 export const OrchestrationSearchThreadsInput = Schema.Struct({
   query: TrimmedString.check(Schema.isMinLength(2), Schema.isMaxLength(200)),
   limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
+  includeActivityMatches: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationSearchThreadsInput = typeof OrchestrationSearchThreadsInput.Type;
 

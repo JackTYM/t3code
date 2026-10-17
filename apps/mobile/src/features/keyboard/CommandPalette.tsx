@@ -171,9 +171,10 @@ export function CommandPalette(props: {
   const contentMatchByKey = useMemo(
     () =>
       new Map(
-        search.matches
-          .filter((match) => match.source === "user" || match.source === "assistant")
-          .map((match) => [scopedThreadKey(match.environmentId, match.threadId), match]),
+        search.matches.map((match) => [
+          scopedThreadKey(match.environmentId, match.threadId),
+          match,
+        ]),
       ),
     [search.matches],
   );
