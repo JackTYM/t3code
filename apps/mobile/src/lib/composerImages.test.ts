@@ -12,6 +12,13 @@ const clipboard = vi.hoisted(() => ({
 
 vi.mock("expo-clipboard", () => clipboard);
 
+const imagePicker = vi.hoisted(() => ({
+  requestCameraPermissionsAsync: vi.fn(),
+  launchCameraAsync: vi.fn(),
+}));
+
+vi.mock("expo-image-picker", () => imagePicker);
+
 const manipulator = vi.hoisted(() => {
   const state = { sourceSize: { width: 0, height: 0 } };
   const manipulate = vi.fn((source: string | { width: number; height: number }) => {
@@ -409,5 +416,86 @@ describe("composerAttachmentInlineUri", () => {
         fileUri: "file:///notes.txt",
       } as never),
     ).toBeUndefined();
+  });
+});
+
+// A refusal has to say so: iOS dismisses the sheet with no explanation of its own.
+describe("camera capture", () => {
+  beforeEach(() => {
+    imagePicker.requestCameraPermissionsAsync.mockReset();
+    imagePicker.launchCameraAsync.mockReset();
+  });
+
+  it("explains a refusal that can still be granted", async () => {
+    imagePicker.requestCameraPermissionsAsync.mockResolvedValue({
+      granted: false,
+      canAskAgain: true,
+    });
+    const { captureComposerMedia } = await import("./composerImages");
+
+    const result = await captureComposerMedia({ existingCount: 0 });
+    expect(result).toEqual({
+      attachments: [],
+      error: "Camera access is needed to take a photo.",
+    });
+    expect(imagePicker.launchCameraAsync).not.toHaveBeenCalled();
+  });
+
+  it("points at Settings once the system will no longer ask", async () => {
+    imagePicker.requestCameraPermissionsAsync.mockResolvedValue({
+      granted: false,
+      canAskAgain: false,
+    });
+    const { captureComposerMedia } = await import("./composerImages");
+
+    const result = await captureComposerMedia({ existingCount: 0 });
+    expect(result.error).toContain("Settings");
+    expect(imagePicker.launchCameraAsync).not.toHaveBeenCalled();
+  });
+
+  it("never asks for permission when the message is already full", async () => {
+    const { captureComposerMedia } = await import("./composerImages");
+
+    const result = await captureComposerMedia({
+      existingCount: PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+    });
+    expect(result.error).toContain("up to");
+    expect(imagePicker.requestCameraPermissionsAsync).not.toHaveBeenCalled();
+  });
+
+  it("only offers video capture where the server accepts video uploads", async () => {
+    imagePicker.requestCameraPermissionsAsync.mockResolvedValue({ granted: true });
+    imagePicker.launchCameraAsync.mockResolvedValue({ canceled: true, assets: null });
+    const { captureComposerMedia } = await import("./composerImages");
+
+    await captureComposerMedia({ existingCount: 0 });
+    await captureComposerMedia({ existingCount: 0, maxVideoBytes: 1024 });
+    expect(imagePicker.launchCameraAsync.mock.calls.map(([options]) => options.mediaTypes)).toEqual(
+      [["images"], ["images", "videos"]],
+    );
+  });
+
+  it("treats a cancelled capture as nothing to attach", async () => {
+    imagePicker.requestCameraPermissionsAsync.mockResolvedValue({ granted: true });
+    imagePicker.launchCameraAsync.mockResolvedValue({ canceled: true, assets: null });
+    const { captureComposerMedia } = await import("./composerImages");
+
+    expect(await captureComposerMedia({ existingCount: 0 })).toEqual({
+      attachments: [],
+      error: null,
+    });
+  });
+
+  it("applies the library's video rule to captured assets", async () => {
+    imagePicker.requestCameraPermissionsAsync.mockResolvedValue({ granted: true });
+    imagePicker.launchCameraAsync.mockResolvedValue({
+      canceled: false,
+      assets: [{ type: "video", uri: "file:///clip.mov", mimeType: "video/quicktime" }],
+    });
+    const { captureComposerMedia } = await import("./composerImages");
+
+    const result = await captureComposerMedia({ existingCount: 0 });
+    expect(result.attachments).toEqual([]);
+    expect(result.error).toBe("Video attachments are unavailable here.");
   });
 });

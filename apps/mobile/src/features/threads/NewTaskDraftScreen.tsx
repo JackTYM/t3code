@@ -89,6 +89,7 @@ import {
   convertPastedImagesToAttachments,
   createPastedTextComposerAttachment,
   pickComposerFiles,
+  captureComposerMedia,
   pickComposerMedia,
   removePersistedComposerAttachmentFile,
   type DraftComposerFileAttachment,
@@ -1008,12 +1009,20 @@ export function NewTaskDraftScreen(props: {
   const showBranchLoading = flow.branchesLoading && flow.availableBranches.length === 0;
 
   async function handlePickMedia(): Promise<void> {
+    await addMedia(pickComposerMedia);
+  }
+
+  async function handleCaptureMedia(): Promise<void> {
+    await addMedia(captureComposerMedia);
+  }
+
+  async function addMedia(pick: typeof pickComposerMedia): Promise<void> {
     if (isComposerInteractionLocked || voiceInput.isBusy) {
       return;
     }
     const capabilities = selectedEnvironmentServerConfig?.environment.capabilities;
     const insertion = flow.draftKey ? captureComposerDraftInsertion(flow.draftKey) : undefined;
-    const result = await pickComposerMedia({
+    const result = await pick({
       existingCount:
         flow.draftKey && insertion
           ? countComposerDraftAttachmentsAfterSelection(flow.draftKey, insertion)
@@ -1714,6 +1723,7 @@ export function NewTaskDraftScreen(props: {
                     supportsFiles={Boolean(
                       selectedEnvironmentServerConfig?.environment.capabilities.fileAttachments,
                     )}
+                    onCaptureMedia={handleCaptureMedia}
                     onPickMedia={handlePickMedia}
                     onPickFiles={handlePickFiles}
                   />

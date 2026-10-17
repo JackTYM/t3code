@@ -1040,6 +1040,7 @@ function ThreadRouteContent(
           usesAutomaticContentInsets={usesNativeHeaderGlass}
           onOpenConnectionEditor={handleOpenConnectionEditor}
           onChangeDraftMessage={composer.onChangeDraftMessage}
+          onCaptureDraftMedia={composer.onCaptureDraftMedia}
           onPickDraftMedia={composer.onPickDraftMedia}
           onPickDraftFiles={composer.onPickDraftFiles}
           onNativePasteImages={composer.onNativePasteImages}
