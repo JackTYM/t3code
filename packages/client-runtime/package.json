@@ -407,6 +407,10 @@
       "types": "./src/state/mcpApps.ts",
       "default": "./src/state/mcpApps.ts"
     },
+    "./state/mcp-servers": {
+      "types": "./src/state/mcpServers.ts",
+      "default": "./src/state/mcpServers.ts"
+    },
     "./source-control-clients": {
       "types": "./src/sourceControlClients.ts",
       "default": "./src/sourceControlClients.ts"
