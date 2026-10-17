@@ -1,5 +1,6 @@
 import { isProviderDriverKind } from "@t3tools/contracts";
 import { acpRegistryClient } from "@t3tools/provider-acp-registry/client";
+import { claudeCloudClient } from "@t3tools/provider-claude-cloud/client";
 import { makeProviderClientRegistry } from "@t3tools/provider-core/client";
 import { cursorClient } from "@t3tools/provider-cursor/client";
 import { grokClient } from "@t3tools/provider-grok/client";
@@ -8,6 +9,7 @@ import { openCodeClient } from "@t3tools/provider-opencode/client";
 import { piClient } from "@t3tools/provider-pi/client";
 
 const providerClients = makeProviderClientRegistry([
+  claudeCloudClient,
   cursorClient,
   grokClient,
   museClient,
