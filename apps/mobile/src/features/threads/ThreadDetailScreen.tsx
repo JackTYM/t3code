@@ -146,6 +146,7 @@ import {
 } from "./ThreadComposer";
 import { ComposerPopoverHost } from "./ComposerPopoverHost";
 import { ThreadFeed, type ThreadFeedHistoryControls } from "./ThreadFeed";
+import { orchestrationEnvironment } from "../../state/orchestration";
 import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
 import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
@@ -405,6 +406,24 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const agentsSegment = resolveSubagentPillSegment(turnSubagents);
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
   const isProviderSubagent = isProviderNativeSubagentThread(props.selectedThread.source);
+  const canEditReplies = useAtomValue(
+    orchestrationEnvironment.editAssistantMessage.permissionAtom(props.environmentId),
+  );
+  // Absent on servers that predate reply editing, so those never offer it.
+  const providerSupportsReplyEditing =
+    props.serverConfig?.providers.find(
+      (provider) => provider.instanceId === props.selectedThread.providerInstanceId,
+    )?.supportsReplyEditing === true;
+  const replyEditingSupported =
+    props.canOperateThread && canEditReplies && providerSupportsReplyEditing;
+  const replyEditingBusy =
+    props.activeThreadBusy ||
+    props.activePendingApproval !== null ||
+    props.activePendingUserInput !== null;
+  const replyEditing = useMemo(
+    () => ({ supported: replyEditingSupported, threadBusy: replyEditingBusy }),
+    [replyEditingSupported, replyEditingBusy],
+  );
   const editingRunId = props.queuedRunEdit?.runId ?? null;
   useEffect(() => {
     if (editingRunId === null) return;
@@ -1104,6 +1123,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               onEndFollowEnabledChange={setEndFollowEnabled}
               skills={selectedProviderSkills}
               onUseArtifactTemplate={handleUseArtifactTemplate}
+              replyEditing={replyEditing}
             />
           </RenderErrorBoundary>
         </View>

@@ -6,6 +6,7 @@ import { enrichedContextLinkPresentation } from "../../lib/enrichedLinkPresentat
 import { ThreadContextDivider } from "./thread-context-divider";
 import { ThreadHandoffDivider, ThreadHandoffRow } from "./thread-handoff-row";
 import { SecretRequestCard } from "./SecretRequestCard";
+import { AssistantReplyEditControls, type ThreadReplyEditing } from "./AssistantReplyEditing";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import {
   WorktreeWorkingHeader,
@@ -309,6 +310,7 @@ export interface ThreadFeedProps {
   readonly onEndFollowEnabledChange?: (enabled: boolean) => void;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
   readonly onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
+  readonly replyEditing?: ThreadReplyEditing | null;
 }
 
 async function waitForThreadShell(
@@ -1003,6 +1005,7 @@ function renderFeedEntry(
     readonly markdownContentWidth: number;
     readonly contentWidth: number;
     readonly threadTitle: string;
+    readonly replyEditing: ThreadReplyEditing | null;
   },
 ) {
   const entry = info.item;
@@ -1426,9 +1429,31 @@ function renderFeedEntry(
                 sourceTitle={props.threadTitle}
               />
             ) : null}
+            {message.projectedItem ? (
+              <AssistantReplyEditControls
+                environmentId={props.environmentId}
+                threadId={props.threadId}
+                projectedItem={message.projectedItem}
+                replyEditing={props.replyEditing}
+                iconColor={iconSubtleColor}
+                allowStartEditing
+              />
+            ) : null}
             <Text className="font-t3-medium text-xs tabular-nums text-foreground-secondary">
               {timestampLabel}
             </Text>
+          </View>
+        ) : message.projectedItem?.item.type === "assistant_message" &&
+          message.projectedItem.item.edits !== undefined ? (
+          <View className="mt-1 flex-row items-center">
+            <AssistantReplyEditControls
+              environmentId={props.environmentId}
+              threadId={props.threadId}
+              projectedItem={message.projectedItem}
+              replyEditing={props.replyEditing}
+              iconColor={iconSubtleColor}
+              allowStartEditing={false}
+            />
           </View>
         ) : null}
       </Animated.View>
@@ -2479,6 +2504,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
               markdownContentWidth,
               contentWidth,
               threadTitle: props.threadTitle,
+              replyEditing: props.replyEditing ?? null,
               skills: props.skills,
               workspaceRoot: props.workspaceRoot,
             })}
@@ -2528,6 +2554,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       props.onUseArtifactTemplate,
       props.threadId,
       props.threadTitle,
+      props.replyEditing,
       props.skills,
       props.workspaceRoot,
       renderMarkdownImage,
