@@ -475,6 +475,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.created.record":
       return command.parentThreadId;
     case "secret_request.record":
+    case "assistant-message.edit.record":
       return command.threadId;
     case "thread.fork":
     case "thread.merge_back":
@@ -7934,6 +7935,75 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     });
 
+  const dispatchAssistantMessageEditRecord = Effect.fn(
+    "orchestrationV2.dispatch.assistantMessageEditRecord",
+  )(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "assistant-message.edit.record" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const reject = (cause: string) =>
+      new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause,
+      });
+    const text = command.edits.versions[command.edits.selected - 1];
+    if (text === undefined) {
+      return yield* reject(`Version ${command.edits.selected} is not in the edit history.`);
+    }
+    const projection = yield* projectionStore
+      .getThreadRecords(command.threadId, ["messages", "turnItems"], {
+        turnItemTypes: ["assistant_message"],
+        messageRoles: ["assistant"],
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+        ),
+      );
+    const message = projection.messages.find((candidate) => candidate.id === command.messageId);
+    const item = projection.turnItems.find(
+      (candidate) =>
+        candidate.type === "assistant_message" && candidate.messageId === command.messageId,
+    );
+    if (message === undefined || item === undefined || item.type !== "assistant_message") {
+      return yield* reject(`Assistant message ${command.messageId} was not found.`);
+    }
+    // The service rewrote the agent's history from this exact text; anything else means a
+    // concurrent edit won and this record would describe a history the agent never read.
+    if (item.text !== command.expectedText) {
+      return yield* reject(`Assistant message ${command.messageId} changed during the edit.`);
+    }
+    const previousVersions = item.edits?.versions ?? [command.expectedText];
+    if (
+      command.edits.versions.length < previousVersions.length ||
+      previousVersions.some((version, index) => command.edits.versions[index] !== version)
+    ) {
+      return yield* reject(`Edit history of ${command.messageId} can only grow.`);
+    }
+    const now = yield* DateTime.now;
+    const emitEvent = emit(events, command);
+    yield* emitEvent({
+      type: "message.updated",
+      threadId: command.threadId,
+      ...(message.runId === null ? {} : { runId: message.runId }),
+      ...(message.nodeId === null ? {} : { nodeId: message.nodeId }),
+      occurredAt: now,
+      payload: { ...message, text, updatedAt: now },
+    });
+    yield* emitEvent({
+      type: "turn-item.updated",
+      threadId: command.threadId,
+      ...(item.runId === null ? {} : { runId: item.runId }),
+      ...(item.nodeId === null ? {} : { nodeId: item.nodeId }),
+      occurredAt: now,
+      payload: { ...item, text, edits: command.edits, updatedAt: now },
+    });
+  });
+
   const loadProjectionForCommand = <K extends ProjectionRecordField>(
     command: OrchestrationV2Command,
     fields: ReadonlyArray<K>,
@@ -10903,6 +10973,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "secret_request.record":
         yield* dispatchSecretRequestRecord(command, events);
+        break;
+      case "assistant-message.edit.record":
+        yield* dispatchAssistantMessageEditRecord(command, events);
         break;
       default:
         return yield* dispatchUnsupported(command);

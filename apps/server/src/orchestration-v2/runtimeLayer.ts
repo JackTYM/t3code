@@ -43,6 +43,7 @@ import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryServic
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
+import * as ReplyEditService from "./ReplyEditService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
@@ -257,6 +258,16 @@ const layerThreadManagementProvided = ThreadManagementService.layerWithLegacyImp
     ),
   ),
 );
+const layerReplyEditProvided = ReplyEditService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      layerOrchestratorProvided,
+      layerProviderAdapterRegistryProvided,
+      layerProviderSessionManagerProvided,
+      ThreadCommandExecutor.layer,
+    ),
+  ),
+);
 export const layerProjectSetupScriptRunner = ProjectSetupScriptRunner.layer.pipe(
   Layer.provide(layerProjectService),
 );
@@ -354,6 +365,7 @@ export const layer = Layer.mergeAll(
   layerMcpAppRequestsProvided,
   layerSessionMcpServersProvided,
   layerThreadManagementProvided,
+  layerReplyEditProvided,
   layerEffectWorkerProvided,
   layerProviderSessionManagerProvided,
   layerProviderAuthServiceProvided,

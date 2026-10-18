@@ -1267,6 +1267,23 @@ export const OrchestrationV2UserMessageInputIntent = Schema.Literals([
 export type OrchestrationV2UserMessageInputIntent =
   typeof OrchestrationV2UserMessageInputIntent.Type;
 
+export const ORCHESTRATION_V2_REPLY_EDIT_MAX_TEXT_LENGTH = 100_000;
+export const ORCHESTRATION_V2_REPLY_EDIT_MAX_VERSIONS = 10;
+
+/**
+ * Version history of an assistant reply the user rewrote in the agent's own history. Version 1
+ * is the agent's original text and `text` on the item always equals the selected version, so
+ * clients that ignore this field still render what the agent now believes it said.
+ */
+export const OrchestrationV2AssistantMessageEdits = Schema.Struct({
+  selected: PositiveInt,
+  versions: Schema.Array(Schema.String).check(
+    Schema.isMinLength(2),
+    Schema.isMaxLength(ORCHESTRATION_V2_REPLY_EDIT_MAX_VERSIONS),
+  ),
+});
+export type OrchestrationV2AssistantMessageEdits = typeof OrchestrationV2AssistantMessageEdits.Type;
+
 const OrchestrationV2TurnItemBaseFields = {
   toolNonExecutionKind: Schema.optional(Schema.String),
   toolSurface: Schema.optional(ToolActivitySurface),
@@ -1344,6 +1361,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     text: Schema.String,
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
     streaming: Schema.Boolean,
+    edits: Schema.optional(OrchestrationV2AssistantMessageEdits),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2099,6 +2117,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     text: Schema.String,
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
     streaming: Schema.Boolean,
+    edits: Schema.optional(OrchestrationV2AssistantMessageEdits),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
@@ -3022,6 +3041,18 @@ const OrchestrationV2InternalCommand = Schema.Union([
     reason: Schema.optional(Schema.String),
   }),
   /**
+   * Internal because the agent's stored history must already say this; a client
+   * dispatching it directly would make the app lie about what the agent read.
+   */
+  Schema.Struct({
+    type: Schema.Literal("assistant-message.edit.record"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    messageId: MessageId,
+    expectedText: Schema.String,
+    edits: OrchestrationV2AssistantMessageEdits,
+  }),
+  /**
    * Internal so no client can mark a request saved without the value being
    * stored.
    */
@@ -3059,6 +3090,8 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
   subscribeCommandOutput: "orchestration.subscribeCommandOutput",
+  editAssistantMessage: "orchestration.editAssistantMessage",
+  selectAssistantMessageVersion: "orchestration.selectAssistantMessageVersion",
 } as const;
 
 export const OrchestrationV2SubscribeCommandOutputInput = Schema.Struct({
@@ -3366,6 +3399,72 @@ export class OrchestrationV2StopWorkflowError extends Schema.TaggedError<Orchest
   }
 }
 
+export const OrchestrationV2EditAssistantMessageInput = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  text: Schema.String.check(Schema.isMaxLength(ORCHESTRATION_V2_REPLY_EDIT_MAX_TEXT_LENGTH)),
+});
+export type OrchestrationV2EditAssistantMessageInput =
+  typeof OrchestrationV2EditAssistantMessageInput.Type;
+
+export const OrchestrationV2SelectAssistantMessageVersionInput = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  version: PositiveInt,
+});
+export type OrchestrationV2SelectAssistantMessageVersionInput =
+  typeof OrchestrationV2SelectAssistantMessageVersionInput.Type;
+
+export const OrchestrationV2ReplyEditFailureReason = Schema.Literals([
+  "unsupported",
+  "thread-busy",
+  "not-editable",
+  "not-in-history",
+  "multiple-text-blocks",
+  "compacted",
+  "out-of-sync",
+  "empty-text",
+  "version-limit",
+  "unknown-version",
+  "changed-during-edit",
+  "write-failed",
+]);
+export type OrchestrationV2ReplyEditFailureReason =
+  typeof OrchestrationV2ReplyEditFailureReason.Type;
+
+const REPLY_EDIT_FAILURE_MESSAGES = {
+  unsupported: "This agent's replies can't be edited.",
+  "thread-busy": "Wait for the agent to finish before editing a reply.",
+  "not-editable": "This reply can't be edited.",
+  "not-in-history":
+    "This reply isn't in the agent's current conversation, so editing it would change nothing.",
+  "multiple-text-blocks":
+    "This reply is stored as several pieces in the agent's history, so it can't be edited safely.",
+  compacted:
+    "The agent only remembers a summary of this reply, so editing it would change nothing.",
+  "out-of-sync": "The agent's history no longer matches this reply. Nothing was changed.",
+  "empty-text": "A reply can't be empty.",
+  "version-limit": "This reply has reached the maximum number of versions.",
+  "unknown-version": "That version of the reply no longer exists.",
+  "changed-during-edit":
+    "The agent's history changed while editing. Nothing was changed; try again.",
+  "write-failed": "Couldn't update the agent's history. Nothing was changed.",
+} as const satisfies Record<OrchestrationV2ReplyEditFailureReason, string>;
+
+export class OrchestrationV2ReplyEditError extends Schema.TaggedError<OrchestrationV2ReplyEditError>()(
+  "OrchestrationV2ReplyEditError",
+  {
+    threadId: ThreadId,
+    messageId: MessageId,
+    reason: OrchestrationV2ReplyEditFailureReason,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return REPLY_EDIT_FAILURE_MESSAGES[this.reason];
+  }
+}
+
 export const OrchestrationV2RpcError = Schema.Union([
   OrchestrationV2DispatchCommandError,
   OrchestrationV2GetThreadProjectionError,
@@ -3576,6 +3675,14 @@ export const OrchestrationV2RpcSchemas = {
   subscribeCommandOutput: {
     input: OrchestrationV2SubscribeCommandOutputInput,
     output: OrchestrationV2CommandOutputFrame,
+  },
+  editAssistantMessage: {
+    input: OrchestrationV2EditAssistantMessageInput,
+    output: Schema.Void,
+  },
+  selectAssistantMessageVersion: {
+    input: OrchestrationV2SelectAssistantMessageVersionInput,
+    output: Schema.Void,
   },
 } as const;
 

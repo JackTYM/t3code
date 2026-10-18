@@ -368,6 +368,37 @@ export class ProviderAdapterProtocolError extends Schema.TaggedError<ProviderAda
   }
 }
 
+export class ProviderAdapterEditAssistantTextError extends Schema.TaggedError<ProviderAdapterEditAssistantTextError>()(
+  "ProviderAdapterEditAssistantTextError",
+  {
+    driver: ProviderDriverKind,
+    reason: Schema.Literals([
+      "not-editable",
+      "not-in-history",
+      "multiple-text-blocks",
+      "compacted",
+      "out-of-sync",
+      "changed-during-edit",
+      "write-failed",
+    ]),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Failed to edit ${this.driver} assistant text: ${this.reason}.`;
+  }
+}
+
+export interface ProviderAdapterV2EditAssistantTextInput {
+  readonly nativeThreadId: string;
+  readonly nativeItemId: string;
+  /** The reply as the app shows it; the stored text must match it exactly. */
+  readonly expectedText: string;
+  readonly text: string;
+  /** T3-owned file that receives the untouched history once, before its first edit. */
+  readonly backupPath: string;
+}
+
 export const ProviderAdapterV2Error = Schema.Union([
   ProviderAdapterCapabilitiesError,
   ProviderAdapterOpenSessionError,
@@ -676,5 +707,13 @@ export class ProviderAdapterV2 extends Context.Service<
     readonly releaseNativeThread?: (input: {
       readonly nativeThreadId: string;
     }) => Effect.Effect<void, ProviderAdapterV2Error>;
+    /**
+     * Rewrites one assistant reply in the provider's stored history, so a resumed session reads
+     * the new text as what it said. Absent means replies cannot be edited. Called without an open
+     * session for the thread: a live session keeps its history in memory and would ignore it.
+     */
+    readonly editAssistantText?: (
+      input: ProviderAdapterV2EditAssistantTextInput,
+    ) => Effect.Effect<void, ProviderAdapterEditAssistantTextError>;
   }
 >()("@t3tools/provider-core/server/ProviderAdapter/ProviderAdapterV2") {}
