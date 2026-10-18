@@ -182,6 +182,37 @@ export function canForkProjectedAssistantItem(input: {
   return canForkNatively || capabilities.context.supportsFullThreadHandoff;
 }
 
+export interface AssistantReplyEditing {
+  readonly canEdit: boolean;
+  /** Present once the reply has been edited: which version the agent now believes it said. */
+  readonly versions: { readonly selected: number; readonly count: number } | null;
+}
+
+/**
+ * `providerSupportsReplyEditing` is the provider status flag, absent on servers that predate the
+ * feature, so those never offer it. The server still refuses an edit it cannot make safely.
+ */
+export function resolveAssistantReplyEditing(input: {
+  readonly item: OrchestrationV2ProjectedTurnItem["item"];
+  readonly providerSupportsReplyEditing: boolean | undefined;
+  readonly threadBusy: boolean;
+}): AssistantReplyEditing {
+  const item = input.item;
+  if (item.type !== "assistant_message") return { canEdit: false, versions: null };
+  return {
+    canEdit:
+      input.providerSupportsReplyEditing === true &&
+      !input.threadBusy &&
+      item.status === "completed" &&
+      !item.streaming &&
+      item.runId !== null,
+    versions:
+      item.edits === undefined
+        ? null
+        : { selected: item.edits.selected, count: item.edits.versions.length },
+  };
+}
+
 export function canDetachThreadProviderSession(projection: Projection): boolean {
   const session = resolveThreadProviderSession(projection);
   return session !== null && session.status !== "stopped" && session.status !== "error";

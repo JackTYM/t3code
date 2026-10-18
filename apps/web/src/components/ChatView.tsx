@@ -423,6 +423,7 @@ import {
 } from "../state/server";
 import { terminalEnvironment } from "../state/terminal";
 import { threadEnvironment } from "../state/threads";
+import { orchestrationEnvironment } from "../state/orchestration";
 import { workspacePreparationRetryRunIds } from "@t3tools/client-runtime/state/turn-item-presentation";
 import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSkills";
 import { vcsEnvironment } from "../state/vcs";
@@ -1740,6 +1741,16 @@ export default function ChatView(props: ChatViewProps) {
   const forkThreadFromRun = useAtomCommand(threadEnvironment.forkFromRun, {
     reportFailure: false,
   });
+  const editAssistantMessage = useAtomCommand(orchestrationEnvironment.editAssistantMessage, {
+    reportFailure: false,
+  });
+  const selectAssistantMessageVersion = useAtomCommand(
+    orchestrationEnvironment.selectAssistantMessageVersion,
+    { reportFailure: false },
+  );
+  const canEditAssistantReplies = useAtomValue(
+    orchestrationEnvironment.editAssistantMessage.permissionAtom(environmentId),
+  );
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
   const closePreview = useAtomCommand(previewEnvironment.close, "preview close");
   const { environments } = useEnvironments();
@@ -3280,6 +3291,53 @@ export default function ChatView(props: ChatViewProps) {
     canOperateThread &&
     conversationProviderStatus !== null &&
     conversationProviderStatus.supportsConversationRollback !== false;
+  const replyEditThreadId = activeThread?.id ?? null;
+  const reportReplyEditFailure = (
+    result: Extract<Awaited<ReturnType<typeof editAssistantMessage>>, { _tag: "Failure" }>,
+  ) => {
+    if (isAtomCommandInterrupted(result)) return;
+    const error = squashAtomCommandFailure(result);
+    toastManager.add({
+      type: "error",
+      title: "Couldn't change the reply",
+      ...(error instanceof Error ? { description: error.message } : {}),
+    });
+  };
+  const onEditAssistantReply = useStableCallback(async (messageId: MessageId, text: string) => {
+    if (replyEditThreadId === null) return false;
+    const result = await editAssistantMessage({
+      environmentId,
+      input: { threadId: replyEditThreadId, messageId, text },
+    });
+    if (result._tag === "Failure") reportReplyEditFailure(result);
+    return result._tag === "Success";
+  });
+  const onSelectAssistantReplyVersion = useStableCallback(
+    async (messageId: MessageId, version: number) => {
+      if (replyEditThreadId === null) return;
+      const result = await selectAssistantMessageVersion({
+        environmentId,
+        input: { threadId: replyEditThreadId, messageId, version },
+      });
+      if (result._tag === "Failure") reportReplyEditFailure(result);
+    },
+  );
+  const replyEditingSupported =
+    canOperateThread &&
+    canEditAssistantReplies &&
+    conversationProviderStatus?.supportsReplyEditing === true;
+  const replyEditing = useMemo(
+    () =>
+      replyEditThreadId === null
+        ? null
+        : {
+            threadId: replyEditThreadId,
+            supported: replyEditingSupported,
+            onEdit: onEditAssistantReply,
+            onSelectVersion: onSelectAssistantReplyVersion,
+          },
+    [replyEditThreadId, replyEditingSupported, onEditAssistantReply, onSelectAssistantReplyVersion],
+  );
   const phase = derivePhase(activeRuntime);
   const pendingRequests = useMemo(
     () =>
@@ -11045,6 +11103,7 @@ export default function ChatView(props: ChatViewProps) {
                 supportsConversationRollback={
                   !paintOnlyDisplayedTimeline && supportsConversationRollback
                 }
+                replyEditing={paintOnlyDisplayedTimeline ? null : replyEditing}
                 onRevertToTurnCount={
                   paintOnlyDisplayedTimeline ? noopHeldRevert : onRevertTimelineTurnStable
                 }

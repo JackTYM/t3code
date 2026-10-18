@@ -13,6 +13,7 @@ import {
   ThreadId,
   EnvironmentId,
   ScheduledTaskId,
+  ORCHESTRATION_V2_WS_METHODS,
   WS_METHODS,
   type AuthSessionState,
 } from "@t3tools/contracts";
@@ -81,6 +82,28 @@ describe("command permissions", () => {
         yield* cleanup.authorize(registry, env);
         registry.set(sessions(other), AsyncResult.success(grant(false)));
         expect(registry.get(cleanup.permissionAtom(other))).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("requires the destination operate grant to edit or switch an agent's reply", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        for (const method of [
+          ORCHESTRATION_V2_WS_METHODS.editAssistantMessage,
+          ORCHESTRATION_V2_WS_METHODS.selectAssistantMessageVersion,
+        ]) {
+          const edit = createCommandPermissions(runtime, method);
+          registry.set(sessions(env), AsyncResult.success(grant(false)));
+          expect(registry.get(edit.permissionAtom(env))).toBe(false);
+          expect((yield* edit.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+            "EnvironmentAuthorizationError",
+          );
+          registry.set(sessions(env), AsyncResult.success(grant(true)));
+          expect(registry.get(edit.permissionAtom(env))).toBe(true);
+          yield* edit.authorize(registry, env);
+        }
       }),
     ),
   );
