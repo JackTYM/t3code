@@ -17,7 +17,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 
 type EditFailureReason = ProviderAdapter.ProviderAdapterEditAssistantTextError["reason"];
 
-export type ClaudeTranscriptRewrite =
+type ClaudeTranscriptRewrite =
   | { readonly _tag: "Rewritten"; readonly contents: string; readonly lineIndex: number }
   | { readonly _tag: "Refused"; readonly reason: EditFailureReason };
 

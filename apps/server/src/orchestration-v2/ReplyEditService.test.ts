@@ -399,9 +399,9 @@ describe("ReplyEditService gating", () => {
               ),
             ),
           ),
+          Layer.provideMerge(NodeServices.layer),
         ),
       ),
-      Effect.provide(NodeServices.layer),
     );
 
   const untouched = () => Effect.die("history must not be touched");

@@ -1,5 +1,10 @@
 import { resolveAssistantReplyEditing } from "@t3tools/client-runtime/state/thread-workflows";
-import type { MessageId, OrchestrationV2ProjectedTurnItem, ThreadId } from "@t3tools/contracts";
+import {
+  ORCHESTRATION_V2_REPLY_EDIT_MAX_TEXT_LENGTH,
+  type MessageId,
+  type OrchestrationV2ProjectedTurnItem,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { ChevronLeftIcon, ChevronRightIcon, PencilIcon } from "lucide-react";
 import { useState, type KeyboardEvent } from "react";
 
@@ -141,6 +146,7 @@ export function AssistantReplyEditor({
     <div className="flex flex-col gap-2 py-1">
       <Textarea
         aria-label="Edited reply"
+        maxLength={ORCHESTRATION_V2_REPLY_EDIT_MAX_TEXT_LENGTH}
         value={text}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={onKeyDown}

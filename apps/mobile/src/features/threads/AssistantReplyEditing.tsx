@@ -1,9 +1,10 @@
 import { resolveAssistantReplyEditing } from "@t3tools/client-runtime/state/thread-workflows";
-import type {
-  EnvironmentId,
-  MessageId,
-  OrchestrationV2ProjectedTurnItem,
-  ThreadId,
+import {
+  ORCHESTRATION_V2_REPLY_EDIT_MAX_TEXT_LENGTH,
+  type EnvironmentId,
+  type MessageId,
+  type OrchestrationV2ProjectedTurnItem,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Haptics from "expo-haptics";
 import { useState } from "react";
@@ -158,6 +159,7 @@ function AssistantReplyEditSheet(props: {
           </Text>
           <TextInput
             accessibilityLabel="Edited reply"
+            maxLength={ORCHESTRATION_V2_REPLY_EDIT_MAX_TEXT_LENGTH}
             className="min-h-40 rounded-xl bg-subtle px-3 py-2 text-base text-foreground"
             multiline
             textAlignVertical="top"

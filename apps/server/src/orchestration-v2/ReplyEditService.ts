@@ -23,7 +23,7 @@ import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 
 type AssistantItem = Extract<OrchestrationV2TurnItem, { readonly type: "assistant_message" }>;
 
-export type ReplyEditPlan =
+type ReplyEditPlan =
   | { readonly _tag: "Unchanged" }
   | { readonly _tag: "Refused"; readonly reason: OrchestrationV2ReplyEditFailureReason }
   | {
