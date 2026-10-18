@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  CommandId,
   MessageId,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
@@ -226,6 +227,25 @@ describe("ReplyEditService", () => {
           )!;
           assert.strictEqual(selectedItem.text, item.text);
           assert.strictEqual(selectedItem.edits?.selected, 1);
+
+          // A record that does not start from the text the history was rewritten from, or that
+          // drops a version, must not land.
+          for (const [expectedText, versions] of [
+            ["not the current text", [item.text, "fixture edited"]],
+            [item.text, ["fixture edited", item.text]],
+          ] as const) {
+            const rejected = yield* orchestrator
+              .dispatch({
+                type: "assistant-message.edit.record",
+                commandId: CommandId.make(`command:reply-edit:reject:${expectedText}`),
+                threadId,
+                messageId: item.messageId,
+                expectedText,
+                edits: { selected: 2, versions },
+              })
+              .pipe(Effect.flip);
+            assert.strictEqual(rejected._tag, "OrchestratorDispatchError");
+          }
 
           const refusal = (effect: Effect.Effect<void, { readonly reason: string }>) =>
             effect.pipe(
