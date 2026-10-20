@@ -648,6 +648,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
         ? ["Add project base directory"]
         : []),
+      ...(settings.newProjectsDirectory !== DEFAULT_UNIFIED_SETTINGS.newProjectsDirectory
+        ? ["New projects location"]
+        : []),
       ...(settings.confirmThreadUnpin !== DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin
         ? ["Unpin confirmation"]
         : []),
@@ -690,6 +693,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sendShortcut,
       settings.followUpBehavior,
       settings.addProjectBaseDirectory,
+      settings.newProjectsDirectory,
       settings.defaultThreadEnvMode,
       settings.newWorktreesStartFromOrigin,
       settings.diffFilesCollapsed,
@@ -831,6 +835,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
+      newProjectsDirectory: DEFAULT_UNIFIED_SETTINGS.newProjectsDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
       confirmThreadUnpin: DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin,
@@ -2192,6 +2197,10 @@ export function GeneralSettingsPanel() {
   const backgroundActivityProfileOption = resolveBackgroundActivityProfileOption(settings);
   const mixedBackgroundActivity = useScopedSettingsMixed(["backgroundActivity"]);
   const mixedAddProjectBaseDirectory = useScopedSettingsMixed(["addProjectBaseDirectory"]);
+  const mixedNewProjectsDirectory = useScopedSettingsMixed(["newProjectsDirectory"]);
+  const supportsNewProjectsDirectory = connectedEnvironments.every(
+    (candidate) => candidate.serverConfig?.environment.capabilities.newProjectsDirectory === true,
+  );
   const mixedTextGenerationModel = useScopedSettingsMixed(["textGenerationModelSelection"]);
   const backgroundActivityDescription =
     backgroundActivityProfileOption === "advanced"
@@ -3090,6 +3099,37 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+        {supportsNewProjectsDirectory ? (
+          <SettingsRow
+            serverScoped
+            settingKeys={["newProjectsDirectory"]}
+            {...searchableSetting("new-projects-location")}
+            description="Folder where New project creates its folder, such as ~/Documents/Coding. It must be an absolute path. Existing projects stay where they are. Leave empty to use the T3 home folder."
+            resetAction={
+              settings.newProjectsDirectory !== DEFAULT_UNIFIED_SETTINGS.newProjectsDirectory ? (
+                <SettingResetButton
+                  label="new projects location"
+                  onClick={() =>
+                    updateSettings({
+                      newProjectsDirectory: DEFAULT_UNIFIED_SETTINGS.newProjectsDirectory,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <DraftInput
+                size="sm"
+                className="w-full sm:w-72"
+                value={mixedNewProjectsDirectory ? "" : settings.newProjectsDirectory}
+                onCommit={(next) => updateSettings({ newProjectsDirectory: next })}
+                placeholder={mixedNewProjectsDirectory ? "Mixed" : "Default"}
+                spellCheck={false}
+                aria-label="New projects location"
+              />
+            }
+          />
+        ) : null}
       </SettingsSection>
 
       <SettingsSection id="confirmations" title="Confirmations">
