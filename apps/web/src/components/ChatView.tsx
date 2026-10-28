@@ -8142,7 +8142,12 @@ export default function ChatView(props: ChatViewProps) {
       setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
       return;
     }
-    if (restoreFiles === undefined) {
+    // Without a ready checkpoint (a workspace that is not a git repo) there are no files to restore.
+    const filesRestorable = turnDiffSummaries.some(
+      (summary) => summary.checkpointTurnCount === turnCount + 1 && summary.status === "ready",
+    );
+    const restoreFilesChoice = filesRestorable ? restoreFiles : false;
+    if (restoreFilesChoice === undefined) {
       setPendingRevert({ turnCount, messageId, routeThreadKey });
       return;
     }
@@ -8177,7 +8182,12 @@ export default function ChatView(props: ChatViewProps) {
       await waitForRevertedMessage(routeThreadRef, messageId, turnCount, commandId, async () => {
         const result = await revertThreadCheckpoint({
           environmentId,
-          input: { commandId, threadId: activeThread.id, turnCount, restoreFiles },
+          input: {
+            commandId,
+            threadId: activeThread.id,
+            turnCount,
+            restoreFiles: restoreFilesChoice,
+          },
         });
         if (result._tag === "Failure") throw squashAtomCommandFailure(result);
       });

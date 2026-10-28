@@ -1025,10 +1025,11 @@ export function deriveRevertTurnCountByUserMessageId(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly checkpoints: ReadonlyArray<ThreadCheckpointSummary>;
 }): Map<ChatMessage["id"], number> {
-  const readyCheckpointByRunId = new Map<RunId, ThreadCheckpointSummary>();
+  // "missing" checkpoints (no git repo to snapshot) still anchor a conversation-only rewind.
+  const rewindableCheckpointByRunId = new Map<RunId, ThreadCheckpointSummary>();
   for (const checkpoint of input.checkpoints) {
-    if (checkpoint.status === "ready") {
-      readyCheckpointByRunId.set(checkpoint.runId, checkpoint);
+    if (checkpoint.status === "ready" || checkpoint.status === "missing") {
+      rewindableCheckpointByRunId.set(checkpoint.runId, checkpoint);
     }
   }
   const byUserMessageId = new Map<ChatMessage["id"], number>();
@@ -1038,7 +1039,7 @@ export function deriveRevertTurnCountByUserMessageId(input: {
       continue;
     }
     if (entry.message.runId === null) continue;
-    const checkpoint = readyCheckpointByRunId.get(entry.message.runId);
+    const checkpoint = rewindableCheckpointByRunId.get(entry.message.runId);
     if (checkpoint === undefined) continue;
     byUserMessageId.set(entry.message.id, Math.max(0, checkpoint.checkpointTurnCount - 1));
   }

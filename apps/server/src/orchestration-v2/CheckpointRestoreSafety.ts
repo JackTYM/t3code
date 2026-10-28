@@ -1,4 +1,8 @@
-import type { OrchestrationV2AppThread, OrchestrationV2CheckpointScope } from "@t3tools/contracts";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2Checkpoint,
+  OrchestrationV2CheckpointScope,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -8,6 +12,13 @@ import type * as ProjectStore from "./ProjectStore.ts";
 
 export const SHARED_WORKSPACE_RESTORE_MESSAGE =
   "File restore requires an isolated worktree. This workspace may contain changes from another thread. Rewind the conversation without restoring files instead.";
+
+// A "missing" checkpoint (a workspace that is not a git repo) has no files to restore but still
+// marks where the conversation was, so it can be rewound to when files are left alone.
+export const isRollbackTarget = (
+  checkpoint: Pick<OrchestrationV2Checkpoint, "status">,
+  restoreFiles: boolean | undefined,
+) => checkpoint.status === "ready" || (checkpoint.status === "missing" && restoreFiles === false);
 
 // A checkpoint snapshots the whole checkout. Check at command admission and
 // again before provider rollback so a newly shared worktree is rejected too.

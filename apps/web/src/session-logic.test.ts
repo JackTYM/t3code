@@ -293,6 +293,23 @@ describe("V2 session presentation", () => {
 
     expect([...targets]).toEqual([[turnStartMessageId, 0]]);
     expect(targets.has(steerMessageId)).toBe(false);
+    for (const status of ["missing", "stale", "error"] as const) {
+      const rewindable = deriveRevertTurnCountByUserMessageId({
+        timelineEntries,
+        checkpoints: [
+          {
+            runId,
+            checkpointTurnCount: 1,
+            checkpointRef: "checkpoint-run-1" as never,
+            status,
+            files: [],
+            assistantMessageId,
+            completedAt: "2026-06-20T00:00:03.000Z",
+          },
+        ],
+      });
+      expect(rewindable.has(turnStartMessageId)).toBe(status === "missing");
+    }
   });
 
   it("uses visible turn item order and keeps provider errors in the work log", () => {
