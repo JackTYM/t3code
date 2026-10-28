@@ -19,6 +19,7 @@ import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   isCheckpointRestoreIsolated,
+  isRollbackTarget,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
 } from "./CheckpointRestoreSafety.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
@@ -142,7 +143,7 @@ export const layer: Layer.Layer<
         checkpoint === undefined ||
         scope === undefined ||
         checkpoint.scopeId !== scope.id ||
-        checkpoint.status !== "ready"
+        !isRollbackTarget(checkpoint, input.restoreFiles)
       ) {
         return yield* new CheckpointRollbackExecutionError({
           reason: "rollback-target-invalid",

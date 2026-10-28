@@ -887,6 +887,62 @@ describe("V2 environment commands", () => {
     }).pipe(Effect.provide(layerTestCrypto)),
   );
 
+  it.effect("rewinds a missing checkpoint only when files are left alone", () =>
+    Effect.gen(function* () {
+      const checkpointId = CheckpointId.make("missing-checkpoint");
+      const scopeId = CheckpointScopeId.make("missing-checkpoint-scope");
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        advertiseServerResolvedCommandContext: false,
+        projection: {
+          ...v2Projection,
+          checkpoints: [
+            {
+              id: checkpointId,
+              threadId: v2ThreadId,
+              scopeId,
+              runId: null,
+              nodeId: NodeId.make("missing-checkpoint-node"),
+              parentCheckpointId: null,
+              ordinalWithinScope: 0,
+              appRunOrdinal: null,
+              ref: CheckpointRef.make("refs/t3/missing-checkpoint"),
+              status: "missing",
+              files: [],
+              capturedAt: v2Now,
+            },
+          ],
+        },
+      });
+      const rollback = (restoreFiles: boolean) =>
+        revertThreadCheckpoint({
+          commandId: CommandId.make(`missing-rollback-${restoreFiles}`),
+          threadId: v2ThreadId,
+          checkpointId,
+          scopeId,
+          restoreFiles,
+        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+      const error = yield* rollback(true).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationV2CheckpointUnavailableError");
+      expect(commands).toEqual([]);
+
+      yield* rollback(false);
+      expect(commands).toEqual([
+        {
+          type: "checkpoint.rollback",
+          commandId: "missing-rollback-false",
+          threadId: v2ThreadId,
+          checkpointId,
+          scopeId,
+          restoreFiles: false,
+        },
+      ]);
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
   it.effect("dispatches settle and unsettle commands without timestamps", () =>
     Effect.gen(function* () {
       const dispatched: OrchestrationV2Command[] = [];
