@@ -1,0 +1,317 @@
+name: Fork binaries
+
+# Builds installable macOS, Windows and iOS binaries from any branch of this
+# fork. The upstream Release workflow cannot run here: it reads the production
+# relay's state from T3's Cloudflare account and publishes to npm, Vercel,
+# Discord and the AUR. This one has no such dependencies.
+#
+# Nothing is signed unless signing secrets exist (see release-desktop.yml), so
+# macOS and Windows installers are unsigned and the iOS IPA is for re-signing
+# yourself. The relay/Clerk values baked in are the public ones from
+# .env.example, the same ones the PR preview builds use.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag, or commit to build. Defaults to the ref this workflow was dispatched on."
+        required: false
+        type: string
+      targets:
+        description: "What to build. Windows also builds the Linux CLI archive it embeds."
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - macos
+          - windows
+          - ios
+
+permissions:
+  # release-desktop.yml's Windows build lists this run's artifacts.
+  actions: read
+  contents: read
+
+concurrency:
+  group: fork-binaries-${{ inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The platform-independent JS (server, web client, Electron main) is built
+  # once and packaged by every desktop job.
+  bundle:
+    name: Build JS bundle
+    if: inputs.targets != 'ios'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+      clerk_publishable_key: ${{ steps.source.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ steps.source.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ steps.source.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ steps.source.outputs.relay_url }}
+    steps:
+      # Anonymous fetch: checkout's credential cleanup fails on the orphaned
+      # gitlinks in the vendored .repos tree, which is excluded anyway.
+      - name: Checkout
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ inputs.ref || github.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --detach FETCH_HEAD
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install bundle dependencies
+        run: vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+
+      # The packaging jobs receive the same version and public values as
+      # inputs, so every installer matches the bundle built here.
+      - id: source
+        name: Resolve version and public configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sha="$(git rev-parse HEAD)"
+          base_version="$(node -p "require('./apps/desktop/package.json').version")"
+          version="${base_version}-fork.${GITHUB_RUN_NUMBER}"
+          node scripts/update-release-package-versions.ts "$version"
+          cp .env.example .env
+
+          {
+            echo "sha=$sha"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+          for key in clerk_publishable_key:T3CODE_CLERK_PUBLISHABLE_KEY clerk_jwt_template:T3CODE_CLERK_JWT_TEMPLATE clerk_cli_oauth_client_id:T3CODE_CLERK_CLI_OAUTH_CLIENT_ID relay_url:T3CODE_RELAY_URL; do
+            output="${key%%:*}"
+            name="${key##*:}"
+            value="$(sed -n "s/^${name}=//p" .env.example | head -n 1)"
+            if [[ ! "$value" =~ ^[A-Za-z0-9._:/-]+$ ]]; then
+              echo "$name is missing or malformed in .env.example." >&2
+              exit 1
+            fi
+            echo "${output}=${value}" >> "$GITHUB_OUTPUT"
+          done
+
+      - uses: ./.github/actions/setup-apt-mirrors
+
+      - name: Install browser secret helper build libraries
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+
+      - name: Build JS bundle
+        run: vp run build:desktop
+
+      # Same layout as the release workflow's js-bundle, so release-desktop.yml
+      # packages it unchanged.
+      - name: Upload JS bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: js-bundle
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+          retention-days: 1
+
+  desktop_mac_arm64:
+    name: Desktop macOS arm64
+    needs: bundle
+    if: ${{ !cancelled() && needs.bundle.result == 'success' && (inputs.targets == 'all' || inputs.targets == 'macos') }}
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.bundle.outputs.version }}
+      ref: ${{ needs.bundle.outputs.sha }}
+      release_channel: preview
+      relay_client_tracing: false
+      clerk_publishable_key: ${{ needs.bundle.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ needs.bundle.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ needs.bundle.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ needs.bundle.outputs.relay_url }}
+      label: macOS arm64
+      runner: macos-latest
+      platform: mac
+      target: dmg
+      arch: arm64
+      rust_target: aarch64-apple-darwin
+      resource_key: darwin-arm64
+      cli_archive: false
+
+  # The Windows build embeds this job's CLI archive as its WSL runtime and
+  # waits for it by job name, so the label must stay "Linux x64".
+  desktop_linux_x64:
+    name: Desktop Linux x64
+    needs: bundle
+    if: ${{ !cancelled() && needs.bundle.result == 'success' && (inputs.targets == 'all' || inputs.targets == 'windows') }}
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.bundle.outputs.version }}
+      ref: ${{ needs.bundle.outputs.sha }}
+      release_channel: preview
+      relay_client_tracing: false
+      clerk_publishable_key: ${{ needs.bundle.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ needs.bundle.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ needs.bundle.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ needs.bundle.outputs.relay_url }}
+      label: Linux x64
+      runner: ubuntu-24.04
+      platform: linux
+      target: AppImage
+      arch: x64
+      rust_target: x86_64-unknown-linux-gnu
+      resource_key: linux-x64
+      cli_archive: true
+
+  desktop_win_x64:
+    name: Desktop Windows x64
+    needs: bundle
+    if: ${{ !cancelled() && needs.bundle.result == 'success' && (inputs.targets == 'all' || inputs.targets == 'windows') }}
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.bundle.outputs.version }}
+      ref: ${{ needs.bundle.outputs.sha }}
+      release_channel: preview
+      relay_client_tracing: false
+      clerk_publishable_key: ${{ needs.bundle.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ needs.bundle.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ needs.bundle.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ needs.bundle.outputs.relay_url }}
+      label: Windows x64
+      runner: windows-latest
+      platform: win
+      target: nsis
+      arch: x64
+      rust_target: x86_64-pc-windows-msvc
+      resource_key: win32-x64
+      cli_archive: true
+
+  # Unsigned on purpose: the IPA is re-signed by hand, and an Apple signing
+  # identity is not needed to produce it. The widget extension uses iOS 27.1
+  # APIs, so this needs Xcode 27.1, which only the xcode-27 runner image has.
+  ios_unsigned:
+    name: iOS unsigned IPA
+    if: inputs.targets == 'all' || inputs.targets == 'ios'
+    runs-on: xcode-27
+    timeout-minutes: 90
+    env:
+      EXPO_NO_GIT_STATUS: "1"
+      NODE_OPTIONS: --max-old-space-size=8192
+      # The group the re-signing profile grants. The widget reads shared state
+      # from it, so a stale value gives a blank Live Activity card.
+      APP_GROUP: ${{ vars.IOS_APP_GROUP || 'group.22fa696a256864dd.1' }}
+    steps:
+      - name: Checkout
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ inputs.ref || github.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --detach FETCH_HEAD
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/mobile...
+
+      # expo shells out to pnpm, which vp installs under its own prefix.
+      - name: Expose pnpm
+        run: |
+          pnpm_version="$(node --print "require('./package.json').packageManager.split('@').pop()")"
+          vp_pnpm_bin="$HOME/.vite-plus/package_manager/pnpm/$pnpm_version/pnpm/bin"
+          echo "$vp_pnpm_bin" >> "$GITHUB_PATH"
+          "$vp_pnpm_bin/pnpm" --version
+
+      - name: Select Xcode 27.1
+        run: |
+          sudo xcode-select -s /Applications/Xcode_27.1.app
+          xcodebuild -version
+
+      - name: Prebuild the iOS project
+        working-directory: apps/mobile
+        run: |
+          cp ../../.env.example ../../.env
+          ./node_modules/.bin/expo prebuild --clean --platform ios
+
+      - name: Archive without signing
+        working-directory: apps/mobile
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild -workspace ios/T3Code.xcworkspace -scheme T3Code -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/T3Code.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            archive > "$RUNNER_TEMP/xcodebuild.log" 2>&1 || {
+              echo "::error::xcodebuild archive failed; the last lines of its log follow."
+              tail -n 200 "$RUNNER_TEMP/xcodebuild.log"
+              exit 1
+            }
+
+      - id: package
+        name: Package the IPAs
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/T3Code.xcarchive/Products/Applications/T3Code.app"
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")"
+          name="T3Code-${version}-$(git rev-parse --short=9 HEAD)"
+          out="$RUNNER_TEMP/ipa"
+          mkdir -p "$out" "$RUNNER_TEMP/pkg/Payload"
+          cp -R "$app" "$RUNNER_TEMP/pkg/Payload/"
+          (cd "$RUNNER_TEMP/pkg" && zip -qry "$out/${name}-unsigned.ipa" Payload)
+          # The ref being built predates this script, so take it from the
+          # commit that owns this workflow.
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git show "FETCH_HEAD:.github/scripts/patch-ipa-app-group.sh" > "$RUNNER_TEMP/patch-ipa-app-group.sh"
+          bash "$RUNNER_TEMP/patch-ipa-app-group.sh" "$out/${name}-unsigned.ipa" "$out/${name}-unsigned-appgroup.ipa" "$APP_GROUP"
+          ls -la "$out"
+
+      - name: Upload IPAs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ios-unsigned
+          path: ${{ runner.temp }}/ipa/*.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload archive log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ios-xcodebuild-log
+          path: ${{ runner.temp }}/xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 7
