@@ -247,6 +247,22 @@ The panel works with Claude threads that have a running session. Send a message 
 start one. Codex and other providers do not report their MCP servers to T3 Code
 yet. Agents can check and repair servers too, through T3 Code's MCP tools.
 
+## Side questions
+
+On web and desktop, start a message with `/btw` in a Claude thread to ask a quick
+question without interrupting the agent, for example `/btw which file defines
+the retry policy?`. The answer appears in a panel above the composer, even while
+the agent is mid-turn.
+
+The question is answered from the same conversation, with no tools, and it is
+not added to the thread: T3 Code does not save the question or the answer, and
+dismissing the panel discards them. Until then, each new `/btw` question carries
+the earlier ones as context, so you can follow up.
+
+A side question needs a running agent session. For a thread that has not started
+or whose session has ended, send a message first. Other providers, and mobile,
+do not offer `/btw`.
+
 ## Goals
 
 With Codex and Claude, send `/goal` followed by what "done" means, for example

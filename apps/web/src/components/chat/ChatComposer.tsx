@@ -1526,6 +1526,7 @@ export interface ChatComposerProps {
   keepFullHistory: boolean;
   onToggleKeepFullHistory: () => void;
   onUsageLimitsCommand?: (() => void) | undefined;
+  sideQuestionsOffered: boolean;
   environmentUnavailable: {
     readonly label: string;
     readonly connection: EnvironmentConnectionPresentation;
@@ -1662,6 +1663,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     routeKind,
     routeThreadRef,
     draftId,
+    sideQuestionsOffered,
     multipleModelSelections,
     supportsMultipleModels,
     onMultipleModelSelectionsChange: setMultipleModelSelections,
@@ -2618,6 +2620,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               },
             ] as const)
           : []),
+        // `/btw` takes its question as the message, so like a provider command it only
+        // opens one.
+        ...(sideQuestionsOffered && composerTrigger.rangeStart === 0
+          ? ([
+              {
+                id: "slash:btw",
+                type: "slash-command",
+                command: "btw",
+                label: "/btw",
+                description: "Ask a side question without interrupting the agent",
+              },
+            ] as const)
+          : []),
         ...(planModeUiEnabled
           ? ([
               {
@@ -2761,6 +2776,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedProviderSlashCommands,
     selectedProviderStatus,
     settings.showSkillsInSlashMenu,
+    sideQuestionsOffered,
     workspaceEntries.entries,
   ]);
 
@@ -3853,6 +3869,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         if (applied) {
           setComposerHighlightedItemId(null);
           useRightPanelStore.getState().open(routeThreadRef, "mcp");
+        }
+        return;
+      }
+      if (item.command === "btw") {
+        const replacement = "/btw ";
+        const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+          snapshot.value,
+          trigger.rangeEnd,
+          replacement,
+        );
+        const applied = applyPromptReplacement(
+          trigger.rangeStart,
+          replacementRangeEnd,
+          replacement,
+          { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
+        );
+        if (applied) {
+          setComposerHighlightedItemId(null);
         }
         return;
       }

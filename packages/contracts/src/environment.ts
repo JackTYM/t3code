@@ -149,6 +149,9 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       "server"`) and streams them over `/api/preview-stream`. Clients
       without a local browser runtime open server tabs here. */
   serverBrowser: Schema.optionalKey(Schema.Boolean),
+  /** Server answers sideQuestions.ask. Absent on older servers, which would reject the call
+      as an unknown method, so clients do not offer /btw there. */
+  sideQuestions: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

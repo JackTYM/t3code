@@ -21,6 +21,7 @@ import {
   McpServerReconnectInput,
   McpServerSetEnabledInput,
 } from "./mcpServers.ts";
+import { SideQuestionAnswer, SideQuestionAskInput, SideQuestionError } from "./sideQuestions.ts";
 import {
   ChatGptReconnectProfileInput,
   ChatGptReconnectProfile,
@@ -418,6 +419,7 @@ export const WS_METHODS = {
   mcpServersList: "mcpServers.list",
   mcpServersReconnect: "mcpServers.reconnect",
   mcpServersSetEnabled: "mcpServers.setEnabled",
+  sideQuestionsAsk: "sideQuestions.ask",
 
   providerUploadFeedback: "provider.uploadFeedback",
   providerAuthStart: "provider.auth.start",
@@ -1366,6 +1368,12 @@ const WsMcpServersSetEnabledRpc = Rpc.make(WS_METHODS.mcpServersSetEnabled, {
   error: Schema.Union([McpServerError, EnvironmentAuthorizationError]),
 });
 
+const WsSideQuestionsAskRpc = Rpc.make(WS_METHODS.sideQuestionsAsk, {
+  payload: SideQuestionAskInput,
+  success: SideQuestionAnswer,
+  error: Schema.Union([SideQuestionError, EnvironmentAuthorizationError]),
+});
+
 const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
   payload: ProviderUploadFeedbackInput,
   success: ProviderUploadFeedbackResult,
@@ -2030,6 +2038,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsMcpServersListRpc,
   WsMcpServersReconnectRpc,
   WsMcpServersSetEnabledRpc,
+  WsSideQuestionsAskRpc,
   WsProviderUploadFeedbackRpc,
   WsSubscribeVcsStatusRpc,
   WsSubscribeWorktreeSetupRpc,

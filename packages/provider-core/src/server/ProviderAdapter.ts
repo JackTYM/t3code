@@ -1,4 +1,10 @@
-import type { McpServerList, OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
+import type {
+  McpServerList,
+  OrchestrationV2HistoricalMessage,
+  SideQuestionAnswer,
+  SideQuestionExchange,
+  SideQuestionUnavailableReason,
+} from "@t3tools/contracts";
 import {
   ChatAttachment,
   CheckpointId,
@@ -549,6 +555,27 @@ export interface ProviderAdapterV2McpServers {
   }) => Effect.Effect<void, ProviderAdapterV2Error>;
 }
 
+/**
+ * Answers a question from the live session's context without adding to the
+ * conversation, even while a turn is running.
+ */
+export interface ProviderAdapterV2SideQuestions {
+  readonly ask: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly question: string;
+    readonly history: ReadonlyArray<SideQuestionExchange>;
+  }) => Effect.Effect<ProviderAdapterV2SideQuestionOutcome, ProviderAdapterV2Error>;
+}
+
+/**
+ * "no-answer" is the provider saying it produced nothing, distinct from a
+ * session that could not be asked.
+ */
+export type ProviderAdapterV2SideQuestionOutcome =
+  | ({ readonly status: "answered" } & SideQuestionAnswer)
+  | { readonly status: "unavailable"; readonly reason: SideQuestionUnavailableReason }
+  | { readonly status: "no-answer" };
+
 export type ProviderAdapterV2SubagentOutcome = {
   readonly status: "completed" | "failed" | "cancelled";
   readonly completedAt: NonNullable<OrchestrationV2Subagent["completedAt"]>;
@@ -645,6 +672,8 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly mcpApps?: ProviderAdapterV2McpApps;
   /** Absent means this provider's MCP servers cannot be seen or repaired from T3. */
   readonly mcpServers?: ProviderAdapterV2McpServers;
+  /** Absent means this provider cannot answer a question outside the conversation. */
+  readonly sideQuestions?: ProviderAdapterV2SideQuestions;
   readonly rollbackThread: (
     input: ProviderAdapterV2RollbackThreadInput,
   ) => Effect.Effect<ProviderAdapterV2ThreadSnapshot, ProviderAdapterV2Error>;

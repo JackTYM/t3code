@@ -49,6 +49,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // Repairing a server changes which tools the agent can reach for the rest of the session.
   [WS_METHODS.mcpServersReconnect]: AuthOrchestrationOperateScope,
   [WS_METHODS.mcpServersSetEnabled]: AuthOrchestrationOperateScope,
+  // A side question spends a model call on this environment's provider account.
+  [WS_METHODS.sideQuestionsAsk]: AuthOrchestrationOperateScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 
