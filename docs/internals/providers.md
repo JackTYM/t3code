@@ -144,6 +144,17 @@ start no Codex turn settle on a provider turn without a native ref, which native
 not count. Claude's SDK mode emits no goal events; its adapter reads goal state from the
 synthetic command output and Stop hook feedback in the transcript.
 
+Reply editing rewrites the provider's own history, because handoff summaries truncate text and
+cannot make an agent believe it said something. For Claude that history is the session
+transcript, and a live SDK process keeps the conversation in memory and appends its own copy, so
+the [service](../../apps/server/src/orchestration-v2/ReplyEditService.ts) releases the session
+before the [adapter](../../apps/server/src/orchestration-v2/Adapters/ClaudeTranscriptEdit.ts)
+changes the file. Only the text of one text block may change: thinking blocks are signed, and
+tool ids, uuids and the `parentUuid` chain tie lines together. The one-time backup lives in the T3
+state dir, never in the provider's config dir. Versions ride on the assistant turn item payload
+rather than a new table, since a fork-local migration id would mask a future upstream one (see
+[divergent migration ids](./legacy-orchestration-migration.md#divergent-migration-ids)).
+
 Capabilities must describe what the provider can actually do. Antigravity can capture workspace
 checkpoints but cannot roll back its conversation. The [checkpoint boundary](./overview.md#turn-completion-and-checkpoints)
 therefore rejects revert before touching files. Native permission and question option IDs must

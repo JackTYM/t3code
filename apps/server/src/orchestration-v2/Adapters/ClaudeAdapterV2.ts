@@ -1,5 +1,6 @@
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { claudeTaskOutputRoot, tailClaudeTaskOutput } from "./ClaudeTaskOutputTail.ts";
+import { editClaudeTranscriptAssistantText } from "./ClaudeTranscriptEdit.ts";
 import { toMcpServerStatus } from "./claudeMcpServers.ts";
 import {
   dynamicToolTitle,
@@ -3594,11 +3595,33 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
       Effect.provideService(Path.Path, path),
     );
 
+  // The CLI resolves a relative CLAUDE_CONFIG_DIR against each session's own cwd, so only an
+  // absolute one names a single history location for the whole instance.
+  const configuredClaudeConfigDir = adapterOptions.environment.CLAUDE_CONFIG_DIR?.trim();
+  const claudeConfigDir =
+    configuredClaudeConfigDir === undefined || configuredClaudeConfigDir.length === 0
+      ? path.join(yield* HostProcess.HomeDirectory, ".claude")
+      : path.isAbsolute(configuredClaudeConfigDir)
+        ? configuredClaudeConfigDir
+        : undefined;
+
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CLAUDE_PROVIDER,
     getCapabilities: () => Effect.succeed(ClaudeProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
+    editAssistantText: (input) =>
+      claudeConfigDir === undefined
+        ? Effect.fail(
+            new ProviderAdapter.ProviderAdapterEditAssistantTextError({
+              driver: CLAUDE_PROVIDER,
+              reason: "not-in-history",
+            }),
+          )
+        : editClaudeTranscriptAssistantText({ ...input, configDir: claudeConfigDir }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          ),
     openSession: Effect.fn("ClaudeAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
         const sessionScope = yield* Effect.scope;

@@ -52,6 +52,15 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("requires operate access to rewrite or switch an agent's reply", () => {
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.editAssistantMessage)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+    expect(
+      requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.selectAssistantMessageVersion),
+    ).toBe(AuthOrchestrationOperateScope);
+  });
+
   it("authorizes background policy reporting and observation deliberately", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.serverReportClientActivity)).toBe(
       AuthOrchestrationReadScope,

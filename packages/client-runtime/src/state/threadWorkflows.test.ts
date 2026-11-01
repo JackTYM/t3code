@@ -5,6 +5,7 @@ import {
   canDetachThreadProviderSession,
   canForkProjectedAssistantItem,
   deriveThreadQueueWorkflowState,
+  resolveAssistantReplyEditing,
   resolveLatestMergeBackRun,
   threadSupportsProviderHandoff,
 } from "./threadWorkflows.ts";
@@ -421,4 +422,61 @@ describe("thread workflows", () => {
       expect(resolveLatestMergeBackRun(projection)).toBeNull();
     },
   );
+});
+
+describe("assistant reply editing", () => {
+  const reply = {
+    type: "assistant_message",
+    status: "completed",
+    streaming: false,
+    runId: "run",
+    text: "green",
+  } as never;
+
+  it("offers editing only when the provider says it can and the agent is idle", () => {
+    const resolve = (providerSupportsReplyEditing: boolean | undefined, threadBusy: boolean) =>
+      resolveAssistantReplyEditing({ item: reply, providerSupportsReplyEditing, threadBusy })
+        .canEdit;
+    expect(resolve(true, false)).toBe(true);
+    expect(resolve(true, true)).toBe(false);
+    expect(resolve(false, false)).toBe(false);
+    // An older server never reports the flag, so the action stays hidden instead of failing.
+    expect(resolve(undefined, false)).toBe(false);
+  });
+
+  it("never offers a reply that is still streaming or not an assistant reply", () => {
+    for (const item of [
+      { ...(reply as object), streaming: true },
+      { ...(reply as object), status: "interrupted" },
+      { ...(reply as object), type: "user_message" },
+    ]) {
+      expect(
+        resolveAssistantReplyEditing({
+          item: item as never,
+          providerSupportsReplyEditing: true,
+          threadBusy: false,
+        }).canEdit,
+      ).toBe(false);
+    }
+  });
+
+  it("reports the selected version of an edited reply", () => {
+    expect(
+      resolveAssistantReplyEditing({
+        item: {
+          ...(reply as object),
+          edits: { selected: 2, versions: ["blue", "green", "red"] },
+        } as never,
+        providerSupportsReplyEditing: undefined,
+        threadBusy: true,
+      }).versions,
+    ).toEqual({ selected: 2, count: 3 });
+    expect(
+      resolveAssistantReplyEditing({
+        item: reply,
+        providerSupportsReplyEditing: true,
+        threadBusy: false,
+      }).versions,
+    ).toBeNull();
+  });
 });

@@ -186,6 +186,11 @@ import {
   timelineContentOverflowsViewport,
 } from "./timelineScrollAnchoring";
 import { MessageCopyButton } from "./MessageCopyButton";
+import {
+  AssistantReplyEditControls,
+  AssistantReplyEditor,
+  type AssistantReplyEditingControls,
+} from "./AssistantReplyEditing";
 import { promptLinkFor } from "../promptLinks/copyPromptLink";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { WorkspaceEntryIcon, WorkspaceEntryTooltip } from "./WorkspaceEntryIcon";
@@ -350,6 +355,7 @@ interface TimelineRowSharedState {
   onWorktreeSetupWorkLocally: (() => void) | null;
   onOpenWorktreeSetupTerminal: ((terminalId: string) => void) | null;
   workGroupViewState: WorkGroupViewState;
+  replyEditing: AssistantReplyEditingControls | null;
 }
 
 interface TimelineRowActivityState {
@@ -464,6 +470,7 @@ interface MessagesTimelineProps {
     readonly scopeId: string;
   }) => void;
   supportsConversationRollback: boolean;
+  replyEditing?: AssistantReplyEditingControls | null;
   onRevertToTurnCount: (targetTurnCount: number, messageId: MessageId) => void;
   onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   onSendAppMessage?: (text: string) => Promise<void>;
@@ -560,6 +567,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   onForkFromRun,
   onRollbackCheckpoint,
   supportsConversationRollback,
+  replyEditing = null,
   onRevertToTurnCount,
   onUseArtifactTemplate = NOOP_USE_ARTIFACT_TEMPLATE,
   onSendAppMessage,
@@ -1321,6 +1329,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       onWorktreeSetupWorkLocally: onWorktreeSetupWorkLocally ?? null,
       onOpenWorktreeSetupTerminal: onOpenWorktreeSetupTerminal ?? null,
       workGroupViewState,
+      replyEditing,
     }),
     [
       readyCitationRequest,
@@ -1360,6 +1369,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       onWorktreeSetupWorkLocally,
       onOpenWorktreeSetupTerminal,
       workGroupViewState,
+      replyEditing,
     ],
   );
   const compactionAwaitingRow =
@@ -2764,34 +2774,59 @@ function AttemptFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "at
 
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
+  const [editingReply, setEditingReply] = useState(false);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const projectedItem = row.projectedItem;
+  const replyEditControls =
+    projectedItem !== undefined && !editingReply ? (
+      <AssistantReplyEditControls
+        item={projectedItem.item}
+        controls={
+          ctx.replyEditing?.threadId === projectedItem.sourceThreadId ? ctx.replyEditing : null
+        }
+        threadBusy={activity.isWorking || activity.awaitingUser || activity.isRevertingCheckpoint}
+        onStartEditing={() => setEditingReply(true)}
+      />
+    ) : null;
+  const edited =
+    projectedItem?.item.type === "assistant_message" && projectedItem.item.edits !== undefined;
 
   return (
     <>
       <div className="relative min-w-0 px-1 py-0.5">
         <MessageAuthorHeading>T3 Code</MessageAuthorHeading>
-        <div data-thread-find-text="true">
-          <AssistantCitationSource
+        {editingReply && ctx.replyEditing !== null ? (
+          <AssistantReplyEditor
             messageId={row.message.id}
-            {...(ctx.threadRef ? { threadRef: ctx.threadRef } : {})}
-            itemKey={row.id}
-            request={ctx.citationRequest}
-            listRef={ctx.listRef}
-          >
-            <ChatMarkdown
-              text={messageText}
-              cwd={ctx.markdownCwd}
-              threadRef={ctx.threadRef ?? undefined}
-              isStreaming={Boolean(row.message.streaming)}
-              lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}
-              skills={ctx.skills}
-              headingLevelOffset={MESSAGE_HEADING_LEVEL}
-              onUseArtifactTemplate={ctx.onUseArtifactTemplate}
-              onRunShellCommand={ctx.onRunShellCommand}
-              onImageExpand={ctx.onImageExpand}
-            />
-          </AssistantCitationSource>
-        </div>
+            initialText={row.message.text}
+            controls={ctx.replyEditing}
+            onClose={() => setEditingReply(false)}
+          />
+        ) : (
+          <div data-thread-find-text="true">
+            <AssistantCitationSource
+              messageId={row.message.id}
+              {...(ctx.threadRef ? { threadRef: ctx.threadRef } : {})}
+              itemKey={row.id}
+              request={ctx.citationRequest}
+              listRef={ctx.listRef}
+            >
+              <ChatMarkdown
+                text={messageText}
+                cwd={ctx.markdownCwd}
+                threadRef={ctx.threadRef ?? undefined}
+                isStreaming={Boolean(row.message.streaming)}
+                lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}
+                skills={ctx.skills}
+                headingLevelOffset={MESSAGE_HEADING_LEVEL}
+                onUseArtifactTemplate={ctx.onUseArtifactTemplate}
+                onRunShellCommand={ctx.onRunShellCommand}
+                onImageExpand={ctx.onImageExpand}
+              />
+            </AssistantCitationSource>
+          </div>
+        )}
         <AssistantChangedFilesSection
           turnSummary={row.assistantTurnDiffSummary}
           routeThreadKey={ctx.routeThreadKey}
@@ -2805,7 +2840,22 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             message={row.message}
             showCopyButton={row.showAssistantCopyButton}
             copyStreaming={row.assistantCopyStreaming}
+            replyEditControls={replyEditControls}
+            alwaysVisible={edited}
           />
+        ) : replyEditControls !== null ? (
+          // Replies inside a turn have no meta row of their own, but are part of what the agent
+          // said too, so they get the same controls.
+          <div
+            className={cn(
+              "mt-1 flex items-center transition-opacity duration-200",
+              edited
+                ? "opacity-100"
+                : "opacity-0 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover/assistant:opacity-100",
+            )}
+          >
+            {replyEditControls}
+          </div>
         ) : null}
       </div>
     </>
@@ -2884,6 +2934,7 @@ function AssistantMessageMeta({
   showCopyButton,
   copyStreaming,
   alwaysVisible = false,
+  replyEditControls = null,
 }: {
   className?: string;
   projectedItem?: Extract<TimelineRow, { kind: "message" }>["projectedItem"];
@@ -2891,6 +2942,7 @@ function AssistantMessageMeta({
   showCopyButton: boolean;
   copyStreaming: boolean;
   alwaysVisible?: boolean;
+  replyEditControls?: ReactNode;
 }) {
   const ctx = use(TimelineRowCtx);
 
@@ -2917,6 +2969,7 @@ function AssistantMessageMeta({
       {projectedItem?.item.type === "assistant_message" ? (
         <AssistantForkButton projectedItem={projectedItem} />
       ) : null}
+      {replyEditControls}
       {!message.streaming && (
         <Tooltip>
           <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>

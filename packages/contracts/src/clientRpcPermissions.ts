@@ -46,6 +46,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.scheduledTasksRunNow]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksRotateWebhookToken]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
+  // Rewrites what the agent believes it said, so it is operating the agent, not reading it.
+  [ORCHESTRATION_V2_WS_METHODS.editAssistantMessage]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.selectAssistantMessageVersion]: AuthOrchestrationOperateScope,
   // Repairing a server changes which tools the agent can reach for the rest of the session.
   [WS_METHODS.mcpServersReconnect]: AuthOrchestrationOperateScope,
   [WS_METHODS.mcpServersSetEnabled]: AuthOrchestrationOperateScope,

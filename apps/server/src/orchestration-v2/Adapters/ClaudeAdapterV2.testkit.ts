@@ -1045,6 +1045,7 @@ function layerClaudeProviderAdapterRegistryReplay(
   options: {
     readonly replayGate?: ProviderReplayGate;
     readonly queryRunner?: ClaudeQueryRunner;
+    readonly environment?: ReadonlyArray<{ readonly name: string; readonly value: string }>;
   } = {},
 ) {
   const layerServerConfig = Layer.effect(
@@ -1060,7 +1061,13 @@ function layerClaudeProviderAdapterRegistryReplay(
           configMap: {
             [ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID]: {
               driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-              environment: [{ name: "CLAUDE_CODE_TMPDIR", value: tmpRoot, sensitive: false }],
+              environment: [
+                { name: "CLAUDE_CODE_TMPDIR", value: tmpRoot, sensitive: false },
+                ...(options.environment ?? []).map((variable) => ({
+                  ...variable,
+                  sensitive: false,
+                })),
+              ],
             },
           },
         }),
@@ -2890,6 +2897,17 @@ export const ClaudeOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarnes
   makeProviderAdapterRegistryLayer: (transcript, options) =>
     layerClaudeProviderAdapterRegistryReplay(transcript, options),
 };
+
+/** Lets a test point the adapter at its own Claude config dir, such as a temp transcript tree. */
+export function makeClaudeReplayHarnessWithEnvironment(
+  environment: ReadonlyArray<{ readonly name: string; readonly value: string }>,
+): typeof ClaudeOrchestratorReplayHarness {
+  return {
+    ...ClaudeOrchestratorReplayHarness,
+    makeProviderAdapterRegistryLayer: (transcript, options) =>
+      layerClaudeProviderAdapterRegistryReplay(transcript, { ...options, environment }),
+  };
+}
 
 export function makeClaudeRestartReplayHarness(transcript: ClaudeAgentSdkReplayTranscript) {
   const queryRunner = makeReplayQueryRunner(transcript);

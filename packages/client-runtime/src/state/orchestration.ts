@@ -95,6 +95,14 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:stop-workflow",
       tag: ORCHESTRATION_V2_WS_METHODS.stopWorkflow,
     }),
+    editAssistantMessage: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:orchestration:edit-assistant-message",
+      tag: ORCHESTRATION_V2_WS_METHODS.editAssistantMessage,
+    }),
+    selectAssistantMessageVersion: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:orchestration:select-assistant-message-version",
+      tag: ORCHESTRATION_V2_WS_METHODS.selectAssistantMessageVersion,
+    }),
     turnItem: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:turn-item",
       tag: ORCHESTRATION_V2_WS_METHODS.getTurnItem,

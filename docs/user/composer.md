@@ -156,6 +156,23 @@ This removes the selected message and later conversation from the active thread
 and provider history. It does not undo external actions or separate provider
 memory. The action is available only when the provider supports rewind.
 
+## Edit an agent's reply
+
+Choose the pencil beneath a Claude reply to rewrite it. Claude then treats your
+text as what it said, so later turns build on the corrected reply. On web and
+desktop any reply can be edited; on mobile, use the reply's actions next to
+**Copy**. An edited reply shows **Edited** with arrows to switch between
+versions. Version 1 is always Claude's original, and switching changes what
+Claude remembers too.
+
+Editing is only available on idle Claude threads, so wait for the turn, queued
+messages, and any questions to finish first. Claude's next turn re-reads the
+whole conversation, which costs one prompt-cache miss. Editing changes only the
+conversation: it does not undo commands, file changes, or anything else Claude
+already did. Some replies cannot be edited, such as replies Claude has since
+compacted into a summary, replies from an earlier session of the thread, and
+replies from subagents. Claude Cloud and other providers do not offer this.
+
 ## Prompt stash
 
 On web and desktop, press `Cmd+S` on macOS or `Ctrl+S` on Windows and Linux to save

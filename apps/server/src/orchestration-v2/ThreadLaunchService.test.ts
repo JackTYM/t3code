@@ -201,7 +201,7 @@ function makeHarness(options: HarnessOptions = {}) {
     ProviderRegistryMock.layer(options.providers),
     options.managedFolders ??
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
-        namedProjectsRoot: "/projects",
+        namedProjectsRoot: Effect.succeed("/projects"),
         folderForThread: () => Effect.succeed(Option.none()),
       }),
   );
@@ -1078,7 +1078,7 @@ it.effect("runs a Scratch thread launched at the root in its own folder", () =>
     const claimed: Array<{ readonly threadId: ThreadId; readonly text: string }> = [];
     const harness = makeHarness({
       managedFolders: Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
-        namedProjectsRoot: "/projects",
+        namedProjectsRoot: Effect.succeed("/projects"),
         folderForThread: (input) =>
           Effect.sync(() => {
             if (input.projectId !== projectId) return Option.none();

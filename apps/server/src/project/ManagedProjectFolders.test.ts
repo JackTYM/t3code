@@ -92,6 +92,7 @@ const withScratch = <A, E>(
     E,
     | ManagedProjectFolders.ManagedProjectFolders
     | ProjectService.ProjectService
+    | ServerSettings.ServerSettingsService
     | NodeServices.NodeServices
     | Scope.Scope
   >,
@@ -348,6 +349,27 @@ const TEST_IDENTITY = {
 const gitOutput = (cwd: string, args: ReadonlyArray<string>) =>
   git(cwd, args).pipe(Effect.map((result) => result.stdout.trim()));
 
+it.effect("puts new projects in the configured folder and ignores one that is not absolute", () =>
+  withScratch(({ baseDir }) =>
+    Effect.gen(function* () {
+      const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const path = yield* Path.Path;
+      const fallback = path.resolve(baseDir, "projects");
+      const custom = path.join(baseDir, "elsewhere");
+
+      yield* settings.updateSettings({ newProjectsDirectory: custom });
+      assert.equal(yield* folders.namedProjectsRoot, custom);
+
+      yield* settings.updateSettings({ newProjectsDirectory: "relative/projects" });
+      assert.equal(yield* folders.namedProjectsRoot, fallback);
+
+      yield* settings.updateSettings({ newProjectsDirectory: "" });
+      assert.equal(yield* folders.namedProjectsRoot, fallback);
+    }),
+  ),
+);
+
 it.effect("starts a named project as a committed repository, and suffixes a taken name", () =>
   withScratch(({ baseDir }) =>
     withGitEnv(
@@ -358,7 +380,7 @@ it.effect("starts a named project as a committed repository, and suffixes a take
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const root = path.resolve(baseDir, "projects");
-        assert.equal(folders.namedProjectsRoot, root);
+        assert.equal(yield* folders.namedProjectsRoot, root);
 
         const first = yield* folders.createNamedProject({ name: "Pinball Stats" });
         const second = yield* folders.createNamedProject({ name: "pinball stats" });
@@ -453,7 +475,7 @@ it.effect("keeps a folder that another project owns when the create conflicts", 
         const projects = yield* ProjectService.ProjectService;
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const taken = path.join(folders.namedProjectsRoot, "taken");
+        const taken = path.join(yield* folders.namedProjectsRoot, "taken");
         yield* projects.create({
           commandId: CommandId.make("command:owner"),
           projectId: ProjectId.make("project:owner"),
