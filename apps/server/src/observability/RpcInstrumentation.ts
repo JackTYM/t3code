@@ -164,6 +164,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.mcpServersList]: "provider",
   [WS_METHODS.mcpServersReconnect]: "provider",
   [WS_METHODS.mcpServersSetEnabled]: "provider",
+  [WS_METHODS.sideQuestionsAsk]: "provider",
   [WS_METHODS.subscribeVcsStatus]: "vcs",
   [WS_METHODS.subscribeWorktreeSetup]: "vcs",
   [WS_METHODS.worktreeSetupCancel]: "vcs",

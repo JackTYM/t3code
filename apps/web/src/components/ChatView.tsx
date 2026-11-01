@@ -37,8 +37,10 @@ import {
   hasProviderUsageLimits,
   isUsageLimitsCommand,
 } from "@t3tools/shared/usageLimits";
+import { parseSideQuestionCommand } from "@t3tools/client-runtime/state/side-questions";
 import { feedbackBannerItem } from "./chat/ComposerFeedback";
 import { usageLimitsBannerItem } from "./chat/ComposerUsageLimits";
+import { useSideQuestion } from "./chat/useSideQuestion";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import * as Schema from "effect/Schema";
 import {
@@ -4138,6 +4140,19 @@ export default function ChatView(props: ChatViewProps) {
       })
     : null;
   const gitStatusCwd = activeThread?.worktreePath ?? gitCwd;
+  // A side question needs a live session to ask, which a draft never has.
+  const sideQuestionsOffered =
+    routeKind === "server" &&
+    canOperateThread &&
+    activeProviderStatus?.driver === "claudeAgent" &&
+    serverConfig?.environment.capabilities.sideQuestions === true;
+  const { banner: sideQuestionBanner, ask: askSideQuestion } = useSideQuestion({
+    environmentId,
+    threadId,
+    threadKey: routeThreadKey,
+    threadRef: routeThreadRef,
+    cwd: gitCwd ?? undefined,
+  });
   const gitStatusQuery = useEnvironmentQuery(
     gitStatusCwd === null
       ? null
@@ -7506,12 +7521,14 @@ export default function ChatView(props: ChatViewProps) {
       backgroundWorkBannerItem,
     ].filter((item) => item !== null);
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
+    const sideQuestionItems = sideQuestionBanner === null ? [] : [sideQuestionBanner];
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...feedbackBannerItems,
         ...limitRecoveryItems,
         ...usageLimitsItems,
+        ...sideQuestionItems,
         ...projectCloneItems,
         ...systemComposerBannerItems,
         ...backgroundWorkItems,
@@ -7521,6 +7538,7 @@ export default function ChatView(props: ChatViewProps) {
       ...feedbackBannerItems,
       ...limitRecoveryItems,
       ...usageLimitsItems,
+      ...sideQuestionItems,
       ...projectCloneItems,
       ...systemComposerBannerItems,
       ...backgroundWorkItems,
@@ -7579,6 +7597,7 @@ export default function ChatView(props: ChatViewProps) {
     localCheckoutBranchMismatch,
     projectCloneBannerItem,
     showBranchMismatchBanner,
+    sideQuestionBanner,
     systemComposerBannerItems,
     usageLimitsBanner,
   ]);
@@ -8438,6 +8457,26 @@ export default function ChatView(props: ChatViewProps) {
         setComposerDraftPrompt(composerDraftTarget, "");
         composerRef.current?.resetCursorState();
       }
+      return;
+    }
+    // Answered from the live session without becoming a message, so it has to be
+    // read before any of the checks that hold a send back while the thread is busy.
+    const sideQuestion =
+      sideQuestionsOffered &&
+      !directAnnotation &&
+      editingQueuedRun === null &&
+      !composerHasNonPromptContent
+        ? parseSideQuestionCommand(promptRef.current)
+        : null;
+    if (sideQuestion !== null) {
+      if (sideQuestion.length === 0) {
+        toastManager.add(stackedThreadToast({ type: "info", title: "Ask something after /btw" }));
+        return;
+      }
+      askSideQuestion(sideQuestion);
+      promptRef.current = "";
+      setComposerDraftPrompt(composerDraftTarget, "");
+      composerRef.current?.resetCursorState();
       return;
     }
 
@@ -11324,6 +11363,7 @@ export default function ChatView(props: ChatViewProps) {
                               resumeCompactionTokens={resumeCompactionTokens}
                               keepFullHistory={keepFullHistory}
                               onToggleKeepFullHistory={toggleKeepFullHistoryStable}
+                              sideQuestionsOffered={sideQuestionsOffered}
                               onUsageLimitsCommand={
                                 usageLimitsOffered &&
                                 usageLimitsKey !== null &&

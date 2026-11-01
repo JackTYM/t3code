@@ -88,6 +88,8 @@ import {
   type ProviderUserInputAnswers,
   type ProviderThreadId,
   type RunId,
+  type SideQuestionAnswer,
+  type SideQuestionExchange,
   type ThreadId,
 } from "@t3tools/contracts";
 
@@ -238,6 +240,8 @@ const CLAUDE_SCRIPT_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx"];
 const CLAUDE_MCP_REGISTRATION_TIMEOUT = "90 seconds";
 // Reading statuses needs no connection work, so it should answer promptly.
 const CLAUDE_MCP_STATUS_TIMEOUT = "10 seconds";
+// A side question is a model call, so it needs more room than a status read.
+const CLAUDE_SIDE_QUESTION_TIMEOUT = "120 seconds";
 
 /**
  * When the CLI exits it stops the MCP servers it started, but not their children: a plugin's
@@ -439,6 +443,19 @@ export interface ClaudeAgentSdkQuerySession {
     serverName: string,
     enabled: boolean,
   ) => Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
+  /** Resolves null when the CLI produced no answer. Absent on an SDK that predates the control. */
+  readonly askSideQuestion?: (
+    question: string,
+    history: ReadonlyArray<SideQuestionExchange>,
+  ) => Effect.Effect<SideQuestionAnswer | null, ClaudeAgentSdkQueryRunnerError>;
+}
+
+// The SDK implements the control but leaves it out of its typings (0.3.276).
+interface ClaudeQueryWithSideQuestion {
+  readonly askSideQuestion?: (
+    question: string,
+    options?: { readonly history?: ReadonlyArray<SideQuestionExchange> },
+  ) => Promise<SideQuestionAnswer | null>;
 }
 
 type ClaudeQueryStreamExit = Exit.Exit<void, ClaudeAgentSdkQueryRunnerError>;
@@ -638,6 +655,14 @@ export type ClaudeAgentSdkProtocolLogEvent =
         readonly type: "query.toggle_mcp_server";
         readonly serverName: string;
         readonly enabled: boolean;
+      };
+    }
+  | {
+      readonly direction: "outgoing";
+      readonly stage: "decoded";
+      readonly payload: {
+        readonly type: "query.side_question";
+        readonly historyLength: number;
       };
     }
   | {
@@ -881,6 +906,10 @@ export const layerQueryRunner: Layer.Layer<
           ),
         );
 
+        const askSideQuestion = (
+          queryRuntime as ClaudeQuery & ClaudeQueryWithSideQuestion
+        ).askSideQuestion?.bind(queryRuntime);
+
         return {
           messages: Stream.fromAsyncIterable(claudeQueryMessages(queryRuntime), (cause) =>
             queryRunnerError(cause, "fromAsyncIterable"),
@@ -1012,6 +1041,24 @@ export const layerQueryRunner: Layer.Layer<
                 ),
               ),
             ),
+          // Neither the question nor the answer is logged: they are conversation content
+          // that never enters a thread, so there is no transcript to match them against.
+          ...(askSideQuestion === undefined
+            ? {}
+            : {
+                askSideQuestion: (question: string, history: ReadonlyArray<SideQuestionExchange>) =>
+                  logProtocolEvent({
+                    direction: "outgoing",
+                    stage: "decoded",
+                    payload: { type: "query.side_question", historyLength: history.length },
+                  }).pipe(
+                    Effect.andThen(
+                      claudeMcpControlRequest("askSideQuestion", CLAUDE_SIDE_QUESTION_TIMEOUT, () =>
+                        askSideQuestion(question, { history }),
+                      ),
+                    ),
+                  ),
+              }),
           interrupt: Effect.tryPromise({
             try: () => queryRuntime.interrupt(),
             catch: (cause) => queryRunnerError(cause, "interrupt"),
@@ -8844,9 +8891,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         });
         yield* Effect.addFinalizer(() => closeSession());
 
-        // MCP connections belong to the CLI process, so only the query currently
-        // running this provider thread can describe or repair them.
-        const liveMcpQuery = (providerThread: OrchestrationV2ProviderThread) =>
+        // MCP connections and side questions both belong to the CLI process, so only
+        // the query currently running this provider thread can serve them.
+        const liveProviderQuery = (providerThread: OrchestrationV2ProviderThread) =>
           Ref.get(queryContext).pipe(
             Effect.map((live) =>
               live === null ||
@@ -8865,7 +8912,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const mcpServers: ProviderAdapter.ProviderAdapterV2McpServers = {
           list: ({ providerThread }) =>
             Effect.gen(function* () {
-              const query = yield* liveMcpQuery(providerThread);
+              const query = yield* liveProviderQuery(providerThread);
               if (query === null) {
                 return { status: "unavailable", reason: "session-stopped" } as const;
               }
@@ -8879,7 +8926,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }),
           reconnect: ({ providerThread, server }) =>
             Effect.gen(function* () {
-              const reconnect = (yield* liveMcpQuery(providerThread))?.reconnectMcpServer;
+              const reconnect = (yield* liveProviderQuery(providerThread))?.reconnectMcpServer;
               if (reconnect === undefined) {
                 return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                   driver: CLAUDE_PROVIDER,
@@ -8892,7 +8939,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }),
           setEnabled: ({ providerThread, server, enabled }) =>
             Effect.gen(function* () {
-              const toggle = (yield* liveMcpQuery(providerThread))?.toggleMcpServer;
+              const toggle = (yield* liveProviderQuery(providerThread))?.toggleMcpServer;
               if (toggle === undefined) {
                 return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                   driver: CLAUDE_PROVIDER,
@@ -8905,9 +8952,36 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }),
         };
 
+        const sideQuestions: ProviderAdapter.ProviderAdapterV2SideQuestions = {
+          ask: ({ providerThread, question, history }) =>
+            Effect.gen(function* () {
+              const query = yield* liveProviderQuery(providerThread);
+              if (query === null) {
+                return { status: "unavailable", reason: "session-stopped" } as const;
+              }
+              if (query.askSideQuestion === undefined) {
+                return { status: "unavailable", reason: "session-unsupported" } as const;
+              }
+              const answer = yield* query.askSideQuestion(question, history).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CLAUDE_PROVIDER,
+                      detail: "Claude side question request failed",
+                      cause,
+                    }),
+                ),
+              );
+              return answer === null
+                ? ({ status: "no-answer" } as const)
+                : ({ status: "answered", ...answer } as const);
+            }),
+        };
+
         const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
           instanceId: adapterOptions.instanceId,
           mcpServers,
+          sideQuestions,
           driver: CLAUDE_PROVIDER,
           providerSessionId: input.providerSessionId,
           providerSession: session,
