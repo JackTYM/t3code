@@ -1,10 +1,10 @@
 import { Spinner } from "~/components/ui/spinner";
 import { AuthFilesystemReadScope, type ProjectContentMatch } from "@t3tools/contracts";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { useActiveProjectTarget, type ActiveProjectTarget } from "~/hooks/useActiveProjectTarget";
-import { useTheme } from "~/hooks/useTheme";
+import { useRenderedAppearance, useTheme } from "~/hooks/useTheme";
 import { cn } from "~/lib/utils";
 import { useOpenFile } from "~/useOpenFile";
 import { useProjectContentSearch } from "~/state/queries";
@@ -21,10 +21,7 @@ interface ProjectContentSearchDialogProps {
   readonly onOpenChange: (open: boolean) => void;
 }
 
-/**
- * Result rows are syntax highlighted, so mounting all 500 possible rows at once
- * stalls the UI.
- */
+/** Syntax-highlighting all 500 result rows at once stalls the UI. */
 const VISIBLE_MATCH_WINDOW = 100;
 
 interface MatchGroup {
@@ -100,6 +97,10 @@ function EmptyContentSearchDialog() {
   );
 }
 
+const scrollSelectedRowIntoView = (row: HTMLElement | null) => {
+  row?.scrollIntoView({ block: "nearest" });
+};
+
 function OpenContentSearchDialog(props: {
   readonly onOpenChange: (open: boolean) => void;
   readonly target: ActiveProjectTarget;
@@ -107,6 +108,7 @@ function OpenContentSearchDialog(props: {
   const { target } = props;
   const { resolvedTheme } = useTheme();
   const openFile = useOpenFile({ threadRef: target.threadRef, cwd: target.cwd });
+  const renderedAppearance = useRenderedAppearance();
   const [query, setQuery] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [wholeWord, setWholeWord] = useState(false);
@@ -125,25 +127,19 @@ function OpenContentSearchDialog(props: {
   });
   const canOpenMatches = search.canReadFiles && !search.isPending && search.error === null;
   const matches = search.matches;
-  const visibleMatches = useMemo(() => matches.slice(0, visibleCount), [matches, visibleCount]);
-  const groups = useMemo(() => groupMatches(visibleMatches), [visibleMatches]);
-
-  useEffect(() => {
+  const [resultsFor, setResultsFor] = useState(matches);
+  if (resultsFor !== matches) {
+    setResultsFor(matches);
     setSelectedIndex(0);
     setVisibleCount(VISIBLE_MATCH_WINDOW);
-  }, [matches]);
+  }
+  if (selectedIndex >= visibleCount) {
+    setVisibleCount(selectedIndex + VISIBLE_MATCH_WINDOW);
+  }
+  const visibleMatches = matches.slice(0, visibleCount);
+  const groups = groupMatches(visibleMatches);
 
-  useEffect(() => {
-    if (selectedIndex >= visibleCount) {
-      setVisibleCount(selectedIndex + VISIBLE_MATCH_WINDOW);
-      return;
-    }
-    document
-      .querySelector<HTMLElement>(`[data-content-search-result="${selectedIndex}"]`)
-      ?.scrollIntoView({ block: "nearest" });
-  }, [selectedIndex, visibleCount]);
-
-  const observeLoadMoreSentinel = useCallback((sentinel: HTMLElement | null) => {
+  const observeLoadMoreSentinel = (sentinel: HTMLElement | null) => {
     if (!sentinel) return;
     const observer = new IntersectionObserver((entries) => {
       if (entries.some((entry) => entry.isIntersecting)) {
@@ -152,7 +148,7 @@ function OpenContentSearchDialog(props: {
     });
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, []);
+  };
 
   const openMatch = (match: ProjectContentMatch) => {
     if (!canOpenMatches || !readEnvironmentScope(target.environmentId, AuthFilesystemReadScope)) {
@@ -161,7 +157,7 @@ function OpenContentSearchDialog(props: {
     props.onOpenChange(false);
     openFile({ workspacePath: match.path, line: match.lineNumber });
   };
-  const fileCount = useMemo(() => new Set(matches.map((match) => match.path)).size, [matches]);
+  const fileCount = new Set(matches.map((match) => match.path)).size;
   const showSearchStatus =
     search.canReadFiles &&
     (search.hasQuery || search.isPending || search.error !== null || search.invalidRegex);
@@ -283,7 +279,9 @@ function OpenContentSearchDialog(props: {
                     <button
                       type="button"
                       key={`${match.path}:${match.lineNumber}:${match.resultIndex}`}
-                      data-content-search-result={match.resultIndex}
+                      ref={
+                        match.resultIndex === selectedIndex ? scrollSelectedRowIntoView : undefined
+                      }
                       className={cn(
                         "flex h-7 w-full min-w-0 items-center gap-3 px-3 text-left font-mono text-xs hover:bg-accent/60 disabled:pointer-events-none",
                         match.resultIndex === selectedIndex && "bg-accent text-accent-foreground",
@@ -299,7 +297,7 @@ function OpenContentSearchDialog(props: {
                         <HighlightedSearchLine
                           match={match}
                           path={group.path}
-                          theme={resolvedTheme}
+                          theme={renderedAppearance}
                         />
                       </span>
                     </button>

@@ -1,8 +1,9 @@
-import type {
-  EnvironmentId,
-  OrchestrationV2ThreadShell,
-  Project,
-  ThreadId,
+import {
+  isListedThreadLineage,
+  type EnvironmentId,
+  type OrchestrationV2ThreadShell,
+  type Project,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -45,14 +46,15 @@ export interface ProjectThreadAwarenessV2Input {
     | "activityRunStatus"
     | "id"
     | "lineage"
+    | "latestRunStopRequested"
     | "modelSelection"
     | "pendingBackgroundTasks"
     | "pendingRuntimeRequest"
+    | "settledOverride"
     | "status"
     | "title"
     | "updatedAt"
     | "archivedAt"
-    | "settledOverride"
     | "snoozedUntil"
   >;
   /** Snooze windows are time-dependent, so the caller supplies the clock. */
@@ -60,17 +62,18 @@ export interface ProjectThreadAwarenessV2Input {
 }
 
 /**
- * The roster is the active inbox, not every thread the environment holds. A
- * parked thread's session went ready long ago, so without this it would render
+ * The roster is the active inbox, not every thread the environment holds. An
+ * archived thread's session went ready long ago, so without this it would render
  * as a permanent Done row. Snooze is reversible and an agent blocked on the
- * user outranks it, matching how the clients treat their inbox.
+ * user outranks it, matching how the clients treat their inbox. Settled threads
+ * are handled separately because live work outranks settling.
  */
 function isThreadParkedForAwareness(
   thread: ProjectThreadAwarenessV2Input["thread"],
   phase: AgentAwarenessPhase,
   now: DateTime.Utc,
 ): boolean {
-  if (thread.archivedAt !== null || thread.settledOverride === "settled") return true;
+  if (thread.archivedAt !== null) return true;
   if (thread.snoozedUntil == null) return false;
   if (DateTime.toEpochMillis(thread.snoozedUntil) <= DateTime.toEpochMillis(now)) return false;
   return phase !== "waiting_for_approval" && phase !== "waiting_for_input";
@@ -80,9 +83,18 @@ export function projectThreadAwarenessV2(
   input: ProjectThreadAwarenessV2Input,
 ): AgentAwarenessState | null {
   const { environmentId, project, thread } = input;
-  if (thread.lineage.relationshipToParent === "subagent") return null;
+  if (!isListedThreadLineage(thread.lineage)) return null;
   const phase = resolveThreadAwarenessPhaseV2(thread);
   if (phase === null || isThreadParkedForAwareness(thread, phase, input.now)) {
+    return null;
+  }
+  if (phase === "completed" && thread.latestRunStopRequested === true) return null;
+  // Resolve the phase first so live or waiting work stays visible after settlement.
+  if (
+    thread.settledOverride === "settled" &&
+    (phase === "completed" || phase === "failed") &&
+    !backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
+  ) {
     return null;
   }
   const detail =
@@ -108,16 +120,22 @@ export function projectThreadAwarenessV2(
 function resolveThreadAwarenessPhaseV2(
   thread: ProjectThreadAwarenessV2Input["thread"],
 ): AgentAwarenessPhase | null {
-  if (thread.pendingRuntimeRequest?.kind === "user_input") {
+  const runStatus = thread.activityRunStatus ?? thread.status;
+  if (
+    thread.pendingRuntimeRequest?.kind === "user_input" &&
+    (thread.pendingRuntimeRequest.blocking !== false ||
+      !(runStatus === "preparing" || runStatus === "starting" || runStatus === "running"))
+  ) {
     return "waiting_for_input";
   }
   if (
     thread.pendingRuntimeRequest !== null &&
+    thread.pendingRuntimeRequest.kind !== "user_input" &&
     thread.pendingRuntimeRequest.kind !== "auth_refresh"
   ) {
     return "waiting_for_approval";
   }
-  switch (thread.activityRunStatus ?? thread.status) {
+  switch (runStatus) {
     case "preparing":
     case "starting":
       return "starting";

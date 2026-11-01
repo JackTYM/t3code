@@ -85,78 +85,83 @@ export const ClaudeCloudDriver: ProviderDriver<ClaudeCloudSettings, ClaudeCloudD
   },
   configSchema: ClaudeCloudSettings,
   defaultConfig: (): ClaudeCloudSettings => decodeSettings({}),
-  create: ({ instanceId, displayName, accentColor, enabled, config }) =>
-    Effect.gen(function* () {
-      const host = yield* ProviderHost.ProviderHost;
-      const httpClient = yield* HttpClient.HttpClient;
-      // Optional so hosts without project services (tests, the CLI) still build
-      // the driver; sessions there just start without a repository.
-      const repositoryIdentity = yield* Effect.serviceOption(RepositoryIdentityResolver);
-      const continuationIdentity = defaultProviderContinuationIdentity({
-        driverKind: DRIVER_KIND,
-        instanceId,
-      });
-      const stampIdentity = withInstanceIdentity({
-        instanceId,
-        driverKind: DRIVER_KIND,
-        displayName,
-        accentColor,
-        continuationGroupKey: continuationIdentity.continuationKey,
-      });
-      const effectiveConfig = { ...config, enabled } satisfies ClaudeCloudSettings;
+  create: Effect.fn("ClaudeCloudDriver.create")(function* ({
+    instanceId,
+    displayName,
+    accentColor,
+    enabled,
+    config,
+  }) {
+    const host = yield* ProviderHost.ProviderHost;
+    const httpClient = yield* HttpClient.HttpClient;
+    // Optional so hosts without project services (tests, the CLI) still build
+    // the driver; sessions there just start without a repository.
+    const repositoryIdentity = yield* Effect.serviceOption(RepositoryIdentityResolver);
+    const continuationIdentity = defaultProviderContinuationIdentity({
+      driverKind: DRIVER_KIND,
+      instanceId,
+    });
+    const stampIdentity = withInstanceIdentity({
+      instanceId,
+      driverKind: DRIVER_KIND,
+      displayName,
+      accentColor,
+      continuationGroupKey: continuationIdentity.continuationKey,
+    });
+    const effectiveConfig = { ...config, enabled } satisfies ClaudeCloudSettings;
 
-      const credentials = yield* makeClaudeCloudCredentialStore();
-      const api = yield* makeClaudeCloudApi({ httpClient, credentials });
-      const orchestrationAdapter = yield* makeClaudeCloudAdapterV2({
-        instanceId,
-        api,
-        defaultCwd: host.paths.cwd,
-        resolveRepoSource: (cwd) =>
-          cwd === null || Option.isNone(repositoryIdentity)
-            ? Effect.succeed(null)
-            : repositoryIdentity.value.resolve(cwd).pipe(Effect.map(githubRepoSourceFromIdentity)),
-      });
+    const credentials = yield* makeClaudeCloudCredentialStore();
+    const api = yield* makeClaudeCloudApi({ httpClient, credentials });
+    const orchestrationAdapter = yield* makeClaudeCloudAdapterV2({
+      instanceId,
+      api,
+      defaultCwd: host.paths.cwd,
+      resolveRepoSource: (cwd) =>
+        cwd === null || Option.isNone(repositoryIdentity)
+          ? Effect.succeed(null)
+          : repositoryIdentity.value.resolve(cwd).pipe(Effect.map(githubRepoSourceFromIdentity)),
+    });
 
-      const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
-      const snapshot = yield* makeManagedServerProvider<
-        ProviderSnapshotSettings<ClaudeCloudSettings>
-      >({
-        resolveMaintenance: () => Effect.succeed(MAINTENANCE_CAPABILITIES),
-        getSettings: snapshotSettings.getSettings,
-        streamSettings: snapshotSettings.streamSettings,
-        haveSettingsChanged: haveProviderSnapshotSettingsChanged,
-        initialSnapshot: (settings) =>
-          buildInitialClaudeCloudProviderSnapshot(settings.provider, MODELS).pipe(
-            Effect.map(stampIdentity),
-          ),
-        checkProvider: checkClaudeCloudProviderStatus({
-          settings: effectiveConfig,
-          models: MODELS,
-          credentials,
-          api,
-        }).pipe(Effect.map(stampIdentity)),
-      }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail: "Failed to build Claude Cloud snapshot.",
-              cause,
-            }),
+    const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
+    const snapshot = yield* makeManagedServerProvider<
+      ProviderSnapshotSettings<ClaudeCloudSettings>
+    >({
+      resolveMaintenance: () => Effect.succeed(MAINTENANCE_CAPABILITIES),
+      getSettings: snapshotSettings.getSettings,
+      streamSettings: snapshotSettings.streamSettings,
+      haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+      initialSnapshot: (settings) =>
+        buildInitialClaudeCloudProviderSnapshot(settings.provider, MODELS).pipe(
+          Effect.map(stampIdentity),
         ),
-      );
+      checkProvider: checkClaudeCloudProviderStatus({
+        settings: effectiveConfig,
+        models: MODELS,
+        credentials,
+        api,
+      }).pipe(Effect.map(stampIdentity)),
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail: "Failed to build Claude Cloud snapshot.",
+            cause,
+          }),
+      ),
+    );
 
-      return {
-        instanceId,
-        driverKind: DRIVER_KIND,
-        continuationIdentity,
-        displayName,
-        accentColor,
-        enabled,
-        snapshot,
-        orchestrationAdapter,
-        textGeneration: UNSUPPORTED_TEXT_GENERATION,
-      } satisfies ProviderInstance;
-    }),
+    return {
+      instanceId,
+      driverKind: DRIVER_KIND,
+      continuationIdentity,
+      displayName,
+      accentColor,
+      enabled,
+      snapshot,
+      orchestrationAdapter,
+      textGeneration: UNSUPPORTED_TEXT_GENERATION,
+    } satisfies ProviderInstance;
+  }),
 };

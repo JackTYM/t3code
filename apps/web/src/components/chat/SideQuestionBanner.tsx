@@ -18,7 +18,6 @@ export function sideQuestionBannerItem(input: {
   return {
     id: input.id,
     variant: outcome.status === "failed" ? "error" : "info",
-    priority: "notice",
     icon: <MessageCircleQuestionMarkIcon />,
     title: input.question,
     description: outcome.status === "failed" ? outcome.message : "Not added to the thread",

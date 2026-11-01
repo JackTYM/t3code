@@ -357,18 +357,25 @@ export const makeClaudeCloudAdapterV2 = Effect.fn("makeClaudeCloudAdapterV2")(fu
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: options.instanceId,
     driver: CLAUDE_CLOUD_PROVIDER,
-    getCapabilities: () => Effect.succeed(ClaudeCloudProviderCapabilitiesV2),
-    planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
+    getCapabilities: Effect.fn("ClaudeCloudAdapterV2.getCapabilities")(function () {
+      return Effect.succeed(ClaudeCloudProviderCapabilitiesV2);
+    }),
+    planSelectionTransition: Effect.fn("ClaudeCloudAdapterV2.planSelectionTransition")(function () {
+      return Effect.succeed(turnScopedSelectionTransition());
+    }),
     // Thread deletion is the only caller: stop and idle keep the cloud session
     // resumable, so archiving there would lose work the user can still continue.
-    releaseNativeThread: ({ nativeThreadId }) =>
-      api.archive(nativeThreadId).pipe(
+    releaseNativeThread: Effect.fn("ClaudeCloudAdapterV2.releaseNativeThread")(function* ({
+      nativeThreadId,
+    }) {
+      return yield* api.archive(nativeThreadId).pipe(
         // Already gone is as good as archived.
         Effect.catchIf(isGone, () => Effect.void),
         Effect.mapError((cause) =>
           protocolError("Could not archive the Claude Cloud session", cause),
         ),
-      ),
+      );
+    }),
     openSession: Effect.fn("ClaudeCloudAdapterV2.openSession")(function* (
       input: ProviderAdapter.ProviderAdapterV2OpenSessionInput,
     ) {
@@ -867,48 +874,47 @@ export const makeClaudeCloudAdapterV2 = Effect.fn("makeClaudeCloudAdapterV2")(fu
       });
 
       /** Streams until the attachment ends, reconnecting with back-off when it drops. */
-      const superviseStream = (current: Attachment) =>
-        Effect.gen(function* () {
-          // Counts drops since the stream last delivered something.
-          let failures = 0;
-          while (current.active) {
-            const exit = yield* Stream.runForEach(
-              api.streamFrames(
-                current.sessionId,
-                current.lastSeq > 0 ? { lastEventId: current.lastSeq } : undefined,
-              ),
-              (frame) =>
-                Effect.suspend(() => {
-                  failures = 0;
-                  return permit.withPermits(1)(handleFrame(current, frame));
-                }),
-            ).pipe(Effect.raceFirst(Deferred.await(current.stopped)), Effect.exit);
-            if (!current.active) return;
-            const error = Exit.isFailure(exit)
-              ? Option.getOrUndefined(Exit.findErrorOption(exit))
-              : undefined;
-            if (error !== undefined && (isSignInError(error) || error.kind === "auth")) {
-              return yield* permit.withPermits(1)(
-                loseAttachment(current, claudeCloudFailure(error), true),
-              );
-            }
-            const delay = reconnectDelays[failures];
-            failures += 1;
-            if (delay === undefined) {
-              return yield* permit.withPermits(1)(
-                loseAttachment(
-                  current,
-                  makeProviderFailure({
-                    class: "transport_error",
-                    message: "Lost connection to Claude Cloud.",
-                  }),
-                  true,
-                ),
-              );
-            }
-            yield* Effect.sleep(delay);
+      const superviseStream = Effect.fnUntraced(function* (current: Attachment) {
+        // Counts drops since the stream last delivered something.
+        let failures = 0;
+        while (current.active) {
+          const exit = yield* Stream.runForEach(
+            api.streamFrames(
+              current.sessionId,
+              current.lastSeq > 0 ? { lastEventId: current.lastSeq } : undefined,
+            ),
+            (frame) =>
+              Effect.suspend(() => {
+                failures = 0;
+                return permit.withPermits(1)(handleFrame(current, frame));
+              }),
+          ).pipe(Effect.raceFirst(Deferred.await(current.stopped)), Effect.exit);
+          if (!current.active) return;
+          const error = Exit.isFailure(exit)
+            ? Option.getOrUndefined(Exit.findErrorOption(exit))
+            : undefined;
+          if (error !== undefined && (isSignInError(error) || error.kind === "auth")) {
+            return yield* permit.withPermits(1)(
+              loseAttachment(current, claudeCloudFailure(error), true),
+            );
           }
-        });
+          const delay = reconnectDelays[failures];
+          failures += 1;
+          if (delay === undefined) {
+            return yield* permit.withPermits(1)(
+              loseAttachment(
+                current,
+                makeProviderFailure({
+                  class: "transport_error",
+                  message: "Lost connection to Claude Cloud.",
+                }),
+                true,
+              ),
+            );
+          }
+          yield* Effect.sleep(delay);
+        }
+      });
 
       const attach = Effect.fnUntraced(function* (
         sessionId: string,

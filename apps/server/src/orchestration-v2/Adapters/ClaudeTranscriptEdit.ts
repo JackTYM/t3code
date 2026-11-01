@@ -215,12 +215,10 @@ export const editClaudeTranscriptAssistantText = Effect.fn(
 
   const before = yield* fileSystem.stat(transcriptPath).pipe(Effect.mapError(ioFailure));
   const originalBytes = yield* fileSystem.readFile(transcriptPath).pipe(Effect.mapError(ioFailure));
-  let original: string;
-  try {
-    original = decoder.decode(originalBytes);
-  } catch (cause) {
-    return yield* fail("out-of-sync", cause);
-  }
+  const original = yield* Effect.try({
+    try: () => decoder.decode(originalBytes),
+    catch: (cause) => fail("out-of-sync", cause),
+  });
   const plan = rewriteClaudeAssistantText(original, input);
   if (plan._tag === "Refused") return yield* fail(plan.reason);
   if (!onlyLineChanged(original, plan.contents, plan.lineIndex)) {

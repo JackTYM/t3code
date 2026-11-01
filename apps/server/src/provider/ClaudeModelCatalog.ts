@@ -67,9 +67,6 @@ function tryResolveClaudeModelCatalog(
   };
 }
 
-const BUNDLED_CLAUDE_PROVIDER_CATALOG =
-  resolveProviderCatalog(BUNDLED_MODEL_MANIFEST, CLAUDE) ?? undefined;
-
 /**
  * Models this app adds on top of the published catalog. They are defined here
  * rather than in `model-manifest.json` because that file is refetched from the
@@ -148,20 +145,21 @@ function withCodeDefinedModels(catalog: ClaudeModelCatalog): ClaudeModelCatalog 
   return missing.length === 0 ? catalog : { models: [...catalog.models, ...missing] };
 }
 
+/** Resolve the fallback on each read so its new-model badges can expire. */
 export function resolveClaudeModelCatalog(
   catalog: ModelCatalog.ProviderCatalog | undefined,
 ): ClaudeModelCatalog {
   return withCodeDefinedModels(
     tryResolveClaudeModelCatalog(catalog) ??
-      tryResolveClaudeModelCatalog(BUNDLED_CLAUDE_PROVIDER_CATALOG) ?? {
+      tryResolveClaudeModelCatalog(
+        resolveProviderCatalog(BUNDLED_MODEL_MANIFEST, CLAUDE) ?? undefined,
+      ) ?? {
         models: [],
       },
   );
 }
 
-export const BUNDLED_CLAUDE_MODEL_CATALOG = resolveClaudeModelCatalog(
-  BUNDLED_CLAUDE_PROVIDER_CATALOG,
-);
+export const BUNDLED_CLAUDE_MODEL_CATALOG = resolveClaudeModelCatalog(undefined);
 
 export function scopeClaudeModelCatalog(
   catalog: ClaudeModelCatalog,
@@ -317,6 +315,13 @@ export function resolveClaudeCatalogEffort(
   model: string | null | undefined,
   raw: string | null | undefined,
 ): string | undefined {
+  if (!resolveClaudeCatalogModel(catalog, model)) {
+    const effort = raw?.trim();
+    return effort && ["low", "medium", "high", "xhigh", "max"].includes(effort)
+      ? effort
+      : undefined;
+  }
+
   const caps = getClaudeCatalogModelCapabilities(catalog, model);
   const descriptors = getProviderOptionDescriptors({
     caps,

@@ -36,6 +36,7 @@ const rpcSession = (client: Partial<WsRpcProtocolClient>): RpcSession => ({
   ready: Effect.void,
   probe: Effect.void,
   closed: Effect.never,
+  inboundFrames: Effect.succeed(0),
 });
 
 const readList = Effect.fn("readList")(function* (client: Partial<WsRpcProtocolClient>) {

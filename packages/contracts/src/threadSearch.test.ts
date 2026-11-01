@@ -7,7 +7,7 @@ import {
 } from "./threadSearch.ts";
 
 it("round-trips activity matches and the opt-in flag", () => {
-  const input = Schema.decodeUnknownSync(OrchestrationSearchThreadsInput)({
+  const input = Schema.decodeSync(OrchestrationSearchThreadsInput)({
     query: "needle",
     includeActivityMatches: true,
   });
@@ -24,6 +24,6 @@ it("round-trips activity matches and the opt-in flag", () => {
       },
     ],
   };
-  const decoded = Schema.decodeUnknownSync(OrchestrationSearchThreadsResult)(result);
+  const decoded = Schema.decodeSync(OrchestrationSearchThreadsResult)(result);
   assert.deepEqual(Schema.encodeSync(OrchestrationSearchThreadsResult)(decoded), result);
 });

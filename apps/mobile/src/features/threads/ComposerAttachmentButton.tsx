@@ -15,6 +15,7 @@ const MEDIA_ONLY_MENU_ACTIONS: MenuAction[] = [CAMERA_ACTION, PHOTOS_ACTION];
 
 export function ComposerAttachmentButton(props: {
   readonly disabled?: boolean;
+  readonly size?: "regular" | "large";
   readonly supportsFiles: boolean;
   readonly onCaptureMedia: () => Promise<void>;
   readonly onPickMedia: () => Promise<void>;
@@ -31,7 +32,7 @@ export function ComposerAttachmentButton(props: {
     >
       <SymbolView
         name="plus"
-        size={Math.round(20 * scale)}
+        size={Math.round((props.size === "large" ? 26 : 20) * scale)}
         weight="regular"
         tintColorClassName="accent-icon"
         type="monochrome"

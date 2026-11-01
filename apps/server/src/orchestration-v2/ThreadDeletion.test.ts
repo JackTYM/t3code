@@ -314,6 +314,7 @@ it.effect("queues provider and resource cleanup and preserves an earlier deletio
           revokeMcpCredential: true,
         },
         { type: "provider-thread.release", providerInstanceId, nativeThreadId: "native-a" },
+        { type: "scheduled-tasks.cleanup" },
         { type: "terminal.cleanup" },
         { type: "preview.cleanup" },
         { type: "attachment.cleanup", attachmentIds: ["shared_file"] },
