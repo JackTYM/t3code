@@ -8,7 +8,12 @@ import type { UiCompat } from "@t3tools/shared/uiCompat";
 const CONTRACT_ROOT = "packages/contracts/src";
 // The Electron preload and its channel names are the desktop bridge the UI calls through; a
 // swapped UI cannot update them, so they count as wire contract.
-const BRIDGE_FILES = ["apps/desktop/src/preload.ts", "apps/desktop/src/ipc/channels.ts"] as const;
+const BRIDGE_FILES = [
+  "apps/desktop/src/preload.ts",
+  "apps/desktop/src/ipc/channels.ts",
+  // The sandboxed preload imports and runs it, so a swapped UI cannot change what it does.
+  "apps/desktop/src/legacyLocalStorageMerge.ts",
+] as const;
 
 function listTs(dir: string): string[] {
   return NodeFS.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {

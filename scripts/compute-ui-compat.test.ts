@@ -2,11 +2,17 @@
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { describe, expect, it } from "vite-plus/test";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { buildUiCompat, computeContractsHash, versionCore } from "./compute-ui-compat.ts";
+
+const fixtureRoots: string[] = [];
+afterAll(() => {
+  for (const root of fixtureRoots) NodeFS.rmSync(root, { recursive: true, force: true });
+});
 
 function fixture(files: Record<string, string>) {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "ui-compat-"));
+  fixtureRoots.push(root);
   for (const [rel, text] of Object.entries(files)) {
     const full = NodePath.join(root, rel);
     NodeFS.mkdirSync(NodePath.join(full, ".."), { recursive: true });
@@ -20,6 +26,7 @@ const inputs = {
   "packages/contracts/src/sub/b.ts": "export const b = 2;\n",
   "apps/desktop/src/preload.ts": "export {};\n",
   "apps/desktop/src/ipc/channels.ts": "export const c = 'x';\n",
+  "apps/desktop/src/legacyLocalStorageMerge.ts": "export const m = 1;\n",
 };
 
 describe("computeContractsHash", () => {
@@ -33,6 +40,14 @@ describe("computeContractsHash", () => {
     expect(
       computeContractsHash(
         fixture({ ...inputs, "apps/desktop/src/preload.ts": "export const x = 1;\n" }),
+      ),
+    ).not.toBe(base);
+    expect(
+      computeContractsHash(
+        fixture({
+          ...inputs,
+          "apps/desktop/src/legacyLocalStorageMerge.ts": "export const m = 2;\n",
+        }),
       ),
     ).not.toBe(base);
   });
@@ -66,6 +81,22 @@ describe("buildUiCompat", () => {
       version: "0.1.6-fork.12",
       repository: "JackTYM/t3code",
     });
+  });
+  const build = (env: Record<string, string | undefined>) =>
+    buildUiCompat(fixture(inputs), { version: "1.0.0", sha: "s", env }).repository;
+  it("prefers the desktop update repository over the GitHub one", () => {
+    expect(
+      build({ T3CODE_DESKTOP_UPDATE_REPOSITORY: "owner/updates", GITHUB_REPOSITORY: "owner/code" }),
+    ).toBe("owner/updates");
+  });
+  it("falls back to the GitHub repository when the update one is blank", () => {
+    expect(build({ T3CODE_DESKTOP_UPDATE_REPOSITORY: "  ", GITHUB_REPOSITORY: "owner/code" })).toBe(
+      "owner/code",
+    );
+  });
+  it("trims the repository and defaults to an empty string", () => {
+    expect(build({ T3CODE_DESKTOP_UPDATE_REPOSITORY: "  owner/updates \n" })).toBe("owner/updates");
+    expect(build({})).toBe("");
   });
   it("versionCore drops prerelease and build", () => {
     expect(versionCore("1.2.3-nightly.20260101.4+abc")).toBe("1.2.3");
