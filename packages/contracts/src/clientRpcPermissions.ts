@@ -80,7 +80,6 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.uiBundlesCheck]: AuthEnvironmentMaintainScope,
   [WS_METHODS.uiBundlesApply]: AuthEnvironmentMaintainScope,
   [WS_METHODS.uiBundlesRevert]: AuthEnvironmentMaintainScope,
-  // A side question spends a model call on this environment's provider account.
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 
