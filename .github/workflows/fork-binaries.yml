@@ -27,6 +27,11 @@ on:
           - macos
           - windows
           - ios
+      publish:
+        description: "Publish a GitHub Release with every installer and the updater manifests. Only applies to targets=all, so a release never lacks a platform."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   # release-desktop.yml's Windows build lists this run's artifacts.
@@ -139,7 +144,7 @@ jobs:
     with:
       version: ${{ needs.bundle.outputs.version }}
       ref: ${{ needs.bundle.outputs.sha }}
-      release_channel: preview
+      release_channel: stable
       relay_client_tracing: false
       clerk_publishable_key: ${{ needs.bundle.outputs.clerk_publishable_key }}
       clerk_jwt_template: ${{ needs.bundle.outputs.clerk_jwt_template }}
@@ -168,7 +173,7 @@ jobs:
     with:
       version: ${{ needs.bundle.outputs.version }}
       ref: ${{ needs.bundle.outputs.sha }}
-      release_channel: preview
+      release_channel: stable
       relay_client_tracing: false
       clerk_publishable_key: ${{ needs.bundle.outputs.clerk_publishable_key }}
       clerk_jwt_template: ${{ needs.bundle.outputs.clerk_jwt_template }}
@@ -195,7 +200,7 @@ jobs:
     with:
       version: ${{ needs.bundle.outputs.version }}
       ref: ${{ needs.bundle.outputs.sha }}
-      release_channel: preview
+      release_channel: stable
       relay_client_tracing: false
       clerk_publishable_key: ${{ needs.bundle.outputs.clerk_publishable_key }}
       clerk_jwt_template: ${{ needs.bundle.outputs.clerk_jwt_template }}
@@ -315,3 +320,59 @@ jobs:
           path: ${{ runner.temp }}/xcodebuild.log
           if-no-files-found: ignore
           retention-days: 7
+
+  # Desktop apps built here read their updates from this repository's latest
+  # release (GITHUB_REPOSITORY is baked into the build), so the release must
+  # carry electron-builder's manifests under the names electron-updater asks
+  # for. Unsigned macOS builds still cannot install an update on their own.
+  release:
+    name: Publish GitHub Release
+    needs: [bundle, desktop_mac_arm64, desktop_linux_x64, desktop_win_x64, ios_unsigned]
+    if: ${{ !cancelled() && inputs.publish && inputs.targets == 'all' && needs.bundle.result == 'success' && needs.desktop_mac_arm64.result == 'success' && needs.desktop_linux_x64.result == 'success' && needs.desktop_win_x64.result == 'success' && needs.ios_unsigned.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Download desktop installers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: assets
+
+      - name: Download iOS IPAs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ios-unsigned
+          path: assets
+
+      # The Windows job suffixes its manifest with the arch because two arch
+      # jobs would otherwise upload the same name. With one arch there is
+      # nothing to merge, so it only needs its channel name back.
+      - name: Name the updater manifests
+        working-directory: assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f builder-debug.yml
+          mv latest-win-x64.yml latest.yml
+          for manifest in latest.yml latest-mac.yml latest-linux.yml; do
+            [[ -f "$manifest" ]] || { echo "Missing updater manifest $manifest" >&2; exit 1; }
+          done
+          ls -la
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.bundle.outputs.version }}
+          SHA: ${{ needs.bundle.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh release create "v${VERSION}" assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SHA" \
+            --title "T3 Code fork ${VERSION}" \
+            --notes "Built from ${SHA}. macOS and Windows installers are unsigned; the IPAs are unsigned too, and the -appgroup one is patched for re-signing." \
+            --latest
