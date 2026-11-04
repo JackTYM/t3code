@@ -42,6 +42,7 @@ describe("UiBundleStore", () => {
           ready: null,
           incompatible: null,
           bootPendingSince: null,
+          rejected: [],
         });
       }).pipe(Effect.provide(baseLayer)),
     );
@@ -76,6 +77,7 @@ describe("UiBundleStore", () => {
           ready: { version: "1.1.0", size: 42 },
           incompatible: null,
           bootPendingSince: 1234,
+          rejected: [],
         });
       }).pipe(Effect.provide(baseLayer)),
     );
@@ -92,6 +94,37 @@ describe("UiBundleStore", () => {
         assert.strictEqual(next.active, "1.0.0");
         assert.strictEqual(next.previous, "0.9.0");
         assert.strictEqual(next.bootPendingSince, 7);
+      }).pipe(Effect.provide(baseLayer)),
+    );
+
+    it.live("reads a state.json written before `rejected` existed", () =>
+      Effect.gen(function* () {
+        const { fs, root, statePath } = yield* withPaths;
+        yield* fs.makeDirectory(root, { recursive: true });
+        yield* fs.writeFileString(
+          statePath,
+          JSON.stringify({
+            active: "1.0.0",
+            previous: null,
+            ready: null,
+            incompatible: null,
+            bootPendingSince: null,
+          }),
+        );
+        const stored = yield* (yield* openStore).read;
+        assert.strictEqual(stored.active, "1.0.0");
+        assert.deepStrictEqual(stored.rejected, []);
+      }).pipe(Effect.provide(baseLayer)),
+    );
+
+    it.live("persists rejected versions without duplicates, keeping the latest 20", () =>
+      Effect.gen(function* () {
+        const first = yield* openStore;
+        const versions = Array.from({ length: 25 }, (_, index) => `1.0.${index}`);
+        yield* first.write({ rejected: [...versions, "1.0.24"] });
+
+        const restarted = yield* openStore;
+        assert.deepStrictEqual((yield* restarted.read).rejected, versions.slice(-20));
       }).pipe(Effect.provide(baseLayer)),
     );
 

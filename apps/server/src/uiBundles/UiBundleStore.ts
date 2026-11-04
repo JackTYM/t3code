@@ -20,8 +20,14 @@ const UiBundleStoreState = Schema.Struct({
   incompatible: UiBundleState.fields.incompatible,
   /** Epoch ms of the apply that is still waiting for the UI to confirm it mounted. */
   bootPendingSince: Schema.NullOr(Schema.Number),
+  /** Versions that failed to boot; `check` does not offer them again. Old files lack this field. */
+  rejected: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 export type UiBundleStoreState = typeof UiBundleStoreState.Type;
+/** An explicit `undefined` means "unchanged". */
+type UiBundleStorePatch = {
+  readonly [K in keyof UiBundleStoreState]?: UiBundleStoreState[K] | undefined;
+};
 
 const DEFAULT_STATE: UiBundleStoreState = {
   active: "builtin",
@@ -29,7 +35,10 @@ const DEFAULT_STATE: UiBundleStoreState = {
   ready: null,
   incompatible: null,
   bootPendingSince: null,
+  rejected: [],
 };
+
+const MAX_REJECTED = 20;
 
 const decodeState = Schema.decodeUnknownEffect(Schema.fromJsonString(UiBundleStoreState));
 const encodeState = Schema.encodeEffect(Schema.fromJsonString(UiBundleStoreState));
@@ -72,7 +81,7 @@ export class UiBundleStore extends Context.Service<
   {
     readonly read: Effect.Effect<UiBundleStoreState>;
     readonly write: (
-      patch: Partial<UiBundleStoreState>,
+      patch: UiBundleStorePatch,
     ) => Effect.Effect<UiBundleStoreState, UiBundleStoreError>;
     /**
      * Directory to serve for `active`, or null (built-in) when it is `builtin` or the bundle
@@ -120,7 +129,7 @@ const make = Effect.gen(function* () {
       ? Effect.succeed(path.join(parent, version))
       : Effect.fail(new UiBundleStoreError({ reason: "invalid-version" }));
 
-  const write = Effect.fn("UiBundleStore.write")(function* (patch: Partial<UiBundleStoreState>) {
+  const write = Effect.fn("UiBundleStore.write")(function* (patch: UiBundleStorePatch) {
     return yield* Effect.gen(function* () {
       const current = yield* Ref.get(state);
       // An explicit `undefined` means "unchanged"; spreading it would fail the encode below.
@@ -131,6 +140,10 @@ const make = Effect.gen(function* () {
         incompatible: patch.incompatible === undefined ? current.incompatible : patch.incompatible,
         bootPendingSince:
           patch.bootPendingSince === undefined ? current.bootPendingSince : patch.bootPendingSince,
+        rejected:
+          patch.rejected === undefined
+            ? current.rejected
+            : [...new Set(patch.rejected)].slice(-MAX_REJECTED),
       };
       const contents = yield* encodeState(next);
       yield* writeFileStringAtomically({ filePath: statePath, contents }).pipe(
