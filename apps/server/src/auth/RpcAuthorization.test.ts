@@ -46,6 +46,19 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("lets readers see UI bundle state and confirm a boot but keeps switching bundles behind maintain scope", () => {
+    for (const method of [WS_METHODS.uiBundlesState, WS_METHODS.uiBundlesConfirmBoot]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+    for (const method of [
+      WS_METHODS.uiBundlesCheck,
+      WS_METHODS.uiBundlesApply,
+      WS_METHODS.uiBundlesRevert,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthEnvironmentMaintainScope);
+    }
+  });
+
   it("requires operate access to stop a workflow", () => {
     expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.stopWorkflow)).toBe(
       AuthOrchestrationOperateScope,

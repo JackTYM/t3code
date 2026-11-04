@@ -13,6 +13,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as Tracer from "effect/Tracer";
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServerResponse } from "effect/http";
 import { ASSET_ROUTE_PREFIX } from "./assets/AssetAccess.ts";
@@ -28,6 +29,7 @@ import {
 import { ORCHESTRATION_PROTOCOL_HEADER } from "@t3tools/contracts";
 
 import * as ServerConfig from "./config.ts";
+import * as UiBundleService from "./uiBundles/UiBundleService.ts";
 
 import { assetResponseHeaders, assetFileResponse, downloadContentDisposition } from "./http.ts";
 import * as ServerHttp from "./http.ts";
@@ -204,7 +206,12 @@ describe("untraced requests", () => {
 
 const layerFileResponse = Layer.mergeAll(NodeHttpPlatform.layer, NodeServices.layer);
 
-const makeStaticRequest = Effect.fn("HttpTest.makeStaticRequest")(function* (staticDir: string) {
+const noActiveUiBundle = Effect.succeed<string | null>(null);
+
+const makeStaticRequest = Effect.fn("HttpTest.makeStaticRequest")(function* (
+  staticDir: string,
+  activeUiRoot: Effect.Effect<string | null> = noActiveUiBundle,
+) {
   const config = yield* ServerConfig.ServerConfig;
   const fileSystem = yield* FileSystem.FileSystem;
   const layerApp = Layer.merge(
@@ -215,6 +222,7 @@ const makeStaticRequest = Effect.fn("HttpTest.makeStaticRequest")(function* (sta
   const services = yield* Layer.build(
     HttpRouter.serve(layerApp, { disableListenLog: true }).pipe(
       Layer.provideMerge(ServerConfig.layer({ ...config, staticDir })),
+      Layer.provideMerge(Layer.mock(UiBundleService.UiBundleService)({ activeRoot: activeUiRoot })),
       Layer.provideMerge(Layer.succeed(FileSystem.FileSystem, fileSystem)),
       Layer.provideMerge(NodeHttpServer.layerTest),
     ),
@@ -270,6 +278,59 @@ it.layer(
       expect(changed.headers["etag"]).not.toBe(etag);
       expect(yield* changed.text).toContain("next build");
     }),
+  );
+
+  it.effect("serves the active UI bundle per request and the built-in client on demand", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const builtinDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-static-builtin-" });
+      const bundleDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-static-bundle-" });
+      yield* fs.writeFileString(`${builtinDir}/index.html`, "<html>builtin</html>");
+      yield* fs.writeFileString(`${bundleDir}/index.html`, "<html>bundle</html>");
+      const activeRoot = yield* Ref.make<string | null>(bundleDir);
+      const request = yield* makeStaticRequest(builtinDir, Ref.get(activeRoot));
+
+      expect(yield* (yield* request("/")).text).toBe("<html>bundle</html>");
+      const bundled = yield* request("/threads/example");
+      expect(yield* bundled.text).toBe("<html>bundle</html>");
+      expect(bundled.headers["cache-control"]).toBe("no-cache");
+      expect(yield* (yield* request("/?ui=builtin")).text).toBe("<html>builtin</html>");
+      // The client resolves a literal `/../` before sending, so keep the dots unnormalized.
+      expect((yield* request("/..%2fetc/passwd")).status).toBe(400);
+
+      yield* Ref.set(activeRoot, null);
+      expect(yield* (yield* request("/")).text).toBe("<html>builtin</html>");
+    }),
+  );
+
+  it.effect(
+    "caches hashed assets as immutable only when the serving root's manifest lists them",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const builtinDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-static-builtin-" });
+        const bundleDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-static-bundle-" });
+        yield* fs.makeDirectory(`${bundleDir}/assets`, { recursive: true });
+        yield* fs.makeDirectory(`${bundleDir}/.vite`, { recursive: true });
+        yield* fs.writeFileString(`${bundleDir}/index.html`, "<html>bundle</html>");
+        yield* fs.writeFileString(`${bundleDir}/assets/app-abcd1234.js`, "export {};");
+        yield* fs.writeFileString(
+          `${bundleDir}/.vite/manifest.json`,
+          JSON.stringify({ "src/main.tsx": { file: "assets/app-abcd1234.js" } }),
+        );
+        yield* fs.makeDirectory(`${builtinDir}/assets`, { recursive: true });
+        yield* fs.writeFileString(`${builtinDir}/index.html`, "<html>builtin</html>");
+        yield* fs.writeFileString(`${builtinDir}/assets/app-abcd1234.js`, "export {};");
+        const activeRoot = yield* Ref.make<string | null>(bundleDir);
+        const request = yield* makeStaticRequest(builtinDir, Ref.get(activeRoot));
+
+        const fromBundle = yield* request("/assets/app-abcd1234.js");
+        expect(fromBundle.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+        // The built-in root has no manifest, so the same name is not known to be content-hashed there.
+        yield* Ref.set(activeRoot, null);
+        const fromBuiltin = yield* request("/assets/app-abcd1234.js");
+        expect(fromBuiltin.headers["cache-control"]).toBe("no-cache");
+      }),
   );
 
   it.effect("serves static files without handles and skips fallback reads for HEAD and 304", () =>

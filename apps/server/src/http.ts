@@ -48,6 +48,7 @@ import {
   failEnvironmentInternal,
 } from "./auth/http.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
+import * as UiBundleService from "./uiBundles/UiBundleService.ts";
 import { WEBHOOK_ROUTE_PREFIX } from "./scheduledTasks/ScheduledTaskService.ts";
 import {
   browserApiCorsAllowedHeaders,
@@ -512,11 +513,9 @@ const decodeBuildManifest = Schema.decodeUnknownEffect(
   ),
 );
 
-const loadImmutableBuildAssets = Effect.gen(function* () {
-  const config = yield* ServerConfig.ServerConfig;
-  const staticDir =
-    config.staticDir ?? (config.devUrl ? yield* ServerConfig.resolveStaticDir() : undefined);
-  if (!staticDir) return new Set<string>();
+const loadImmutableBuildAssets = Effect.fn("loadImmutableBuildAssets")(function* (
+  staticDir: string,
+) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   return yield* fileSystem.readFileString(path.join(staticDir, ".vite", "manifest.json")).pipe(
@@ -564,7 +563,12 @@ const streamStaticFile = (file: FileSystem.File, size: bigint) =>
   );
 
 const handleStaticAndDevRequest = Effect.fn("handleStaticAndDevRequest")(
-  function* (immutableBuildAssets: ReadonlySet<string>) {
+  function* (
+    uiBundles: UiBundleService.UiBundleService["Service"],
+    immutableBuildAssetsFor: (
+      staticDir: string,
+    ) => Effect.Effect<ReadonlySet<string>, never, FileSystem.FileSystem | Path.Path>,
+  ) {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const url = HttpServerRequest.toURL(request);
 
@@ -583,8 +587,14 @@ const handleStaticAndDevRequest = Effect.fn("handleStaticAndDevRequest")(
       });
     }
 
+    // Per request so applying or reverting a UI bundle takes effect without a restart. `?ui=builtin`
+    // is the escape hatch for a bundle whose UI does not load.
+    const uiRoot =
+      url.value.searchParams.get("ui") === "builtin" ? null : yield* uiBundles.activeRoot;
     const staticDir =
-      config.staticDir ?? (config.devUrl ? yield* ServerConfig.resolveStaticDir() : undefined);
+      uiRoot ??
+      config.staticDir ??
+      (config.devUrl ? yield* ServerConfig.resolveStaticDir() : undefined);
     if (!staticDir && config.devUrl) {
       // `vp run dev --share --built` prints the pairing URL before its first
       // web build lands in apps/web/dist. Reload until it does.
@@ -600,6 +610,7 @@ const handleStaticAndDevRequest = Effect.fn("handleStaticAndDevRequest")(
     }
 
     const path = yield* Path.Path;
+    const immutableBuildAssets = yield* immutableBuildAssetsFor(staticDir);
     const staticRoot = path.resolve(staticDir);
     const staticRequestPath = url.value.pathname === "/" ? "/index.html" : url.value.pathname;
     const rawStaticRelativePath = staticRequestPath.replace(/^[/\\]+/, "");
@@ -722,7 +733,23 @@ const handleStaticAndDevRequest = Effect.fn("handleStaticAndDevRequest")(
 );
 
 export const layerStaticAndDevRoute = Layer.unwrap(
-  loadImmutableBuildAssets.pipe(
-    Effect.map((assets) => HttpRouter.add("GET", "*", handleStaticAndDevRequest(assets))),
-  ),
+  Effect.gen(function* () {
+    const uiBundles = yield* UiBundleService.UiBundleService;
+    // Each root's build manifest is fixed, so it is read once per root rather than per request.
+    const immutableAssetsByRoot = new Map<string, ReadonlySet<string>>();
+    const immutableBuildAssetsFor = Effect.fn("immutableBuildAssetsFor")(function* (
+      staticDir: string,
+    ) {
+      const cached = immutableAssetsByRoot.get(staticDir);
+      if (cached) return cached;
+      const assets = yield* loadImmutableBuildAssets(staticDir);
+      immutableAssetsByRoot.set(staticDir, assets);
+      return assets;
+    });
+    return HttpRouter.add(
+      "GET",
+      "*",
+      handleStaticAndDevRequest(uiBundles, immutableBuildAssetsFor),
+    );
+  }),
 );

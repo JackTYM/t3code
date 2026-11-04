@@ -128,6 +128,9 @@ import * as Observability from "./observability/Observability.ts";
 import * as HeapSnapshot from "./observability/HeapSnapshot.ts";
 import * as EventLoopMonitor from "./observability/EventLoopMonitor.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
+import * as UiBundleService from "./uiBundles/UiBundleService.ts";
+import * as UiBundleStore from "./uiBundles/UiBundleStore.ts";
+import * as UiBundleFeedGitHub from "./uiBundles/UiBundleFeedGitHub.ts";
 import * as DirectEndpoints from "./environment/DirectEndpoints.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as AuthHttp from "./auth/http.ts";
@@ -485,7 +488,15 @@ const layerProjectFaviconResolver = ProjectFaviconResolver.layer.pipe(
   Layer.provide(T3ProjectFileLoader.layer),
 );
 
-const layerServerEnvironment = ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer));
+// One instance shared by the environment capabilities, the RPC handlers and the static route.
+const layerUiBundles = UiBundleService.layer.pipe(
+  Layer.provide(Layer.mergeAll(UiBundleStore.layer, UiBundleFeedGitHub.layer)),
+);
+
+const layerServerEnvironment = ServerEnvironment.layer.pipe(
+  Layer.provide(ServerSecretStore.layer),
+  Layer.provide(layerUiBundles),
+);
 
 const layerAuth = EnvironmentAuth.layer.pipe(
   Layer.provideMerge(layerPersistence),
@@ -668,6 +679,7 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
       ResetCreditCoordinator.layer,
       ProviderLatestVersions.layer,
       McpProviderSessions.layer,
+      layerUiBundles,
     ),
   ),
   Layer.provideMerge(
