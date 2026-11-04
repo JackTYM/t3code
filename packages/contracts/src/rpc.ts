@@ -23,6 +23,7 @@ import {
   McpServerReconnectInput,
   McpServerSetEnabledInput,
 } from "./mcpServers.ts";
+import { UiBundleConfirmBootInput, UiBundleError, UiBundleState } from "./uiBundles.ts";
 import {
   PeerLink,
   PeerLinkCreateInput,
@@ -451,6 +452,11 @@ export const WS_METHODS = {
   mcpServersList: "mcpServers.list",
   mcpServersReconnect: "mcpServers.reconnect",
   mcpServersSetEnabled: "mcpServers.setEnabled",
+  uiBundlesState: "uiBundles.state",
+  uiBundlesCheck: "uiBundles.check",
+  uiBundlesApply: "uiBundles.apply",
+  uiBundlesRevert: "uiBundles.revert",
+  uiBundlesConfirmBoot: "uiBundles.confirmBoot",
 
   providerUploadFeedback: "provider.uploadFeedback",
   providerAuthStart: "provider.auth.start",
@@ -1477,6 +1483,36 @@ const WsMcpServersSetEnabledRpc = Rpc.make(WS_METHODS.mcpServersSetEnabled, {
   error: Schema.Union([McpServerError, EnvironmentAuthorizationError]),
 });
 
+const WsUiBundlesStateRpc = Rpc.make(WS_METHODS.uiBundlesState, {
+  payload: Schema.Struct({}),
+  success: UiBundleState,
+  error: Schema.Union([UiBundleError, EnvironmentAuthorizationError]),
+});
+
+const WsUiBundlesCheckRpc = Rpc.make(WS_METHODS.uiBundlesCheck, {
+  payload: Schema.Struct({}),
+  success: UiBundleState,
+  error: Schema.Union([UiBundleError, EnvironmentAuthorizationError]),
+});
+
+const WsUiBundlesApplyRpc = Rpc.make(WS_METHODS.uiBundlesApply, {
+  payload: Schema.Struct({}),
+  success: UiBundleState,
+  error: Schema.Union([UiBundleError, EnvironmentAuthorizationError]),
+});
+
+const WsUiBundlesRevertRpc = Rpc.make(WS_METHODS.uiBundlesRevert, {
+  payload: Schema.Struct({}),
+  success: UiBundleState,
+  error: Schema.Union([UiBundleError, EnvironmentAuthorizationError]),
+});
+
+const WsUiBundlesConfirmBootRpc = Rpc.make(WS_METHODS.uiBundlesConfirmBoot, {
+  payload: UiBundleConfirmBootInput,
+  success: Schema.Void,
+  error: Schema.Union([UiBundleError, EnvironmentAuthorizationError]),
+});
+
 const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
   payload: ProviderUploadFeedbackInput,
   success: ProviderUploadFeedbackResult,
@@ -2179,6 +2215,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsMcpServersListRpc,
   WsMcpServersReconnectRpc,
   WsMcpServersSetEnabledRpc,
+  WsUiBundlesStateRpc,
+  WsUiBundlesCheckRpc,
+  WsUiBundlesApplyRpc,
+  WsUiBundlesRevertRpc,
+  WsUiBundlesConfirmBootRpc,
   WsProviderUploadFeedbackRpc,
   WsSubscribeVcsStatusRpc,
   WsSubscribeWorktreeSetupRpc,

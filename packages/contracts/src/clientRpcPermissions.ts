@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./git.ts";
 import {
   AuthAccessWriteScope,
+  AuthEnvironmentMaintainScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
@@ -74,6 +75,11 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // Repairing a server changes which tools the agent can reach for the rest of the session.
   [WS_METHODS.mcpServersReconnect]: AuthOrchestrationOperateScope,
   [WS_METHODS.mcpServersSetEnabled]: AuthOrchestrationOperateScope,
+  // Apply and revert change which UI every window of this environment loads, and a check starts
+  // a download, so they sit at the same bar as updating the server itself.
+  [WS_METHODS.uiBundlesCheck]: AuthEnvironmentMaintainScope,
+  [WS_METHODS.uiBundlesApply]: AuthEnvironmentMaintainScope,
+  [WS_METHODS.uiBundlesRevert]: AuthEnvironmentMaintainScope,
   // A side question spends a model call on this environment's provider account.
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
