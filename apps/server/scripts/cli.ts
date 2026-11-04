@@ -94,6 +94,16 @@ const buildCmd = Command.make(
       if (yield* fs.exists(webDist)) {
         yield* fs.copy(webDist, clientTarget);
         yield* applyDevelopmentIconOverrides(repoRoot, serverDir);
+        // Stamps the client with the contract hash a downloaded UI bundle is checked against.
+        // Environment (GITHUB_SHA, GITHUB_REPOSITORY) is inherited.
+        yield* runCommand(
+          ChildProcess.make(process.execPath, ["scripts/compute-ui-compat.ts", clientTarget], {
+            cwd: repoRoot,
+            stdout: config.verbose ? "inherit" : "ignore",
+            stderr: "inherit",
+            shell: false,
+          }),
+        );
         yield* Effect.log("[cli] Bundled web app into dist/client");
       } else {
         yield* Effect.logWarning("[cli] Web dist not found. Skipping client bundle.");

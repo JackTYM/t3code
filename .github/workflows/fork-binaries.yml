@@ -132,6 +132,43 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      # Servers download this zip to swap their web UI without a reinstall. It
+      # is cut here, not in the release job, because that job has no checkout
+      # or Node: the production web branding that the desktop jobs apply to
+      # this same client (apply-web-brand-assets.ts) has to be applied to the
+      # zip too, or an updated server would serve the development favicons that
+      # build:desktop leaves in dist/client. The zip holds the client's
+      # contents at its root.
+      - name: Build the UI bundle
+        if: ${{ inputs.publish && inputs.targets == 'all' }}
+        shell: bash
+        env:
+          VERSION: ${{ steps.source.outputs.version }}
+          SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          client="$RUNNER_TEMP/ui-client"
+          out="$RUNNER_TEMP/ui-bundle"
+          asset="ui-bundle-${VERSION}.zip"
+          test -f apps/server/dist/client/ui-compat.json
+          mkdir -p "$out"
+          cp -R apps/server/dist/client "$client"
+          node scripts/apply-web-brand-assets.ts production "$client"
+          (cd "$client" && zip -qrX "$out/$asset" .)
+          node scripts/make-ui-bundle-manifest.ts \
+            --client-dir "$client" --zip "$out/$asset" --version "$VERSION" --sha "$SHA" \
+            > "$out/ui-bundle.json"
+          cat "$out/ui-bundle.json"
+
+      - name: Upload UI bundle
+        if: ${{ inputs.publish && inputs.targets == 'all' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ui-bundle
+          path: ${{ runner.temp }}/ui-bundle/*
+          if-no-files-found: error
+          retention-days: 1
+
   desktop_mac_arm64:
     name: Desktop macOS arm64
     needs: bundle
@@ -345,6 +382,14 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ios-unsigned
+          path: assets
+
+      # ui-bundle-<version>.zip and ui-bundle.json; the publish step attaches
+      # everything in assets/, so they ride along with the installers.
+      - name: Download UI bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ui-bundle
           path: assets
 
       # The Windows job suffixes its manifest with the arch because two arch
