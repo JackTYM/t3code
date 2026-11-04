@@ -91,6 +91,10 @@
       "types": "./src/semver.ts",
       "import": "./src/semver.ts"
     },
+    "./uiCompat": {
+      "types": "./src/uiCompat.ts",
+      "import": "./src/uiCompat.ts"
+    },
     "./Net": {
       "types": "./src/Net.ts",
       "import": "./src/Net.ts"
