@@ -4,8 +4,11 @@ import type { UiBundleManifest } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import { isWindowsRenameLock } from "@t3tools/shared/atomicWrite";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeCrypto from "node:crypto";
 import type * as NodeStream from "node:stream";
 import * as Yauzl from "yauzl";
@@ -14,6 +17,10 @@ const MAX_ENTRIES = 8192;
 const MAX_ENTRY_BYTES = 50 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 300 * 1024 * 1024;
 const MAX_COMPAT_BYTES = 64 * 1024;
+// A previous bundle is parked here, next to the published bundles, while its replacement is renamed in.
+export const UI_BUNDLE_TRASH_DIR = "trash";
+const LOCKED_RENAME_RETRIES = 20;
+const LOCKED_RENAME_RETRY_DELAY = "100 millis";
 
 export class UiBundleExtractError extends Schema.TaggedError<UiBundleExtractError>()(
   "UiBundleExtractError",
@@ -61,13 +68,22 @@ const decodeInnerCompat = Schema.decodeUnknownEffect(InnerCompat);
 const invalidArchive = (cause: unknown) =>
   new UiBundleExtractError({ reason: "invalid-archive", cause });
 
+// Windows resolves these names, with or without an extension, to devices instead of files.
+const WINDOWS_DEVICE_NAME = /^(?:con|prn|aux|nul|conin\$|conout\$|com[1-9]|lpt[1-9])$/iu;
+
+const isUnsafeSegment = (segment: string) =>
+  // Windows drops trailing dots and spaces, so "a." and "a" would be the same file there.
+  /^\.+$/u.test(segment) ||
+  /[. ]$/u.test(segment) ||
+  WINDOWS_DEVICE_NAME.test((segment.split(".")[0] ?? "").trimEnd());
+
 /** Relative POSIX path inside the bundle, or null when the name could escape or confuse the root. */
 const toSafePath = (name: string): string | null => {
   if (name.length === 0 || name.startsWith("/") || /[\\:\0]/u.test(name)) return null;
-  const segments = name.split("/");
-  if (segments.includes("..")) return null;
-  // "." and empty segments (a//b, ./a) are harmless once ".." is excluded; collapse them.
-  return segments.filter((segment) => segment !== "" && segment !== ".").join("/") || ".";
+  // "." and empty segments (a//b, ./a) are harmless; collapse them. Every other segment must be safe on every OS.
+  const segments = name.split("/").filter((segment) => segment !== "" && segment !== ".");
+  if (segments.some(isUnsafeSegment)) return null;
+  return segments.join("/") || ".";
 };
 
 const openZip = (bytes: Uint8Array) =>
@@ -121,9 +137,25 @@ const openEntryStream = (zip: Yauzl.ZipFile, entry: Yauzl.Entry) =>
     (readable) => Effect.sync(() => readable.destroy()),
   );
 
+/** Windows open-file locks make renames fail transiently; retry only there, and only for those codes. */
+const renameWithRetry = Effect.fn("renameWithRetry")(function* (from: string, to: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const platform = yield* HostProcess.Platform;
+  const rename = fs.rename(from, to);
+  if (platform !== "win32") return yield* rename;
+  return yield* rename.pipe(
+    Effect.retry({
+      while: isWindowsRenameLock,
+      schedule: Schedule.spaced(LOCKED_RENAME_RETRY_DELAY),
+      times: LOCKED_RENAME_RETRIES,
+    }),
+  );
+});
+
 /**
- * Verifies the zip against its manifest, extracts it into `stagingDir` under strict bounds, and
- * atomically renames the result to `finalDir`. `stagingDir` is removed on any failure.
+ * Verifies the zip against its manifest, extracts it into a private directory derived from
+ * `stagingDir`, and renames it to `finalDir`, parking any existing bundle under `trash/` and
+ * restoring it if the rename fails. Callers serialize extractions that share a `finalDir`.
  */
 export const extractUiBundle = Effect.fn("extractUiBundle")(
   function* (input: {
@@ -134,7 +166,9 @@ export const extractUiBundle = Effect.fn("extractUiBundle")(
   }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const { manifest, stagingDir, finalDir } = input;
+    const { manifest, finalDir } = input;
+    // Unique per call so two extractions of one version can never write into the same directory.
+    const stagingDir = `${input.stagingDir}.${NodeCrypto.randomUUID()}`;
 
     // Cheap integrity checks come first so a tampered or truncated download never reaches the zip parser.
     if (input.zipBytes.byteLength !== manifest.size) {
@@ -235,9 +269,27 @@ export const extractUiBundle = Effect.fn("extractUiBundle")(
         return yield* new UiBundleExtractError({ reason: "compat-mismatch" });
       }
 
-      yield* fs.remove(finalDir, { recursive: true, force: true });
       yield* fs.makeDirectory(path.dirname(finalDir), { recursive: true });
-      yield* fs.rename(stagingDir, finalDir);
+      const hadPrevious = yield* fs.exists(finalDir);
+      const parked = path.join(
+        path.dirname(finalDir),
+        UI_BUNDLE_TRASH_DIR,
+        NodeCrypto.randomUUID(),
+      );
+      if (hadPrevious) {
+        yield* fs.makeDirectory(path.dirname(parked), { recursive: true });
+        yield* renameWithRetry(finalDir, parked);
+      }
+      yield* renameWithRetry(stagingDir, finalDir).pipe(
+        Effect.onError(() =>
+          hadPrevious ? renameWithRetry(parked, finalDir).pipe(Effect.ignore) : Effect.void,
+        ),
+      );
+      if (hadPrevious) {
+        yield* fs
+          .remove(parked, { recursive: true, force: true })
+          .pipe(Effect.ignore({ log: true }));
+      }
     }).pipe(
       Effect.onError(() =>
         fs.remove(stagingDir, { recursive: true, force: true }).pipe(Effect.ignore),

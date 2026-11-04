@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import { ServerConfig } from "../config.ts";
+import { UI_BUNDLE_TRASH_DIR } from "./extractUiBundle.ts";
 
 /** Persisted subset of `UiBundleState`; the rest of that state is derived or kept in memory. */
 const UiBundleStoreState = Schema.Struct({
@@ -36,9 +37,21 @@ const encodeState = Schema.encodeEffect(Schema.fromJsonString(UiBundleStoreState
 const STATE_FILE = "state.json";
 const STAGING_DIR = "staging";
 // Version names become directory names under the same root as these, so they must not collide.
-const RESERVED_NAMES: ReadonlySet<string> = new Set(["builtin", STAGING_DIR, STATE_FILE]);
+// Compared lower-cased because macOS and Windows resolve `STATE.JSON` or `Staging` to the real entry.
+const RESERVED_NAMES: ReadonlySet<string> = new Set([
+  "builtin",
+  STAGING_DIR,
+  UI_BUNDLE_TRASH_DIR,
+  STATE_FILE,
+]);
+// The atomic state write creates `state.json.*` temp directories beside the state file.
+const isReserved = (version: string) => {
+  const lower = version.toLowerCase();
+  return RESERVED_NAMES.has(lower) || lower.startsWith(`${STATE_FILE}.`);
+};
 // The version comes from a downloaded manifest; keep it to one path segment of plain characters.
-const SAFE_VERSION = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/u;
+// It must end alphanumeric: Windows drops a trailing dot, so "1.0." would alias "1.0".
+const SAFE_VERSION = /^[A-Za-z0-9](?:[A-Za-z0-9._+-]*[A-Za-z0-9])?$/u;
 
 export class UiBundleStoreError extends Schema.TaggedError<UiBundleStoreError>()(
   "UiBundleStoreError",
@@ -68,7 +81,10 @@ export class UiBundleStore extends Context.Service<
     readonly rootFor: (active: string) => Effect.Effect<string | null>;
     readonly bundleDir: (version: string) => Effect.Effect<string, UiBundleStoreError>;
     readonly stagingDir: (version: string) => Effect.Effect<string, UiBundleStoreError>;
-    /** Removes every bundle directory that is not active, previous, or ready. */
+    /**
+     * Removes every bundle directory that is not active, previous, or ready. Callers serialize
+     * check, extract and prune (the service holds a semaphore); prune only locks against `write`.
+     */
     readonly prune: Effect.Effect<void, UiBundleStoreError>;
   }
 >()("t3/uiBundles/UiBundleStore") {}
@@ -81,10 +97,18 @@ const make = Effect.gen(function* () {
   const root = path.join(config.stateDir, "ui-bundles");
   const statePath = path.join(root, STATE_FILE);
 
+  // No extraction can be running while the store is being built, so anything left in these was
+  // abandoned by a crash. A bundle parked in trash/ by a crashed publish is dropped too.
+  yield* Effect.forEach(
+    [STAGING_DIR, UI_BUNDLE_TRASH_DIR],
+    (name) => fs.remove(path.join(root, name), { recursive: true, force: true }),
+    { discard: true },
+  ).pipe(Effect.ignore({ log: true }));
+
   // A corrupt or unreadable file must not strand the server on a broken UI selection.
   const stored = yield* fs.readFileString(statePath).pipe(
     Effect.flatMap(decodeState),
-    Effect.catchCause(() => Effect.succeed(DEFAULT_STATE)),
+    Effect.orElseSucceed(() => DEFAULT_STATE),
   );
   const state = yield* Ref.make(stored);
   const writeLock = yield* Semaphore.make(1);
@@ -92,13 +116,22 @@ const make = Effect.gen(function* () {
   const toIoError = (cause: unknown) => new UiBundleStoreError({ reason: "io", cause });
 
   const versionDir = (parent: string, version: string) =>
-    SAFE_VERSION.test(version) && !RESERVED_NAMES.has(version)
+    SAFE_VERSION.test(version) && !isReserved(version)
       ? Effect.succeed(path.join(parent, version))
       : Effect.fail(new UiBundleStoreError({ reason: "invalid-version" }));
 
   const write = Effect.fn("UiBundleStore.write")(function* (patch: Partial<UiBundleStoreState>) {
     return yield* Effect.gen(function* () {
-      const next = { ...(yield* Ref.get(state)), ...patch };
+      const current = yield* Ref.get(state);
+      // An explicit `undefined` means "unchanged"; spreading it would fail the encode below.
+      const next: UiBundleStoreState = {
+        active: patch.active ?? current.active,
+        previous: patch.previous === undefined ? current.previous : patch.previous,
+        ready: patch.ready === undefined ? current.ready : patch.ready,
+        incompatible: patch.incompatible === undefined ? current.incompatible : patch.incompatible,
+        bootPendingSince:
+          patch.bootPendingSince === undefined ? current.bootPendingSince : patch.bootPendingSince,
+      };
       const contents = yield* encodeState(next);
       yield* writeFileStringAtomically({ filePath: statePath, contents }).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
@@ -120,25 +153,30 @@ const make = Effect.gen(function* () {
   });
 
   const prune = Effect.fn("UiBundleStore.prune")(function* () {
-    const current = yield* Ref.get(state);
-    const keep = new Set<string>([STAGING_DIR, STATE_FILE]);
-    for (const version of [current.active, current.previous, current.ready?.version]) {
-      if (version) keep.add(version);
-    }
-    const names = yield* fs.readDirectory(root).pipe(
-      Effect.catchTags({
-        PlatformError: (error) =>
-          error.reason._tag === "NotFound" ? Effect.succeed([]) : Effect.fail(toIoError(error)),
-      }),
-    );
-    yield* Effect.forEach(
-      names.filter((name) => !keep.has(name)),
-      (name) =>
-        fs
-          .remove(path.join(root, name), { recursive: true, force: true })
-          .pipe(Effect.mapError(toIoError)),
-      { discard: true },
-    );
+    yield* Effect.gen(function* () {
+      const current = yield* Ref.get(state);
+      const keep = new Set<string>();
+      for (const version of [current.active, current.previous, current.ready?.version]) {
+        if (version) keep.add(version);
+      }
+      const names = yield* fs.readDirectory(root).pipe(
+        Effect.catchTags({
+          PlatformError: (error) =>
+            error.reason._tag === "NotFound" ? Effect.succeed([]) : Effect.fail(toIoError(error)),
+        }),
+      );
+      // staging/ and trash/ belong to a publish in flight, and `state.json.*` are the atomic
+      // write's temp directories; neither may be removed from under their owner.
+      const removable = names.filter((name) => !keep.has(name) && !isReserved(name));
+      yield* Effect.forEach(
+        removable,
+        (name) =>
+          fs
+            .remove(path.join(root, name), { recursive: true, force: true })
+            .pipe(Effect.mapError(toIoError)),
+        { discard: true },
+      );
+    }).pipe(writeLock.withPermits(1));
   });
 
   return UiBundleStore.of({

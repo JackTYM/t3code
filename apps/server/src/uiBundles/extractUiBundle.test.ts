@@ -143,6 +143,53 @@ describe("extractUiBundle", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.live("leaves the previous bundle intact when the final rename fails", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const base = yield* fs.makeTempDirectoryScoped({ prefix: "ui-bundle-extract-test-" });
+      const finalDir = path.join(base, "v");
+      yield* fs.makeDirectory(finalDir);
+      yield* fs.writeFileString(path.join(finalDir, "index.html"), "old");
+      const zip = buildZip(validFiles);
+      // Fails only the rename that publishes the new bundle; parking and restoring the old one succeed.
+      const failingPublish = {
+        ...fs,
+        rename: (from: string, to: string) =>
+          to === finalDir && path.dirname(from) === path.join(base, "staging")
+            ? fs.rename(path.join(base, "does-not-exist"), to)
+            : fs.rename(from, to),
+      };
+      const error = yield* extractUiBundle({
+        zipBytes: zip,
+        manifest: manifestFor(zip),
+        stagingDir: path.join(base, "staging", "v"),
+        finalDir,
+      }).pipe(Effect.provideService(FileSystem.FileSystem, failingPublish), Effect.flip);
+      assert.strictEqual(error.reason, "io");
+      assert.strictEqual(yield* fs.readFileString(path.join(finalDir, "index.html")), "old");
+      assert.deepStrictEqual(yield* fs.readDirectory(path.join(base, "staging")), []);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("leaves no parked copy behind after replacing a bundle", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const base = yield* fs.makeTempDirectoryScoped({ prefix: "ui-bundle-extract-test-" });
+      const finalDir = path.join(base, "v");
+      yield* fs.makeDirectory(finalDir);
+      const zip = buildZip(validFiles);
+      yield* extractUiBundle({
+        zipBytes: zip,
+        manifest: manifestFor(zip),
+        stagingDir: path.join(base, "staging", "v"),
+        finalDir,
+      });
+      assert.deepStrictEqual(yield* fs.readDirectory(path.join(base, "trash")), []);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   describe("integrity", () => {
     it.live("rejects a size mismatch", () =>
       expectRejected(buildZip(validFiles), "size-mismatch", {
@@ -182,6 +229,13 @@ describe("extractUiBundle", () => {
       { label: "backslash traversal", name: "a\\..\\evil.txt" },
       { label: "drive letter", name: "C:evil.txt" },
       { label: "NUL byte", name: "evil\0.txt" },
+      { label: "dot-only segment", name: "a/.../evil.txt" },
+      { label: "trailing dot", name: "evil.txt." },
+      { label: "trailing space", name: "dir /evil.txt" },
+      { label: "Windows device name", name: "CON" },
+      { label: "Windows device name with extension", name: "assets/nul.txt" },
+      { label: "lower-case numbered device", name: "com1.js" },
+      { label: "upper-case numbered device", name: "LPT9" },
     ])("rejects $label and leaves nothing behind", ({ name }) =>
       Effect.gen(function* () {
         const zip = buildZip([...validFiles, { name, data: "pwned" }]);
