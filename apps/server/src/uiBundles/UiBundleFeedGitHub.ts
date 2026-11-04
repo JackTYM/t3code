@@ -10,7 +10,8 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { UiBundleFeed, UiBundleFeedError } from "./UiBundleFeed.ts";
 
 const API_TIMEOUT_MS = 10_000;
-const DOWNLOAD_TIMEOUT_MS = 120_000;
+// A ~64 MB zip over a slow remote link (Tailscale, T3 Connect) needs more than ~4 Mbps to finish within 120 s.
+const DOWNLOAD_TIMEOUT_MS = 300_000;
 const MANIFEST_ASSET_NAME = "ui-bundle.json";
 // Tests and dev point this at a JSON document shaped like the GitHub "latest release" response.
 const FEED_URL_ENV = "T3CODE_UI_UPDATE_FEED_URL";

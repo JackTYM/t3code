@@ -280,10 +280,13 @@ describe("extractUiBundle", () => {
       });
     });
 
-    it.live("rejects a bundle whose entries total over 300 MB", () => {
+    it.live("rejects a bundle whose entries total over 600 MB", () => {
       const zip = buildZip([
         ...validFiles,
-        ...Array.from({ length: 7 }, (_, index) => ({ name: `chunk-${index}.bin`, data: 45 * MB })),
+        ...Array.from({ length: 14 }, (_, index) => ({
+          name: `chunk-${index}.bin`,
+          data: 45 * MB,
+        })),
       ]);
       return Effect.gen(function* () {
         yield* expectRejected(zip, "too-large");

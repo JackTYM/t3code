@@ -15,7 +15,8 @@ import * as Yauzl from "yauzl";
 
 const MAX_ENTRIES = 8192;
 const MAX_ENTRY_BYTES = 50 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 300 * 1024 * 1024;
+// The real web client is ~208 MB unzipped. This only bounds a zip bomb, it is not a size budget, so keep ample headroom over the shipped client.
+const MAX_TOTAL_BYTES = 600 * 1024 * 1024;
 const MAX_COMPAT_BYTES = 64 * 1024;
 // A previous bundle is parked here, next to the published bundles, while its replacement is renamed in.
 export const UI_BUNDLE_TRASH_DIR = "trash";
