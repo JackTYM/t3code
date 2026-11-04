@@ -2883,10 +2883,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ClaudeAdapterV2.ClaudeAgentSdkQuerySession,
       "mcpServerStatus" | "reconnectMcpServer" | "toggleMcpServer"
     >;
-    readonly sideQuestionControl?: Pick<
-      ClaudeAdapterV2.ClaudeAgentSdkQuerySession,
-      "askSideQuestion"
-    >;
     readonly forkSession?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["forkSession"];
     readonly allocateSessionId?: Effect.Effect<string>;
   }) =>
@@ -3035,7 +3031,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 interrupt: options?.interrupt ?? Effect.void,
                 close: options?.close?.(sdkMessages) ?? Effect.void,
                 ...options?.mcpControl,
-                ...options?.sideQuestionControl,
               };
             }),
           forkSession: options?.forkSession ?? (() => Effect.die("unused forkSession")),
@@ -3289,144 +3284,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
           const failure = yield* control
             .reconnect({ providerThread, server: "docs" })
-            .pipe(Effect.flip);
-          assert.equal(failure._tag, "ProviderAdapterProtocolError");
-          assert.instanceOf(failure.cause, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError);
-        }),
-      ),
-    );
-  });
-
-  describe("side questions", () => {
-    const withServices = <A, E>(
-      effect: Effect.Effect<
-        A,
-        E,
-        | Scope.Scope
-        | IdAllocator.IdAllocatorV2
-        | McpProviderSessions.McpProviderSessions
-        | NodeServices.NodeServices
-      >,
-    ) =>
-      effect.pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
-        ),
-      );
-    const startTurn = (harness: Effect.Success<typeof makeWakeHarness>) =>
-      harness.runtime.startTurn(
-        makeClaudeTestTurnInput({
-          threadId: harness.threadId,
-          providerThread: harness.providerThread,
-          now: DateTime.makeUnsafe(0),
-          attemptId: RunAttemptId.make("side-question"),
-          text: "hello",
-          attachments: [],
-        }),
-      );
-
-    it.effect("is unavailable until the thread has a live query", () =>
-      withServices(
-        Effect.gen(function* () {
-          const harness = yield* makeWakeHarness;
-          assert.deepEqual(
-            yield* harness.runtime.sideQuestions!.ask({
-              providerThread: harness.providerThread,
-              question: "why?",
-              history: [],
-            }),
-            { status: "unavailable", reason: "session-stopped" },
-          );
-        }),
-      ),
-    );
-
-    it.effect("reports unsupported when the SDK's query has no side question control", () =>
-      withServices(
-        Effect.gen(function* () {
-          const harness = yield* makeWakeHarness;
-          yield* startTurn(harness);
-          assert.deepEqual(
-            yield* harness.runtime.sideQuestions!.ask({
-              providerThread: harness.providerThread,
-              question: "why?",
-              history: [],
-            }),
-            { status: "unavailable", reason: "session-unsupported" },
-          );
-        }),
-      ),
-    );
-
-    it.effect("hands the question and earlier exchanges to the query and returns its answer", () =>
-      withServices(
-        Effect.gen(function* () {
-          const asked: Array<unknown> = [];
-          const harness = yield* makeWakeHarnessWithOptions({
-            sideQuestionControl: {
-              askSideQuestion: (question, history) =>
-                Effect.sync(() => {
-                  asked.push({ question, history });
-                  return { response: "The cache.", synthetic: false };
-                }),
-            },
-          });
-          yield* startTurn(harness);
-          const history = [{ question: "what changed?", response: "The adapter." }];
-          assert.deepEqual(
-            yield* harness.runtime.sideQuestions!.ask({
-              providerThread: harness.providerThread,
-              question: "why?",
-              history,
-            }),
-            { status: "answered", response: "The cache.", synthetic: false },
-          );
-          assert.deepEqual(asked, [{ question: "why?", history }]);
-        }),
-      ),
-    );
-
-    it.effect("reports a query that produced nothing as no answer", () =>
-      withServices(
-        Effect.gen(function* () {
-          const harness = yield* makeWakeHarnessWithOptions({
-            sideQuestionControl: { askSideQuestion: () => Effect.succeed(null) },
-          });
-          yield* startTurn(harness);
-          assert.deepEqual(
-            yield* harness.runtime.sideQuestions!.ask({
-              providerThread: harness.providerThread,
-              question: "why?",
-              history: [],
-            }),
-            { status: "no-answer" },
-          );
-        }),
-      ),
-    );
-
-    it.effect("keeps the CLI's error as the cause when the request fails", () =>
-      withServices(
-        Effect.gen(function* () {
-          const harness = yield* makeWakeHarnessWithOptions({
-            sideQuestionControl: {
-              askSideQuestion: () =>
-                Effect.fail(
-                  new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
-                    method: "askSideQuestion",
-                    cause: new Error("side_question timed out"),
-                  }),
-                ),
-            },
-          });
-          yield* startTurn(harness);
-          const failure = yield* harness.runtime
-            .sideQuestions!.ask({
-              providerThread: harness.providerThread,
-              question: "why?",
-              history: [],
-            })
             .pipe(Effect.flip);
           assert.equal(failure._tag, "ProviderAdapterProtocolError");
           assert.instanceOf(failure.cause, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError);

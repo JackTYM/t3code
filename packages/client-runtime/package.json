@@ -483,10 +483,6 @@
       "types": "./src/state/mcpServers.ts",
       "default": "./src/state/mcpServers.ts"
     },
-    "./state/side-questions": {
-      "types": "./src/state/sideQuestions.ts",
-      "default": "./src/state/sideQuestions.ts"
-    },
     "./source-control-clients": {
       "types": "./src/sourceControlClients.ts",
       "default": "./src/sourceControlClients.ts"

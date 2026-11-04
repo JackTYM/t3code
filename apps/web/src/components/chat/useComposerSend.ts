@@ -57,7 +57,6 @@ import {
   parseComposerInteractionModeCommand,
   parseSideChatCommand,
 } from "../../composer-logic";
-import { parseSideQuestionCommand } from "@t3tools/client-runtime/state/side-questions";
 import { resolvePlanFollowUpSubmission } from "../../proposedPlan";
 import { type ChatMessage } from "../../types";
 import { recordPromptSent } from "../GitHubStarPrompt";
@@ -242,8 +241,6 @@ interface ComposerSendInput {
   readonly anchorNewTurn: TimelineFollow["anchorNewTurn"];
   readonly acknowledgeActiveThreadWoke: () => void;
   readonly handleInteractionModeChange: (mode: ProviderInteractionMode) => void;
-  /** Set where the live session can answer `/btw`; unset, `/btw` is the side chat alias. */
-  readonly onSideQuestion?: ((question: string) => void) | undefined;
   /** Resolves true once the side chat started and got the prompt. */
   readonly onSideChat?: ((prompt: string) => Promise<boolean>) | undefined;
   /** Refuses `/side` with this reason and keeps the draft. */
@@ -333,7 +330,6 @@ export function useComposerSend(input: ComposerSendInput) {
     anchorNewTurn,
     acknowledgeActiveThreadWoke,
     handleInteractionModeChange,
-    onSideQuestion,
     onSideChat,
     sideChatDisabledReason,
     handleNewThreadInActiveProject,
@@ -431,26 +427,6 @@ export function useComposerSend(input: ComposerSendInput) {
         setComposerDraftPrompt(composerDraftTarget, "");
         composerRef.current?.resetCursorState();
       }
-      return;
-    }
-    // Answered from the live session without becoming a message, so it has to be
-    // read before any of the checks that hold a send back while the thread is busy.
-    const sideQuestion =
-      onSideQuestion !== undefined &&
-      !directAnnotation &&
-      !queuedRunEdit.isEditing &&
-      !draftHasNonPromptContent(composerDraftTarget)
-        ? parseSideQuestionCommand(promptRef.current)
-        : null;
-    if (sideQuestion !== null) {
-      if (sideQuestion.length === 0) {
-        toastManager.add(stackedThreadToast({ type: "info", title: "Ask something after /btw" }));
-        return;
-      }
-      onSideQuestion?.(sideQuestion);
-      promptRef.current = "";
-      setComposerDraftPrompt(composerDraftTarget, "");
-      composerRef.current?.resetCursorState();
       return;
     }
 

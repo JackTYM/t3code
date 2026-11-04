@@ -66,7 +66,6 @@ export function useComposerMenuItems({
   threadPullRequests,
   planModeUiEnabled,
   routeKind,
-  sideQuestionsOffered,
   sideChatAvailable,
   sideChatDisabledReason,
   compactSlashCommandAvailable,
@@ -86,7 +85,6 @@ export function useComposerMenuItems({
   readonly threadPullRequests: ReadonlyArray<ThreadPullRequestLink> | undefined;
   readonly planModeUiEnabled: boolean;
   readonly routeKind: "server" | "draft";
-  readonly sideQuestionsOffered: boolean;
   readonly sideChatAvailable: boolean;
   readonly sideChatDisabledReason: string | null;
   readonly compactSlashCommandAvailable: boolean;
@@ -239,19 +237,6 @@ export function useComposerMenuItems({
               },
             ] as const)
           : []),
-        // `/btw` takes its question as the message, so like a provider command it only
-        // opens one. Where the live session can answer it, it replaces the /side alias.
-        ...(sideQuestionsOffered && composerTrigger.rangeStart === 0
-          ? ([
-              {
-                id: "slash:btw",
-                type: "slash-command",
-                command: "btw",
-                label: "/btw",
-                description: "Ask a side question without interrupting the agent",
-              },
-            ] as const)
-          : []),
         ...(planModeUiEnabled
           ? ([
               {
@@ -279,17 +264,13 @@ export function useComposerMenuItems({
                 label: "/side",
                 description: sideChatDisabledReason ?? "Ask a side question in a new side chat",
               },
-              ...(sideQuestionsOffered
-                ? []
-                : ([
-                    {
-                      id: "slash:btw",
-                      type: "slash-command",
-                      command: "btw",
-                      label: "/btw",
-                      description: sideChatDisabledReason ?? "Same as /side",
-                    },
-                  ] as const)),
+              {
+                id: "slash:btw",
+                type: "slash-command",
+                command: "btw",
+                label: "/btw",
+                description: sideChatDisabledReason ?? "Same as /side",
+              },
             ] as const)
           : []),
       ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;

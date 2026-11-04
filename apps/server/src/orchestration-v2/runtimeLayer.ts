@@ -9,7 +9,6 @@ import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as McpAppRequests from "../mcpApps/McpAppRequests.ts";
 import * as SessionMcpServers from "../mcpServers/SessionMcpServers.ts";
-import * as SessionSideQuestions from "../sideQuestions/SessionSideQuestions.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
@@ -371,16 +370,11 @@ const layerSessionMcpServersProvided = SessionMcpServers.layer.pipe(
   Layer.provide(Layer.merge(layerThreadManagementProvided, layerProviderSessionManagerProvided)),
 );
 
-const layerSessionSideQuestionsProvided = SessionSideQuestions.layer.pipe(
-  Layer.provide(Layer.merge(layerThreadManagementProvided, layerProviderSessionManagerProvided)),
-);
-
 export const layer = Layer.mergeAll(
   layerCommandOutputHubProvided,
   layerOrchestratorProvided,
   layerMcpAppRequestsProvided,
   layerSessionMcpServersProvided,
-  layerSessionSideQuestionsProvided,
   layerThreadManagementProvided,
   layerReplyEditProvided,
   layerEffectWorkerProvided,

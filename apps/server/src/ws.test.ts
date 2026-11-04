@@ -100,7 +100,6 @@ import * as UsageService from "./usage/UsageService.ts";
 import * as UsageThreadCosts from "./usage/UsageThreadCosts.ts";
 import * as ReplyEditService from "./orchestration-v2/ReplyEditService.ts";
 import * as SessionMcpServers from "./mcpServers/SessionMcpServers.ts";
-import * as SessionSideQuestions from "./sideQuestions/SessionSideQuestions.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
@@ -587,7 +586,6 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(UsageThreadCosts.UsageThreadCostsService)({}),
   Layer.mock(ReplyEditService.ReplyEditService)({}),
   Layer.mock(SessionMcpServers.SessionMcpServers)({}),
-  Layer.mock(SessionSideQuestions.SessionSideQuestions)({}),
   Layer.mock(VcsProvisioningService.VcsProvisioningService)({}),
   Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
   Layer.mock(WorkspaceEntries.WorkspaceEntries)({}),

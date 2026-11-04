@@ -117,7 +117,6 @@ import * as ReplyEditService from "./orchestration-v2/ReplyEditService.ts";
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as SessionMcpServers from "./mcpServers/SessionMcpServers.ts";
-import * as SessionSideQuestions from "./sideQuestions/SessionSideQuestions.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
@@ -1282,7 +1281,6 @@ export const layerWsRpc = (
       const providerSessionsV2 = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const mcpAppRequests = yield* McpAppRequests.McpAppRequests;
       const sessionMcpServers = yield* SessionMcpServers.SessionMcpServers;
-      const sessionSideQuestions = yield* SessionSideQuestions.SessionSideQuestions;
       const analytics = yield* AnalyticsService.AnalyticsService;
       const originProps = clientAnalyticsProps;
       const recordClientCommandAnalytics = (command: OrchestrationV2Command) => {
@@ -2419,7 +2417,6 @@ export const layerWsRpc = (
         [WS_METHODS.mcpServersList]: (input) => sessionMcpServers.list(input),
         [WS_METHODS.mcpServersReconnect]: (input) => sessionMcpServers.reconnect(input),
         [WS_METHODS.mcpServersSetEnabled]: (input) => sessionMcpServers.setEnabled(input),
-        [WS_METHODS.sideQuestionsAsk]: (input) => sessionSideQuestions.ask(input),
         [WS_METHODS.providerUploadFeedback]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(

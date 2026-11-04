@@ -22,7 +22,6 @@ import {
   reconcileOptimisticUserMessages,
 } from "./chat/optimisticUserMessages";
 import { useTimelineRewind } from "./chat/useTimelineRewind";
-import { useSideQuestion } from "./chat/useSideQuestion";
 import { useThreadLifecycle } from "./chat/useThreadLifecycle";
 import { useRightPanelActions } from "./chat/useRightPanelActions";
 import { type TerminalLaunchContext, useChatTerminalActions } from "./chat/useChatTerminalActions";
@@ -1682,19 +1681,6 @@ export default function ChatView(props: ChatViewProps) {
       })
     : null;
   const gitStatusCwd = activeThread?.worktreePath ?? gitCwd;
-  // A side question needs a live session to ask, which a draft never has.
-  const sideQuestionsOffered =
-    routeKind === "server" &&
-    canOperateThread &&
-    activeProviderStatus?.driver === "claudeAgent" &&
-    serverConfig?.environment.capabilities.sideQuestions === true;
-  const { banner: sideQuestionBanner, ask: askSideQuestion } = useSideQuestion({
-    environmentId,
-    threadId,
-    threadKey: routeThreadKey,
-    threadRef: routeThreadRef,
-    cwd: gitCwd ?? undefined,
-  });
   const gitStatusQuery = useEnvironmentQuery(
     gitStatusCwd === null
       ? null
@@ -2685,7 +2671,6 @@ export default function ChatView(props: ChatViewProps) {
         : [];
     const limitRecoveryItems = limitRecoveryBanner === null ? [] : [limitRecoveryBanner];
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
-    const sideQuestionItems = sideQuestionBanner === null ? [] : [sideQuestionBanner];
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
@@ -2693,7 +2678,6 @@ export default function ChatView(props: ChatViewProps) {
         ...fallbackItems,
         ...limitRecoveryItems,
         ...usageLimitsItems,
-        ...sideQuestionItems,
         ...projectCloneItems,
         ...systemComposerBannerItems,
       ];
@@ -2703,7 +2687,6 @@ export default function ChatView(props: ChatViewProps) {
       ...fallbackItems,
       ...limitRecoveryItems,
       ...usageLimitsItems,
-      ...sideQuestionItems,
       ...projectCloneItems,
       ...systemComposerBannerItems,
       branchMismatchBannerItem({
@@ -3040,7 +3023,6 @@ export default function ChatView(props: ChatViewProps) {
     anchorNewTurn,
     acknowledgeActiveThreadWoke,
     handleInteractionModeChange,
-    onSideQuestion: sideQuestionsOffered ? askSideQuestion : undefined,
     onSideChat: sideChat.available ? sendSideChatStable : undefined,
     sideChatDisabledReason,
     handleNewThreadInActiveProject,
@@ -3650,7 +3632,6 @@ export default function ChatView(props: ChatViewProps) {
                           {!composerMounted ? null : (
                             <ChatComposer
                               canOperateThread={canOperateThread}
-                              sideQuestionsOffered={sideQuestionsOffered}
                               reportedModelSelection={reportedModelSelection}
                               multipleModelSelections={multipleModelSelections}
                               supportsMultipleModels={
