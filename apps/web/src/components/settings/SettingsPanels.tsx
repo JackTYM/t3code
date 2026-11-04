@@ -98,6 +98,7 @@ import { BackgroundActivitySettingsRow } from "./BackgroundActivitySettings";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { PullRequestLinksOpenInAppSetting } from "./IntegrationsSettings";
 import { StorageCleanupSections } from "./StorageSettings";
+import { UiBundleSettingsRow } from "./UiBundleSettingsRow";
 import { UpdateTrackSwitchDialog } from "./UpdateTrackSwitchDialog";
 import { environmentIdsKey } from "~/state/environmentAtomList";
 import { environmentSessionStatesAtom } from "~/state/session";
@@ -387,6 +388,7 @@ function AboutVersionSection() {
           }
         />
       ) : null}
+      <UiBundleSettingsRow />
       {hasDesktopBridge ? <CliCommandSettingsRow /> : null}
       {switchChannel === null ? null : (
         <UpdateTrackSwitchDialog channel={switchChannel} onClose={() => setSwitchChannel(null)} />

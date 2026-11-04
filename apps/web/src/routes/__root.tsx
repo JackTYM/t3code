@@ -33,6 +33,7 @@ import { ReopenClosedViewShortcut } from "../components/ReopenClosedViewShortcut
 import { ProjectCloneToastCoordinator } from "../components/ProjectCloneToastCoordinator";
 import { ChatGptWelcomeCoordinator } from "../components/settings/ChatGptWelcomeCoordinator";
 import { ThemeEditorHost } from "../components/settings/ThemeEditorHost";
+import { useConfirmUiBoot } from "../hooks/useConfirmUiBoot";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { Button } from "../components/ui/button";
 import { MorphIcon } from "~/components/MorphIcon";
@@ -318,6 +319,7 @@ function EventRouter({
 }: {
   readonly skipInitialBootstrapNavigation: boolean;
 }) {
+  useConfirmUiBoot();
   const navigate = useNavigate();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);

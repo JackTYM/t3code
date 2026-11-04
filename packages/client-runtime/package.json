@@ -483,6 +483,10 @@
       "types": "./src/state/mcpServers.ts",
       "default": "./src/state/mcpServers.ts"
     },
+    "./state/ui-bundles": {
+      "types": "./src/state/uiBundles.ts",
+      "default": "./src/state/uiBundles.ts"
+    },
     "./source-control-clients": {
       "types": "./src/sourceControlClients.ts",
       "default": "./src/sourceControlClients.ts"

@@ -22,7 +22,7 @@ export type SessionMcpServerList =
   | { readonly status: "unavailable"; readonly reason: "server-outdated" };
 
 /** The RPC server answers a method it does not know with this defect. */
-function isUnknownRpcDefect(defect: unknown): boolean {
+export function isUnknownRpcDefect(defect: unknown): boolean {
   const message =
     typeof defect === "string"
       ? defect
