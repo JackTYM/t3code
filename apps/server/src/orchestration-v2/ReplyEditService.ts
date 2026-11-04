@@ -10,7 +10,7 @@ import {
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -100,7 +100,7 @@ const make = Effect.gen(function* () {
   const threadLock = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const serverConfig = yield* ServerConfig.ServerConfig;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
 
   const apply = Effect.fn("ReplyEditService.apply")(function* (
     input: { readonly threadId: OrchestrationV2EditAssistantMessageInput["threadId"] } & Pick<
@@ -117,8 +117,8 @@ const make = Effect.gen(function* () {
         ...(cause === undefined ? {} : { cause }),
       });
 
-    const commandUuid = yield* crypto
-      .randomUUIDv4()
+    const commandUuid = yield* random
+      .uuidV4()
       .pipe(Effect.mapError((cause) => refuse("write-failed", cause)));
 
     // Holding the thread lock keeps a new message from starting a turn, and so reopening the

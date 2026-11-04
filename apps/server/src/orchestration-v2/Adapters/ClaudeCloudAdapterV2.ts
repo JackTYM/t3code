@@ -54,6 +54,7 @@ import { normalizeClaudeTurnTokenUsage } from "../../provider/ClaudeTurnTokenUsa
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   resolveClaudeCatalogApiModelId,
+  resolveClaudeCatalogContextWindowTokens,
   resolveClaudeCatalogEffort,
   resolveClaudeModelSlug,
 } from "../../provider/ClaudeModelCatalog.ts";
@@ -590,7 +591,10 @@ export const makeClaudeCloudAdapterV2 = Effect.fn("makeClaudeCloudAdapterV2")(fu
               : {
                   tokenUsage: claudeProviderTurnTokenUsage(
                     usage,
-                    turn.input.modelSelection,
+                    resolveClaudeCatalogContextWindowTokens(
+                      BUNDLED_CLAUDE_MODEL_CATALOG,
+                      turn.input.modelSelection,
+                    ) ?? null,
                     DateTime.formatIso(completedAt),
                   ),
                 }),

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -299,6 +300,7 @@ describe("ReplyEditService", () => {
                 Layer.mergeAll(
                   registry.pipe(Layer.provide(McpProviderSessions.layer)),
                   ThreadCommandExecutor.layer,
+                  NodeCrypto.layer,
                   Layer.effect(
                     ServerConfig.ServerConfig,
                     ProviderReplayHarness.makeReplayServerConfig("reply-edit").pipe(Effect.orDie),
@@ -391,6 +393,7 @@ describe("ReplyEditService gating", () => {
               ]),
               Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
               ThreadCommandExecutor.layer,
+              NodeCrypto.layer,
               Layer.effect(
                 ServerConfig.ServerConfig,
                 ProviderReplayHarness.makeReplayServerConfig("reply-edit-gating").pipe(
