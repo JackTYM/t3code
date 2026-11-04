@@ -64,6 +64,7 @@ export function UiBundleSettingsRow() {
               ? "never checked"
               : `checked ${formatRelativeTimeLabel(state.lastCheckedAt)}`}
           </span>
+          {state.lastError === null ? null : <span className="block">{state.lastError}</span>}
           {state.incompatible === null ? null : (
             <span className="block">
               Full update needed: {describeIncompatibility(state.incompatible.reason)}
