@@ -122,6 +122,27 @@ If you run the server with `npx` rather than an installed `t3`, there is
 nothing to update on the host: stop the server and relaunch it as
 `npx t3@<client-version>` with the same subcommand and options.
 
+## UI updates
+
+A release can include a newer interface for the server you are connected to. T3 Code
+downloads it in the background, and you switch to it without reinstalling or
+restarting anything. Running threads and agents are not touched.
+
+When one is ready, a **UI update ready** button appears in the sidebar. Click it and
+this window reloads on the new interface; other open windows keep the old one until
+you reload them. **Settings → About** shows the active interface version, with
+**Check now** and **Revert to built-in**.
+
+- It only offers an interface built against the same server contracts as your server.
+  A release that changes the server or those contracts still needs the full update
+  described on this page.
+- If a new interface fails to start, T3 Code returns to the previous one after about
+  three minutes. Restarting the server before the new interface has started does the
+  same.
+- If the interface is unusable, open the app with `?ui=builtin` added to its address to
+  load the built-in interface for that page load.
+- To remove every downloaded interface, stop the server and run `t3 ui reset`.
+
 ## If an update fails
 
 Keep the client open until it reconnects or reports a failure. A failed service

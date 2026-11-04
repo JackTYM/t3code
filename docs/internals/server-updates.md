@@ -63,6 +63,25 @@ could lose the only successful RPC result. The client must then observe the
 prepared version after reconnecting. If installation fails, desktop restarts the
 stopped backends and replays the failure for the same token.
 
+## UI bundles
+
+A server can switch its served web client to a newer one from the release feed
+without restarting, so running agents are untouched. The
+[UiBundleService](../../apps/server/src/uiBundles/UiBundleService.ts) stages and
+verifies a bundle, then flips the static root. Compatibility is a hash of the wire
+contracts plus the desktop bridge files, written by
+[compute-ui-compat.ts](../../scripts/compute-ui-compat.ts), and an equal version core.
+`orchestrationProtocol` is too coarse: contracts drift without a bump. The bridge files
+count because the Electron preload is not swapped with the UI. The hash cannot see
+main-process IPC handler changes, so a UI that calls a new handler can pass the check
+and fail at runtime; changes to what a channel does need the full update.
+
+The new UI is untrusted until it mounts and confirms, so each apply starts a timer and
+an unconfirmed bundle reverts when it expires. A server that restarts before
+confirmation also reverts, because it cannot know the UI ever booted. A reverted version is
+not offered again. The bundle is trusted as far as the release feed: sha256 detects
+corruption, and there is no signature.
+
 ## Recovering interrupted threads
 
 Restart continuation is an environment-owned preference, on by default. A
