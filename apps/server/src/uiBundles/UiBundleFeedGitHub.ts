@@ -27,6 +27,11 @@ const make = Effect.gen(function* () {
     Config.option,
     Effect.orElseSucceed(() => Option.none<string>()),
   );
+  // The override replaces the GitHub release feed entirely, so whoever controls it controls which
+  // UI the server may download; it is meant for tests and development only.
+  if (Option.isSome(feedUrlOverride)) {
+    yield* Effect.logWarning(`${FEED_URL_ENV} is set; UI updates use that feed instead of GitHub.`);
+  }
 
   const request = (url: string, timeoutMs: number) =>
     client
@@ -44,8 +49,16 @@ const make = Effect.gen(function* () {
   const invalidResponse = (cause: unknown) =>
     new UiBundleFeedError({ reason: "invalid-response", cause });
 
+  // A body that is not JSON is the feed's fault, not the network's.
   const readJson = (response: HttpClientResponse.HttpClientResponse) =>
-    response.json.pipe(Effect.timeout(API_TIMEOUT_MS), Effect.mapError(requestError));
+    response.json.pipe(
+      Effect.timeout(API_TIMEOUT_MS),
+      Effect.mapError((cause) =>
+        cause._tag === "HttpClientError" && cause.reason._tag === "DecodeError"
+          ? invalidResponse(cause)
+          : requestError(cause),
+      ),
+    );
 
   const getManifest = (url: string) =>
     request(url, API_TIMEOUT_MS).pipe(
