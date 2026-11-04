@@ -303,6 +303,59 @@ it.layer(
     }),
   );
 
+  it.effect("serves built-in hashed assets while a bundle is active", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const builtinDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-static-builtin-" });
+      const bundleDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-static-bundle-" });
+      for (const dir of [builtinDir, bundleDir]) {
+        yield* fs.makeDirectory(`${dir}/assets`, { recursive: true });
+        yield* fs.writeFileString(
+          `${dir}/index.html`,
+          `<html>${dir === builtinDir ? "builtin" : "bundle"}</html>`,
+        );
+      }
+      yield* fs.makeDirectory(`${builtinDir}/.vite`, { recursive: true });
+      yield* fs.writeFileString(`${builtinDir}/assets/only-builtin-abcd1234.js`, "// builtin");
+      yield* fs.writeFileString(`${builtinDir}/assets/shared-abcd1234.js`, "// builtin shared");
+      yield* fs.writeFileString(`${bundleDir}/assets/shared-abcd1234.js`, "// bundle shared");
+      yield* fs.writeFileString(`${builtinDir}/favicon.ico`, "builtin icon");
+      yield* fs.writeFileString(
+        `${builtinDir}/.vite/manifest.json`,
+        JSON.stringify({
+          "src/main.tsx": { file: "assets/only-builtin-abcd1234.js" },
+          "src/shared.tsx": { file: "assets/shared-abcd1234.js" },
+        }),
+      );
+      const request = yield* makeStaticRequest(builtinDir, Effect.succeed(bundleDir));
+
+      expect(yield* (yield* request("/?ui=builtin")).text).toBe("<html>builtin</html>");
+      const builtinOnly = yield* request("/assets/only-builtin-abcd1234.js");
+      expect(builtinOnly.status).toBe(200);
+      expect(yield* builtinOnly.text).toBe("// builtin");
+      expect(builtinOnly.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+
+      // The bundle root wins when it has the file.
+      expect(yield* (yield* request("/assets/shared-abcd1234.js")).text).toBe("// bundle shared");
+
+      // A truly missing asset still gets the bundle's index.html.
+      const missing = yield* request("/assets/missing-abcd1234.js");
+      expect(missing.status).toBe(200);
+      expect(missing.headers["content-type"]).toContain("text/html");
+      expect(yield* missing.text).toBe("<html>bundle</html>");
+
+      // Only hashed build output falls back; other files must not mask a corrupt bundle.
+      const favicon = yield* request("/favicon.ico");
+      expect(yield* favicon.text).toBe("<html>bundle</html>");
+
+      // The pathname is never percent-decoded, so an encoded separator inside `assets/` is just an
+      // unknown file name (SPA fallback), and only a leading `..` segment is rejected outright.
+      const encoded = yield* request("/assets/..%2f..%2fetc/passwd");
+      expect(yield* encoded.text).toBe("<html>bundle</html>");
+      expect((yield* request("/..%2fassets/only-builtin-abcd1234.js")).status).toBe(400);
+    }),
+  );
+
   it.effect(
     "caches hashed assets as immutable only when the serving root's manifest lists them",
     () =>

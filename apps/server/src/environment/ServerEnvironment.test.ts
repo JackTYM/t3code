@@ -18,6 +18,7 @@ import {
   RELAY_URL_SECRET,
 } from "../cloud/config.ts";
 import * as ServerConfig from "../config.ts";
+import * as UiBundleService from "../uiBundles/UiBundleService.ts";
 import * as ServerEnvironment from "./ServerEnvironment.ts";
 
 const layerServerEnvironment = (baseDir: string) =>
@@ -264,6 +265,42 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
         const disabled = yield* serverEnvironment.getDescriptor;
         expect(disabled.capabilities.agentActivityPublishing).toBe(false);
       }).pipe(Effect.provide(layerTest));
+    }),
+  );
+
+  it.effect("advertises uiBundles only when the UI bundle service is provided and enabled", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-server-environment-test-" });
+      const capabilities = (uiBundles: Layer.Layer<UiBundleService.UiBundleService> | undefined) =>
+        Effect.gen(function* () {
+          const environment = yield* ServerEnvironment.ServerEnvironment;
+          return (yield* environment.getDescriptor).capabilities;
+        }).pipe(
+          Effect.provide(
+            uiBundles === undefined
+              ? layerServerEnvironment(baseDir)
+              : layerServerEnvironment(baseDir).pipe(Layer.provideMerge(uiBundles)),
+          ),
+        );
+      const layerUiBundles = (enabled: boolean) =>
+        Layer.mock(UiBundleService.UiBundleService)({
+          state: Effect.succeed({
+            enabled,
+            builtinVersion: "1.0.0",
+            active: "",
+            previous: null,
+            ready: null,
+            incompatible: null,
+            lastCheckedAt: null,
+            lastError: null,
+            bootPending: false,
+          }),
+        });
+
+      expect((yield* capabilities(layerUiBundles(true))).uiBundles).toBe(true);
+      expect((yield* capabilities(layerUiBundles(false))).uiBundles).toBeUndefined();
+      expect((yield* capabilities(undefined)).uiBundles).toBeUndefined();
     }),
   );
 });

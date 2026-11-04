@@ -610,7 +610,6 @@ const handleStaticAndDevRequest = Effect.fn("handleStaticAndDevRequest")(
     }
 
     const path = yield* Path.Path;
-    const immutableBuildAssets = yield* immutableBuildAssetsFor(staticDir);
     const staticRoot = path.resolve(staticDir);
     const staticRequestPath = url.value.pathname === "/" ? "/index.html" : url.value.pathname;
     const rawStaticRelativePath = staticRequestPath.replace(/^[/\\]+/, "");
@@ -626,9 +625,10 @@ const handleStaticAndDevRequest = Effect.fn("handleStaticAndDevRequest")(
       return HttpServerResponse.text("Invalid static file path", { status: 400 });
     }
 
-    const isWithinStaticRoot = (candidate: string) =>
-      candidate === staticRoot ||
-      candidate.startsWith(staticRoot.endsWith(path.sep) ? staticRoot : `${staticRoot}${path.sep}`);
+    const isWithinRoot = (root: string, candidate: string) =>
+      candidate === root ||
+      candidate.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`);
+    const isWithinStaticRoot = (candidate: string) => isWithinRoot(staticRoot, candidate);
 
     let filePath = path.resolve(staticRoot, staticRelativePath);
     if (!isWithinStaticRoot(filePath)) {
@@ -643,7 +643,27 @@ const handleStaticAndDevRequest = Effect.fn("handleStaticAndDevRequest")(
       }
     }
 
+    let servedRoot = staticRoot;
     let opened = yield* openStaticFile(filePath);
+    const requestedRelativePath = path.relative(staticRoot, filePath).replaceAll("\\", "/");
+    if (!opened && uiRoot !== null && requestedRelativePath.startsWith("assets/")) {
+      // The built-in index.html (`?ui=builtin`, or a tab opened before an Apply) requests its hashed
+      // build output without the `ui` param, so those files only exist under the built-in root.
+      const builtinDir =
+        config.staticDir ?? (config.devUrl ? yield* ServerConfig.resolveStaticDir() : undefined);
+      if (builtinDir) {
+        const builtinRoot = path.resolve(builtinDir);
+        const builtinPath = path.resolve(builtinRoot, requestedRelativePath);
+        if (!isWithinRoot(builtinRoot, builtinPath)) {
+          return HttpServerResponse.text("Invalid static file path", { status: 400 });
+        }
+        opened = yield* openStaticFile(builtinPath);
+        if (opened) {
+          servedRoot = builtinRoot;
+          filePath = builtinPath;
+        }
+      }
+    }
     if (!opened) {
       filePath = path.resolve(staticRoot, "index.html");
       opened = yield* openStaticFile(filePath);
@@ -656,7 +676,8 @@ const handleStaticAndDevRequest = Effect.fn("handleStaticAndDevRequest")(
     const isHtml = mimeType === "text/html";
 
     // A hash-like name is not enough: custom static files can use the same naming pattern.
-    const relativePath = path.relative(staticRoot, filePath).replaceAll("\\", "/");
+    const relativePath = path.relative(servedRoot, filePath).replaceAll("\\", "/");
+    const immutableBuildAssets = yield* immutableBuildAssetsFor(servedRoot);
     const immutable =
       !isHtml &&
       /^assets\/.+-[\w-]{8}\.[^/]+$/.test(relativePath) &&
