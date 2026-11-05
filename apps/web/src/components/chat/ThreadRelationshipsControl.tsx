@@ -79,6 +79,7 @@ import {
 import { threadEnvironment } from "../../state/threads";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useEnvironmentQuery } from "../../state/query";
 import { AgentElapsed } from "./AgentElapsed";
 import { ThreadRelationshipIcon, threadRelationshipStatusLabel } from "./ThreadRelationshipIcon";
 import { ThreadLineageWorkflowRow } from "./ThreadLineageWorkflowRow";
@@ -535,6 +536,31 @@ export function ThreadRelationshipsPanel(props: {
     members: workflowMembers,
   });
   const canMerge = mergeTargetThreadId !== null && latestMergeBackRun !== null;
+  const unlistedThreadIds = relationshipRows
+    .filter(
+      ({ threadId, edge }) =>
+        !relationshipShells.some((thread) => thread.id === threadId) &&
+        (edge.kind !== "subagent" || !subagentsByThreadId.get(threadId)?.title),
+    )
+    .map(({ threadId }) => threadId);
+  const threadTitles = useEnvironmentQuery(
+    unlistedThreadIds.length === 0
+      ? null
+      : orchestrationEnvironment.threadTitles({
+          environmentId: props.environmentId,
+          input: { threadIds: unlistedThreadIds },
+        }),
+  );
+  const resolvedThreadTitles = threadTitles.data ?? {};
+  // Omitted and archived threads remain reachable; only a settled lookup proves one is gone.
+  const visibleRelationships = relationshipRows.filter(
+    ({ threadId, edge }) =>
+      edge.kind === "subagent" ||
+      !unlistedThreadIds.includes(threadId) ||
+      !threadTitles.isSuccess ||
+      threadTitles.isPending ||
+      Object.hasOwn(resolvedThreadTitles, threadId),
+  );
   const canDetach = projection ? canDetachThreadProviderSession(projection) : false;
 
   const {
@@ -542,7 +568,7 @@ export function ThreadRelationshipsPanel(props: {
     active = [],
     previous = [],
     sideChats = [],
-  } = groupBy(relationshipRows, ({ threadId, edge }) => {
+  } = groupBy(visibleRelationships, ({ threadId, edge }) => {
     const isParent = isParentThreadRelationship(edge, props.threadId);
     if (!isParent && graph.nodes.get(threadId)?.thread?.lineage.sideChat === true)
       return "sideChats";
@@ -724,7 +750,14 @@ export function ThreadRelationshipsPanel(props: {
       ["pending", "running", "waiting"].includes(agent.status);
     const threadTitle = relationshipThreadTitle({
       title:
-        workflowGroup?.workflow.workflowName ?? node?.thread?.title ?? agent?.title ?? threadId,
+        workflowGroup?.workflow.workflowName ??
+        // Fresher than an archived snapshot's copy.
+        (Object.hasOwn(resolvedThreadTitles, threadId)
+          ? resolvedThreadTitles[threadId]
+          : undefined) ??
+        node?.thread?.title ??
+        agent?.title ??
+        threadId,
       isSubagent,
     });
     const provider = providers?.find(

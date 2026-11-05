@@ -558,6 +558,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.newProjectsDirectory !== DEFAULT_UNIFIED_SETTINGS.newProjectsDirectory
       ? ["New projects location"]
       : []),
+    ...(settings.ghqCloneLayout !== DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout
+      ? ["Clone into host folders"]
+      : []),
     ...(settings.confirmThreadUnpin !== DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin
       ? ["Unpin confirmation"]
       : []),
@@ -673,6 +676,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       newProjectsDirectory: DEFAULT_UNIFIED_SETTINGS.newProjectsDirectory,
+      ghqCloneLayout: DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
       confirmThreadUnpin: DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin,
@@ -1639,6 +1643,30 @@ export function ThreadsSettingsPanel() {
             }
           />
         ) : null}
+        <SettingsRow
+          serverScoped
+          settingKeys={["ghqCloneLayout"]}
+          {...searchableSetting("ghq-clone-layout")}
+          description="Clones go to github.com/owner/repo under the folder above, like ghq."
+          resetAction={
+            settings.ghqCloneLayout !== DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout ? (
+              <SettingResetButton
+                label="clone into host folders"
+                onClick={() =>
+                  updateSettings({ ghqCloneLayout: DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout })
+                }
+              />
+            ) : null
+          }
+          control={
+            <ScopedSwitch
+              settingKeys={["ghqCloneLayout"]}
+              checked={settings.ghqCloneLayout}
+              onCheckedChange={(checked) => updateSettings({ ghqCloneLayout: Boolean(checked) })}
+              aria-label="Clone into host folders"
+            />
+          }
+        />
       </SettingsSection>
 
       <ProjectDefaultsSettings category="general" />
