@@ -1,12 +1,15 @@
 import { requireOptionalNativeModule } from "expo";
 import * as Linking from "expo-linking";
 import type { SubscriptionUsageSnapshot } from "./subscriptionUsageSnapshot";
+import type { WidgetPublishOutcome } from "./widgetPublishDiagnostics";
 
 let tapUrl: string | undefined;
 let listening = false;
 
-export async function publishSubscriptionUsage(snapshot: SubscriptionUsageSnapshot) {
-  if (!requireOptionalNativeModule("ExpoWidgets")) return;
+export async function publishSubscriptionUsage(
+  snapshot: SubscriptionUsageSnapshot,
+): Promise<WidgetPublishOutcome> {
+  if (!requireOptionalNativeModule("ExpoWidgets")) return "unavailable";
   const [{ default: widget }, { addUserInteractionListener }] = await Promise.all([
     import("./SubscriptionUsage"),
     import("expo-widgets"),
@@ -27,4 +30,5 @@ export async function publishSubscriptionUsage(snapshot: SubscriptionUsageSnapsh
     "SubscriptionUsage",
     snapshot.providers.map((provider) => provider.expiresAt).filter((at) => at > 0),
   );
+  return "published";
 }

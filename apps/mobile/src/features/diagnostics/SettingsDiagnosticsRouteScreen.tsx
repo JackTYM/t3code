@@ -17,6 +17,11 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { crashReportingAvailable, setCrashReportsEnabled } from "../observability/observe";
+import { useSubscriptionUsageWidgetPublisher } from "../../widgets/SubscriptionUsageCoordinator";
+import {
+  describeWidgetPublish,
+  describeWidgetPublishFailure,
+} from "../../widgets/widgetPublishDiagnostics";
 import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
@@ -103,6 +108,8 @@ export function SettingsDiagnosticsRouteScreen() {
       >
         {crashReportingAvailable ? <CrashReportsSetting /> : null}
 
+        <WidgetSection />
+
         <SettingsSection title="Startup crashes">
           {state.status === "loading" ? (
             <View className="items-center gap-3 px-6 py-8">
@@ -145,6 +152,60 @@ export function SettingsDiagnosticsRouteScreen() {
         </View>
       </ScrollView>
     </SettingsScreen>
+  );
+}
+
+type WidgetPublishState =
+  | { readonly status: "idle" }
+  | { readonly status: "publishing" }
+  | { readonly status: "done"; readonly failed: boolean; readonly message: string };
+
+function WidgetSection() {
+  const publish = useSubscriptionUsageWidgetPublisher();
+  const [state, setState] = useState<WidgetPublishState>({ status: "idle" });
+
+  const refresh = () => {
+    setState({ status: "publishing" });
+    publish().then(
+      ({ outcome, snapshot }) =>
+        setState({
+          status: "done",
+          failed: false,
+          message: describeWidgetPublish(outcome, snapshot),
+        }),
+      (error: unknown) =>
+        setState({ status: "done", failed: true, message: describeWidgetPublishFailure(error) }),
+    );
+  };
+
+  return (
+    <View className="gap-3">
+      <SettingsSection title="Widgets">
+        <SettingsActionRow
+          icon="arrow.clockwise"
+          label={state.status === "publishing" ? "Refreshing…" : "Refresh usage widget"}
+          disabled={state.status === "publishing"}
+          onPress={refresh}
+        />
+      </SettingsSection>
+      {state.status === "done" ? (
+        <Text
+          selectable
+          className={
+            state.failed
+              ? "px-2 text-sm leading-normal text-danger-foreground"
+              : "px-2 text-sm leading-normal text-foreground-muted"
+          }
+        >
+          {state.message}
+        </Text>
+      ) : (
+        <Text className="px-2 text-sm leading-normal text-foreground-muted">
+          Sends the latest provider usage to the home screen and lock screen widget. If it fails,
+          the message here says why.
+        </Text>
+      )}
+    </View>
   );
 }
 

@@ -9,6 +9,8 @@ import { environmentPresentations } from "../state/presentation";
 import { publishSubscriptionUsage } from "./publishSubscriptionUsage";
 import { buildSubscriptionUsageSnapshot } from "./subscriptionUsageSnapshot";
 import { createWidgetTheme } from "./widgetTheme";
+import type { WidgetPublishOutcome } from "./widgetPublishDiagnostics";
+import type { SubscriptionUsageSnapshot } from "./subscriptionUsageSnapshot";
 
 // Isolate quota changes from the much busier thread/config presentation stream.
 const snapshotAtom = Atom.make((get) =>
@@ -52,4 +54,20 @@ export function SubscriptionUsageCoordinator() {
     androidAppearance,
   ]);
   return null;
+}
+
+/** Publishes the current usage on demand and, unlike the coordinator, lets failures reach the caller. */
+export function useSubscriptionUsageWidgetPublisher(): () => Promise<{
+  readonly outcome: WidgetPublishOutcome;
+  readonly snapshot: SubscriptionUsageSnapshot;
+}> {
+  const { themeMode, themeVariablesByAppearance } = useAppearancePreferences();
+  const snapshot = useAtomValue(snapshotAtom);
+  return async () => ({
+    outcome: await publishSubscriptionUsage({
+      ...snapshot,
+      theme: createWidgetTheme(themeMode, themeVariablesByAppearance),
+    }),
+    snapshot,
+  });
 }
