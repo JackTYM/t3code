@@ -74,7 +74,7 @@ import {
   type ClaudeToolClassification,
 } from "./ClaudeAdapterV2.ts";
 
-export const CLAUDE_CLOUD_PROVIDER = ProviderDriverKind.make("claudeCloud");
+const CLAUDE_CLOUD_PROVIDER = ProviderDriverKind.make("claudeCloud");
 const DEFAULT_TITLE = "T3 Code";
 /** Recent events inspected when re-attaching to tell whether a turn is mid-flight. */
 const RESUME_EVENT_WINDOW = 50;
@@ -98,7 +98,7 @@ const SESSION_GONE_NOTICE = "The previous Claude Cloud session is gone. Started 
 const REPO_FALLBACK_NOTICE =
   "Claude Cloud could not access this repository, so the session has no repo attached.";
 
-export const ClaudeCloudProviderCapabilitiesV2 = {
+const ClaudeCloudProviderCapabilitiesV2 = {
   // The cloud sandbox is the boundary: the agent runs there with full access.
   runtimePolicy: { enforcement: "native" },
   sessions: {
@@ -216,7 +216,7 @@ export const githubRepoSourceFromIdentity = (
     : null;
 
 /** The API model id and the effort the cloud accepts for a selection. */
-export function resolveClaudeCloudModel(selection: ModelSelection): {
+function resolveClaudeCloudModel(selection: ModelSelection): {
   readonly model: string;
   readonly effort: string | undefined;
 } {
@@ -304,7 +304,7 @@ const nativeRef = (nativeId: string, strength: "strong" | "weak" = "strong") => 
 const isGone = (error: ClaudeCloudError) => isApiError(error) && error.kind === "notFound";
 
 /** User-facing failure for a cloud call, with credential problems marked as such. */
-export function claudeCloudFailure(error: ClaudeCloudError): OrchestrationV2ProviderFailure {
+function claudeCloudFailure(error: ClaudeCloudError): OrchestrationV2ProviderFailure {
   if (isSignInError(error)) {
     return makeProviderFailure({ class: "permission_error", message: error.message, code: "auth" });
   }

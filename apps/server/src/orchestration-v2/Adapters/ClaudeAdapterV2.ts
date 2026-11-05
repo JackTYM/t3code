@@ -3665,7 +3665,7 @@ function isClaudeToolUseContentBlock(
   );
 }
 
-export function claudeToolUseBlocksFromAssistantMessage(
+function claudeToolUseBlocksFromAssistantMessage(
   message: SDKMessage,
 ): ReadonlyArray<ClaudeToolUseContentBlock> {
   if (message.type !== "assistant") {
