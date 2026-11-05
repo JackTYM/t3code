@@ -323,9 +323,15 @@ const resolveEditorConfig = Effect.fn("ws.resolveEditorConfig")(function* <E, R>
   };
 });
 
+// The snapshot's resolved projects folder follows the setting, which settingsUpdated cannot carry.
+interface NewProjectsRootResolved {
+  readonly type: "newProjectsRootResolved";
+  readonly root: string;
+}
+
 export const withLateConfigDiscovery = <E, R>(
   config: ClientServerConfig,
-  liveUpdates: Stream.Stream<ServerConfigStreamEvent, E, R>,
+  liveUpdates: Stream.Stream<ServerConfigStreamEvent | NewProjectsRootResolved, E, R>,
   launcher: EditorDiscovery,
   remoteOpenTargets: RemoteOpenTargets.RemoteOpenTargets["Service"],
   directEndpoints: Pick<DirectEndpoints.DirectEndpoints["Service"], "resolve">,
@@ -388,6 +394,11 @@ export const withLateConfigDiscovery = <E, R>(
               return [current, []];
             }
             const next = { ...current, directEndpoints: event.endpoints };
+            return [next, [{ version: 1, type: "snapshot", config: next }]];
+          }
+          case "newProjectsRootResolved": {
+            if (current.newProjectsRoot === event.root) return [current, []];
+            const next = { ...current, newProjectsRoot: event.root };
             return [next, [{ version: 1, type: "snapshot", config: next }]];
           }
           case "keybindingsUpdated":
@@ -3337,14 +3348,24 @@ export const layerWsRpc = (
                     )
                   : Stream.empty;
               const settingsUpdates = settingsChanges.pipe(
-                Stream.map((settings) =>
-                  ServerSettings.redactServerSettingsForClient(settings, settingsClient),
+                Stream.mapEffect((settings) =>
+                  managedFolders.namedProjectsRoot.pipe(Effect.map((root) => ({ settings, root }))),
                 ),
-                Stream.map((settings) => ({
-                  version: 1 as const,
-                  type: "settingsUpdated" as const,
-                  payload: { settings },
-                })),
+                Stream.flatMap(({ settings, root }) =>
+                  Stream.make<Array<ServerConfigStreamEvent | NewProjectsRootResolved>>(
+                    {
+                      version: 1 as const,
+                      type: "settingsUpdated" as const,
+                      payload: {
+                        settings: ServerSettings.redactServerSettingsForClient(
+                          settings,
+                          settingsClient,
+                        ),
+                      },
+                    },
+                    { type: "newProjectsRootResolved" as const, root },
+                  ),
+                ),
               );
 
               const liveUpdates = Stream.merge(

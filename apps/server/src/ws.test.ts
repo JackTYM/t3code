@@ -180,6 +180,29 @@ it.effect("resends late editors without rolling back updates already sent", () =
   }),
 );
 
+it.effect("follows a changed projects folder and ignores a repeated one", () =>
+  Effect.gen(function* () {
+    const events = yield* withLateConfigDiscovery(
+      snapshotConfig({ newProjectsRoot: "/home/t3/projects" } as Partial<ServerConfig>),
+      Stream.make(
+        { type: "newProjectsRootResolved" as const, root: "/home/t3/projects" },
+        { type: "newProjectsRootResolved" as const, root: "/Users/me/Coding" },
+      ),
+      {
+        resolveAvailableEditors: () => Effect.succeed([]),
+        resolveFileManagerRevealKind: () => Effect.undefined,
+      },
+      { resolveTargets: () => Effect.succeed([]) },
+      { resolve: () => Effect.succeed([]) },
+    ).pipe(Stream.runCollect);
+
+    const snapshots = Array.from(events).flatMap((event) =>
+      event.type === "snapshot" ? [event.config.newProjectsRoot] : [],
+    );
+    assert.deepEqual(snapshots, ["/Users/me/Coding"]);
+  }),
+);
+
 it.effect("resends a reveal kind and remote targets that outlast the snapshot timeout", () =>
   Effect.gen(function* () {
     const targets = [{ kind: "mdns" as const, host: "test.local" }];
