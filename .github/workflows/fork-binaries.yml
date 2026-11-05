@@ -547,7 +547,7 @@ jobs:
             --date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --source-url "${pages}/source.json"
           cat site/source.json
-          find site -maxdepth 3 | head -20
+          ls -R site | head -20 || true
 
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
 
