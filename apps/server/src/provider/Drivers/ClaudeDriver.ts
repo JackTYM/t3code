@@ -148,11 +148,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       continuationGroupKey,
     });
 
-    // Models limited to approved organizations are offered only when the
-    // account's own login reports them. That login is the CLI's default one,
-    // so skip the check whenever this instance signs in another way: an API
-    // key or router cannot reach those models, and a separate config
-    // directory is a different account than the login we would read.
+    // Org-gated models are offered only when the CLI's default login reports them.
+    // Skip the check when this instance signs in another way (API key, router, or a
+    // separate config directory): that is not the account whose login we would read.
     const usesDefaultSubscriptionLogin =
       !effectiveConfig.homePath.trim() &&
       !processEnv.ANTHROPIC_API_KEY &&

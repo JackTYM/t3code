@@ -2,7 +2,6 @@ import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, McpServerStatus, ThreadId } from "@t3tools/contracts";
 import type { AsyncResult } from "effect/reactivity";
 import { PlugIcon, RefreshCwIcon } from "lucide-react";
-import { useCallback } from "react";
 
 import { mcpServerEnvironment } from "../../state/mcpServers";
 import { formatEnvironmentQueryError, useEnvironmentQuery } from "../../state/query";
@@ -39,20 +38,17 @@ export function McpServersPanel(props: {
 
   // A failed repair must say so: a server that refused looks identical to one
   // the button never reached otherwise.
-  const report = useCallback(
-    async (title: string, run: Promise<AsyncResult.AsyncResult<unknown, unknown>>) => {
-      const result = await run;
-      if (result._tag !== "Failure") return;
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title,
-          description: formatEnvironmentQueryError(result.cause),
-        }),
-      );
-    },
-    [],
-  );
+  const report = async (title: string, run: Promise<AsyncResult.AsyncResult<unknown, unknown>>) => {
+    const result = await run;
+    if (result._tag !== "Failure") return;
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title,
+        description: formatEnvironmentQueryError(result.cause),
+      }),
+    );
+  };
 
   const list = query.data;
   if (list === null) {

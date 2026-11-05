@@ -69,12 +69,9 @@ function tryResolveClaudeModelCatalog(
 }
 
 /**
- * Models this app adds on top of the published catalog. They are defined here
- * rather than in `model-manifest.json` because that file is refetched from the
- * published manifest, which would drop a locally added entry.
- *
- * `accountGated` ones are limited to approved organizations; the Claude CLI
- * never lists them, so they cannot come from a probe.
+ * Models added on top of the published catalog; not in `model-manifest.json` because
+ * refetching it would drop them. `accountGated` ones are org-limited and never listed by the
+ * Claude CLI, so they cannot come from a probe.
  */
 const CODE_DEFINED_CLAUDE_MODELS: ReadonlyArray<ClaudeCatalogModel> = [
   {
@@ -105,11 +102,9 @@ const CODE_DEFINED_CLAUDE_MODELS: ReadonlyArray<ClaudeCatalogModel> = [
     compatibility: { minVersion: "2.1.257" },
   },
   {
-    // The CLI's own `opusplan` alias: Opus while the permission mode is plan,
-    // Sonnet otherwise. The capabilities are what both models share, and both
-    // have a fixed 1M context window, so the meter reads the same either way.
-    // Selecting it needs no adapter change: the slug is passed through as the
-    // SDK model id.
+    // The CLI's `opusplan` alias: Opus in plan mode, Sonnet otherwise. Capabilities are
+    // what both share, and both have a fixed 1M context window. The slug is passed
+    // through as the SDK model id.
     model: {
       slug: "opusplan",
       name: "Claude Opus Planning · Sonnet",

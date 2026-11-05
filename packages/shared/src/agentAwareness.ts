@@ -62,11 +62,9 @@ export interface ProjectThreadAwarenessV2Input {
 }
 
 /**
- * The roster is the active inbox, not every thread the environment holds. An
- * archived thread's session went ready long ago, so without this it would render
- * as a permanent Done row. Snooze is reversible and an agent blocked on the
- * user outranks it, matching how the clients treat their inbox. Settled threads
- * are handled separately because live work outranks settling.
+ * The roster is the active inbox: an archived thread's long-ready session would
+ * otherwise render as a permanent Done row. A blocked agent outranks snooze, as in
+ * the clients' inbox. Settled threads are handled separately.
  */
 function isThreadParkedForAwareness(
   thread: ProjectThreadAwarenessV2Input["thread"],

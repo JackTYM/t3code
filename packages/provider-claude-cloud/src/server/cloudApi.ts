@@ -1,12 +1,7 @@
 /**
- * Client for the private cloud-session API behind claude.ai/code, the one
- * `claude --cloud` drives.
- *
- * Undocumented and beta-gated: the shapes here were established by probing a
- * real account, so every payload that belongs to the Claude SDK message format
- * stays `unknown` and is narrowed by the adapter.
- *
- * @module cloudApi
+ * Client for the private, undocumented cloud-session API behind claude.ai/code.
+ * Shapes were established by probing a real account, so payloads in the Claude SDK
+ * message format stay `unknown` and are narrowed by the adapter.
  */
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";

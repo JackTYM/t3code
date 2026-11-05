@@ -1,16 +1,7 @@
 /**
- * Reads the Claude Code CLI's own OAuth access token.
- *
- * Claude Code keeps the token in the macOS Keychain, and in
- * `<config dir>/.credentials.json` elsewhere. `claudeResetCredits.ts` reads
- * only the file and so does nothing on macOS; this module covers both, for
- * callers that must work there too.
- *
- * Read-only by design: never refreshed and never written back, because a
- * refresh rotates the CLI's refresh token and can sign the user out of it.
- * An expired token simply reads as unavailable until the user runs `claude`.
- *
- * @module claudeOauthToken
+ * Reads the Claude Code CLI's OAuth token: macOS Keychain, else `<config dir>/.credentials.json`.
+ * Read-only: a refresh rotates the CLI's refresh token and can sign the user out of it,
+ * so an expired token reads as unavailable until the user runs `claude`.
  */
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";

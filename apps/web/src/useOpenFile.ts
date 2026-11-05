@@ -1,16 +1,8 @@
 /**
- * Opening a workspace file where the "Open files in" setting says.
- *
- * Every surface that opens a file without the user naming a destination —
- * a diff title, the file tree, a mention chip, the file palette — goes through
- * this hook, so the preference, the capability gating, and the modifier escape
- * are decided in one place instead of drifting per surface.
- *
- * Surfaces where the user *did* name a destination (`OpenInPicker`, the
- * "Open in <editor>" and "Reveal in <file manager>" context-menu items) call
- * the underlying commands directly and must not come through here.
- *
- * @module useOpenFile
+ * Opens a workspace file where the "Open files in" setting says, for every surface where the
+ * user did not name a destination, so preference, capability gating, and modifier escape live
+ * in one place. Surfaces where they did (`OpenInPicker`, "Open in"/"Reveal in" menu items)
+ * call the underlying commands directly and must not come through here.
  */
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -19,7 +11,6 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import { AuthOrchestrationOperateScope, type ScopedThreadRef } from "@t3tools/contracts";
-import { useCallback } from "react";
 
 import { revealInFileManagerLabelForEnvironment } from "./components/preview/fileExplorerLabel";
 import { toastManager } from "./components/ui/toast";
@@ -83,47 +74,35 @@ export function useOpenFile(input: {
     canUseShellActions &&
     revealInFileManagerLabelForEnvironment(environmentId, serverConfig) !== undefined;
 
-  return useCallback(
-    (request) => {
-      const target = resolveFileOpenTarget({
-        event: request.event ?? NO_MODIFIER,
-        preference,
-        canOpenInEditor,
-        canRevealInFileManager,
-      });
-
-      if (target === "panel") {
-        if (!threadRef) return;
-        useRightPanelStore.getState().openFile(threadRef, request.workspacePath, request.line);
-        return;
-      }
-
-      // Guaranteed by the capability gate above: neither non-panel target is
-      // reachable without a cwd to resolve the path against.
-      const absolutePath = resolvePathLinkTarget(request.workspacePath, cwd ?? "");
-      if (target === "editor") {
-        void openInPreferredEditor(absolutePath).then((result) => {
-          reportOpenFailure("Unable to open file", result);
-        });
-        return;
-      }
-      if (environmentId === null) return;
-      void openInEditor({
-        environmentId,
-        input: { cwd: absolutePath, editor: "file-manager", reveal: true },
-      }).then((result) => {
-        reportOpenFailure("Unable to reveal file", result);
-      });
-    },
-    [
+  return (request) => {
+    const target = resolveFileOpenTarget({
+      event: request.event ?? NO_MODIFIER,
+      preference,
       canOpenInEditor,
       canRevealInFileManager,
-      cwd,
+    });
+
+    if (target === "panel") {
+      if (!threadRef) return;
+      useRightPanelStore.getState().openFile(threadRef, request.workspacePath, request.line);
+      return;
+    }
+
+    // Guaranteed by the capability gate above: neither non-panel target is
+    // reachable without a cwd to resolve the path against.
+    const absolutePath = resolvePathLinkTarget(request.workspacePath, cwd ?? "");
+    if (target === "editor") {
+      void openInPreferredEditor(absolutePath).then((result) => {
+        reportOpenFailure("Unable to open file", result);
+      });
+      return;
+    }
+    if (environmentId === null) return;
+    void openInEditor({
       environmentId,
-      openInEditor,
-      openInPreferredEditor,
-      preference,
-      threadRef,
-    ],
-  );
+      input: { cwd: absolutePath, editor: "file-manager", reveal: true },
+    }).then((result) => {
+      reportOpenFailure("Unable to reveal file", result);
+    });
+  };
 }

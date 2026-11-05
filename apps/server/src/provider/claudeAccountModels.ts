@@ -1,14 +1,6 @@
 /**
- * Model ids the signed-in Claude account may use.
- *
- * Some models are limited to approved organizations and the Claude CLI never
- * lists them, but the Models API does for an account that has them. Used only
- * to decide whether to offer such a model, so every failure means "none
- * known": a provider health check must never fail because of this.
- *
- * Mirrors `CodexChatGptModels.ts`, which does the same for Codex.
- *
- * @module claudeAccountModels
+ * Model ids the signed-in Claude account may use; the CLI never lists org-gated models.
+ * Every failure means "none known": a provider health check must never fail because of this.
  */
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";

@@ -1,11 +1,7 @@
 /**
- * Drives a Claude Code cloud session (claude.ai/code) over its private HTTP/SSE
- * API. The agent runs in Anthropic's sandbox, never in the thread's cwd.
- *
- * Worker messages are Claude SDK message JSON, so tool, result, and usage
- * mapping reuses the pure helpers of the local Claude adapter.
- *
- * @module ClaudeCloudAdapterV2
+ * Drives a Claude Code cloud session (claude.ai/code) over its private HTTP/SSE API; the
+ * agent runs in Anthropic's sandbox, never in the thread's cwd. Worker messages are Claude
+ * SDK message JSON, so mapping reuses the local Claude adapter's pure helpers.
  */
 import type { SDKMessage, SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -996,8 +992,8 @@ export const makeClaudeCloudAdapterV2 = Effect.fn("makeClaudeCloudAdapterV2")(fu
           return sessionEntity;
         },
         events: Stream.fromQueue(events),
-        ensureThread: (threadInput) =>
-          Effect.gen(function* () {
+        ensureThread: Effect.fn("ClaudeCloudAdapterV2.ensureThread")(
+          function* (threadInput: ProviderAdapter.ProviderAdapterV2EnsureThreadInput) {
             const existing = threadInput.existingProviderThread;
             if (existing?.nativeThreadRef?.nativeId != null) {
               return yield* runtime.resumeThread({
@@ -1054,19 +1050,22 @@ export const makeClaudeCloudAdapterV2 = Effect.fn("makeClaudeCloudAdapterV2")(fu
               providerThread: thread,
             });
             return thread;
-          }).pipe(
-            // The sign-in error itself is the cause, so the failed turn shows its fixed text.
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapter.ProviderAdapterEnsureThreadError({
-                  driver: CLAUDE_CLOUD_PROVIDER,
-                  threadId: threadInput.threadId,
-                  cause: isResumeThreadError(cause) ? cause.cause : cause,
-                }),
+          },
+          (effect, threadInput) =>
+            effect.pipe(
+              // The sign-in error itself is the cause, so the failed turn shows its fixed text.
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterEnsureThreadError({
+                    driver: CLAUDE_CLOUD_PROVIDER,
+                    threadId: threadInput.threadId,
+                    cause: isResumeThreadError(cause) ? cause.cause : cause,
+                  }),
+              ),
             ),
-          ),
-        resumeThread: (resumeInput) =>
-          Effect.gen(function* () {
+        ),
+        resumeThread: Effect.fn("ClaudeCloudAdapterV2.resumeThread")(
+          function* (resumeInput: { readonly providerThread: OrchestrationV2ProviderThread }) {
             const sessionId = resumeInput.providerThread.nativeThreadRef?.nativeId;
             if (sessionId == null) {
               return yield* protocolError("Provider thread has no Claude Cloud session id");
@@ -1091,19 +1090,22 @@ export const makeClaudeCloudAdapterV2 = Effect.fn("makeClaudeCloudAdapterV2")(fu
             // the next turn retries and reports the problem on the turn.
             if (reattached._tag === "Failure") pendingAttach = sessionId;
             return yield* adopt();
-          }).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapter.ProviderAdapterResumeThreadError({
-                  driver: CLAUDE_CLOUD_PROVIDER,
-                  providerSessionId: input.providerSessionId,
-                  providerThreadId: resumeInput.providerThread.id,
-                  cause,
-                }),
+          },
+          (effect, resumeInput) =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterResumeThreadError({
+                    driver: CLAUDE_CLOUD_PROVIDER,
+                    providerSessionId: input.providerSessionId,
+                    providerThreadId: resumeInput.providerThread.id,
+                    cause,
+                  }),
+              ),
             ),
-          ),
-        startTurn: (turnInput) =>
-          Effect.gen(function* () {
+        ),
+        startTurn: Effect.fn("ClaudeCloudAdapterV2.startTurn")(
+          function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
             const startedAt = yield* DateTime.now;
             const syntheticNativeTurnId = `${turnInput.providerThread.id}:attempt:${turnInput.attemptId}`;
             const turn: CloudTurn = {
@@ -1209,18 +1211,21 @@ export const makeClaudeCloudAdapterV2 = Effect.fn("makeClaudeCloudAdapterV2")(fu
             if (ready._tag === "Failure") {
               yield* failTurn(turn, claudeCloudFailure(ready.failure));
             }
-          }).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapter.ProviderAdapterTurnStartError({
-                  driver: CLAUDE_CLOUD_PROVIDER,
-                  threadId: turnInput.threadId,
-                  providerThreadId: turnInput.providerThread.id,
-                  runId: turnInput.runId,
-                  cause,
-                }),
+          },
+          (effect, turnInput) =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterTurnStartError({
+                    driver: CLAUDE_CLOUD_PROVIDER,
+                    threadId: turnInput.threadId,
+                    providerThreadId: turnInput.providerThread.id,
+                    runId: turnInput.runId,
+                    cause,
+                  }),
+              ),
             ),
-          ),
+        ),
         steerTurn: (steerInput) =>
           Effect.fail(
             new ProviderAdapter.ProviderAdapterSteerRunUnsupportedError({

@@ -6,8 +6,12 @@ import {
   OrchestrationSearchThreadsResult,
 } from "./threadSearch.ts";
 
+const decodeSearchInput = Schema.decodeSync(OrchestrationSearchThreadsInput);
+const decodeSearchResult = Schema.decodeSync(OrchestrationSearchThreadsResult);
+const encodeSearchResult = Schema.encodeSync(OrchestrationSearchThreadsResult);
+
 it("round-trips activity matches and the opt-in flag", () => {
-  const input = Schema.decodeSync(OrchestrationSearchThreadsInput)({
+  const input = decodeSearchInput({
     query: "needle",
     includeActivityMatches: true,
   });
@@ -24,6 +28,6 @@ it("round-trips activity matches and the opt-in flag", () => {
       },
     ],
   };
-  const decoded = Schema.decodeSync(OrchestrationSearchThreadsResult)(result);
-  assert.deepEqual(Schema.encodeSync(OrchestrationSearchThreadsResult)(decoded), result);
+  const decoded = decodeSearchResult(result);
+  assert.deepEqual(encodeSearchResult(decoded), result);
 });

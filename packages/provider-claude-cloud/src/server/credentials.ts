@@ -1,13 +1,7 @@
 /**
- * Reads the Claude Code CLI's own OAuth login, which is how this provider
- * authenticates: cloud sessions belong to the user's Claude subscription, and
- * an API key cannot reach them.
- *
- * Read-only by design. The token is never refreshed or written back, because a
- * refresh rotates the CLI's refresh token and can sign the user out of it. An
- * expired token reads as absent until the user runs `claude` again.
- *
- * @module credentials
+ * Reads the Claude Code CLI's OAuth login; cloud sessions need it, an API key cannot reach them.
+ * Read-only: a refresh rotates the CLI's refresh token and can sign the user out of it,
+ * so an expired token reads as absent until the user runs `claude` again.
  */
 import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
 import * as HostProcess from "@t3tools/shared/HostProcess";

@@ -3,7 +3,6 @@ import {
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { useMemo } from "react";
 
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
@@ -27,10 +26,7 @@ export function useSubagentCosts(input: {
 }) {
   const { environmentId, childThreadIds, members } = input;
   const threadIdsKey = [...new Set(childThreadIds)].toSorted().join("\n");
-  const threadIds = useMemo(
-    () => (threadIdsKey === "" ? [] : (threadIdsKey.split("\n") as ThreadId[])),
-    [threadIdsKey],
-  );
+  const threadIds = threadIdsKey === "" ? [] : (threadIdsKey.split("\n") as ThreadId[]);
   const estimable = members.filter(
     (member) => member.childThreadId === null && member.usage !== null && member.model !== null,
   );
@@ -39,7 +35,7 @@ export function useSubagentCosts(input: {
   ]
     .toSorted()
     .join("\n");
-  const models = useMemo(() => (modelsKey === "" ? [] : modelsKey.split("\n")), [modelsKey]);
+  const models = modelsKey === "" ? [] : modelsKey.split("\n");
 
   const threadCosts = useEnvironmentQuery(
     threadIds.length > 0
@@ -52,27 +48,25 @@ export function useSubagentCosts(input: {
       : null,
   );
 
-  return useMemo(() => {
-    const byThread = new Map<string, SubagentCost>(
-      (threadCosts.data?.costs ?? []).map((cost) => [
-        cost.threadId,
-        { costUsd: cost.costUsd, approximate: false },
-      ]),
-    );
-    const rateByModel = new Map(modelRates.data?.rates.map((rate) => [rate.model, rate]));
-    return {
-      forThread: (threadId: string | null): SubagentCost | null =>
-        threadId === null ? null : (byThread.get(threadId) ?? null),
-      forMember: (member: RuntimeSubagent): SubagentCost | null => {
-        if (member.childThreadId !== null) return byThread.get(member.childThreadId) ?? null;
-        const estimate = estimateSubagentCost(
-          member.usage,
-          member.model === null ? null : rateByModel.get(member.model),
-        );
-        return estimate === null
-          ? null
-          : { costUsd: estimate.costUsd, approximate: !estimate.hasTokenBreakdown };
-      },
-    };
-  }, [modelRates.data, threadCosts.data]);
+  const byThread = new Map<string, SubagentCost>(
+    (threadCosts.data?.costs ?? []).map((cost) => [
+      cost.threadId,
+      { costUsd: cost.costUsd, approximate: false },
+    ]),
+  );
+  const rateByModel = new Map(modelRates.data?.rates.map((rate) => [rate.model, rate]));
+  return {
+    forThread: (threadId: string | null): SubagentCost | null =>
+      threadId === null ? null : (byThread.get(threadId) ?? null),
+    forMember: (member: RuntimeSubagent): SubagentCost | null => {
+      if (member.childThreadId !== null) return byThread.get(member.childThreadId) ?? null;
+      const estimate = estimateSubagentCost(
+        member.usage,
+        member.model === null ? null : rateByModel.get(member.model),
+      );
+      return estimate === null
+        ? null
+        : { costUsd: estimate.costUsd, approximate: !estimate.hasTokenBreakdown };
+    },
+  };
 }

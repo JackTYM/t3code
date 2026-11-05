@@ -7,12 +7,9 @@ import * as Path from "effect/Path";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 /**
- * Rewrites one assistant reply in a Claude Code session transcript
- * (`<config dir>/projects/<cwd slug>/<session id>.jsonl`), the history `--resume` replays to the
- * model. Only the text of the one text block on the reply's line changes. Thinking blocks carry
- * signatures, and tool_use ids, uuids and the parentUuid chain tie lines together, so every other
- * byte of the file must survive unchanged; anything that does not match the expected shape is
- * refused rather than repaired.
+ * Rewrites one assistant reply in a Claude Code session transcript (the history `--resume`
+ * replays). Only that reply's text block changes: signatures, ids, and the parentUuid chain tie
+ * lines together, so every other byte must survive. Unexpected shapes are refused, not repaired.
  */
 
 type EditFailureReason = ProviderAdapter.ProviderAdapterEditAssistantTextError["reason"];
