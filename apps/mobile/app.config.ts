@@ -16,6 +16,9 @@ const runtimeVersionPolicy =
   process.env.MOBILE_VERSION_POLICY ??
   (APP_VARIANT === "development" ? "appVersion" : "fingerprint");
 
+// A build without its own update URL must not fall back to T3's Expo project, which serves T3's JS.
+const updatesUrl = repoEnv.T3CODE_MOBILE_UPDATES_URL?.trim() || undefined;
+
 const personalTeamBundleIdentifier = repoEnv.T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID?.trim();
 const IOS_BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
 
@@ -241,8 +244,8 @@ const config: ExpoConfig = {
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
   updates: {
-    enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
-    url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+    enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0" && Boolean(updatesUrl),
+    url: updatesUrl,
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
   },

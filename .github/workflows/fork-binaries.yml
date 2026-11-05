@@ -266,6 +266,9 @@ jobs:
       # The group the re-signing profile grants. The widget reads shared state
       # from it, so a stale value gives a blank Live Activity card.
       APP_GROUP: ${{ vars.IOS_APP_GROUP || 'group.22fa696a256864dd.1' }}
+      # Where the app looks for JS updates (see docs/user/updating.md). Unset
+      # means updates are off, so the build never asks T3's Expo project.
+      T3CODE_MOBILE_UPDATES_URL: ${{ vars.T3CODE_MOBILE_UPDATES_URL }}
     steps:
       - name: Checkout
         shell: bash
@@ -322,6 +325,28 @@ jobs:
               exit 1
             }
 
+      # Built from the archived app's own runtime version: an update whose
+      # runtime version differs from the installed build is ignored.
+      - id: ota
+        name: Build the JS update
+        if: ${{ env.T3CODE_MOBILE_UPDATES_URL != '' }}
+        working-directory: apps/mobile
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/T3Code.xcarchive/Products/Applications/T3Code.app"
+          runtime="$(/usr/libexec/PlistBuddy -c 'Print :EXUpdatesRuntimeVersion' "$app/Expo.plist")"
+          test -n "$runtime"
+          owner="$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          pages="https://${owner}.github.io/${GITHUB_REPOSITORY#*/}"
+          ./node_modules/.bin/expo export --platform ios --output-dir "$RUNNER_TEMP/expo-dist"
+          ./node_modules/.bin/expo config --type public --json > "$RUNNER_TEMP/expo-config.json"
+          node ../../scripts/make-ota-manifest.ts \
+            --dist "$RUNNER_TEMP/expo-dist" --out "$RUNNER_TEMP/site/ota" \
+            --runtime-version "$runtime" --base-url "$pages/ota" \
+            --expo-config "$RUNNER_TEMP/expo-config.json"
+          cat "$RUNNER_TEMP/site/ota/ios/manifest.json"
+
       - id: package
         name: Package the IPAs
         shell: bash
@@ -340,12 +365,38 @@ jobs:
           git show "FETCH_HEAD:.github/scripts/patch-ipa-app-group.sh" > "$RUNNER_TEMP/patch-ipa-app-group.sh"
           bash "$RUNNER_TEMP/patch-ipa-app-group.sh" "$out/${name}-unsigned.ipa" "$out/${name}-unsigned-appgroup.ipa" "$APP_GROUP"
           ls -la "$out"
+          # The Feather source is cut later, in a job that has no Xcode tools.
+          mkdir -p "$RUNNER_TEMP/meta"
+          node -e '
+            const [bundleId, ipaName, ipaSize] = process.argv.slice(1);
+            console.log(JSON.stringify({ bundleId, ipaName, ipaSize: Number(ipaSize) }));
+          ' "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")" \
+            "${name}-unsigned-appgroup.ipa" "$(stat -f %z "$out/${name}-unsigned-appgroup.ipa")" \
+            > "$RUNNER_TEMP/meta/ios-meta.json"
+          cat "$RUNNER_TEMP/meta/ios-meta.json"
 
       - name: Upload IPAs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ios-unsigned
           path: ${{ runner.temp }}/ipa/*.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload IPA metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ios-meta
+          path: ${{ runner.temp }}/meta/ios-meta.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload JS update
+        if: ${{ steps.ota.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ota-site
+          path: ${{ runner.temp }}/site
           if-no-files-found: error
           retention-days: 14
 
@@ -421,3 +472,84 @@ jobs:
             --title "T3 Code fork ${VERSION}" \
             --notes "Built from ${SHA}. macOS and Windows installers are unsigned; the IPAs are unsigned too, and the -appgroup one is patched for re-signing." \
             --latest
+
+  # The Feather source and the JS update live on GitHub Pages, so installed
+  # apps can find them without a server. Pages keeps only the latest, while
+  # the IPAs stay on the release. Only main can deploy to the Pages environment.
+  pages:
+    name: Publish mobile updates
+    needs: [bundle, release, ios_unsigned]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.release.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ needs.bundle.outputs.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --detach FETCH_HEAD
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Download IPA metadata
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ios-meta
+          path: meta
+
+      # Absent when no update URL is configured; the source is still published.
+      - name: Download JS update
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ota-site
+          path: site
+
+      - name: Build the Feather source
+        shell: bash
+        env:
+          VERSION: ${{ needs.bundle.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          owner="$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          pages="https://${owner}.github.io/${GITHUB_REPOSITORY#*/}"
+          ipa_name="$(node -p "require('./meta/ios-meta.json').ipaName")"
+          node scripts/make-altstore-source.ts \
+            --out site/source.json \
+            --bundle-id "$(node -p "require('./meta/ios-meta.json').bundleId")" \
+            --version "${VERSION}" \
+            --ipa-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/${ipa_name}" \
+            --ipa-size "$(node -p "require('./meta/ios-meta.json').ipaSize")" \
+            --date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --source-url "${pages}/source.json"
+          cat site/source.json
+          find site -maxdepth 3 | head -20
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5

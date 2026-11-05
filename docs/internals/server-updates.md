@@ -82,6 +82,17 @@ confirmation also reverts, because it cannot know the UI ever booted. A reverted
 not offered again. The bundle is trusted as far as the release feed: sha256 detects
 corruption, and there is no signature.
 
+## Mobile JS updates on a fork
+
+The iOS app bundles its own JavaScript, so UI bundles do not reach it; it uses
+`expo-updates` against a static site on GitHub Pages. expo-updates refuses a manifest
+without an `expo-protocol-version` response header and Pages cannot set headers, so
+[scripts/ota-proxy](../../scripts/ota-proxy/worker.ts) is a stateless Worker that adds the
+headers. Assets are fetched from Pages directly. Compatibility is expo-updates' own runtime
+version, the native fingerprint read from the archived app, so a native change is never
+applied as a JS update. With `T3CODE_MOBILE_UPDATES_URL` unset the app does not enable
+updates at all, because the default would be T3's Expo project, which serves T3's JavaScript.
+
 ## Recovering interrupted threads
 
 Restart continuation is an environment-owned preference, on by default. A

@@ -224,3 +224,15 @@ download updates in the background and apply them when you next leave the app.
 It saves drafts and queued messages before restarting. If you keep the app open
 for a long time, it may ask to install immediately; choosing **Later** leaves the
 update queued for the next suitable moment.
+
+### Sideloaded iOS builds from the fork
+
+An IPA from the fork's releases updates two ways. JavaScript-only releases arrive in
+the background through the same update prompt as above. A release that changes native
+code needs a new IPA: add `https://jacktym.github.io/t3code/source.json` as a source in
+Feather and its **Updates** tab offers the latest `-unsigned-appgroup` build to re-sign.
+
+The app only looks for JavaScript updates when the build was made with the repository
+variable `T3CODE_MOBILE_UPDATES_URL` set to the deployed update proxy (see
+`scripts/ota-proxy`). Without it, updates are off. An update is only taken by a build
+with the same native code, so an older install quietly ignores one meant for a newer IPA.

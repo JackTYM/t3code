@@ -1,0 +1,9 @@
+{
+  "name": "t3code-ota",
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  "vars": {
+    "ORIGIN": "https://jacktym.github.io/t3code"
+  }
+}
