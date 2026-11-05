@@ -544,9 +544,7 @@ describe("ClaudeCloudAdapterV2", () => {
       assert.isTrue(Exit.isFailure(exit));
       const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined;
       assert.strictEqual(
-        isEnsureThreadError(error)
-          ? (error.cause as Error).message
-          : undefined,
+        isEnsureThreadError(error) ? (error.cause as Error).message : undefined,
         signIn.message,
       );
     }).pipe(Effect.scoped, Effect.provide(testLayer)),

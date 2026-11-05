@@ -1,13 +1,8 @@
 /**
- * Records a Claude Cloud replay fixture from a live session, driving the real
- * adapter against the real API. Creates exactly one cloud session and always
- * archives it, even when the turn fails.
+ * Records a Claude Cloud replay fixture from a live session. Creates exactly one cloud session and
+ * always archives it. Never prints the `claude` CLI login it reads.
  *
  *   node scripts/record-claude-cloud-replay-fixture.ts --scenario claude_cloud_simple
- *
- * Reads the `claude` CLI login through the provider's own credential store and
- * never prints it. The transcript keeps decoded frames, with the session id
- * replaced and adapter-minted ids wildcarded.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -33,6 +28,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -289,8 +285,6 @@ const program = Effect.gen(function* () {
 });
 
 program.pipe(
-  Effect.provide(IdAllocator.layer),
-  Effect.provide(FetchHttpClient.layer),
-  Effect.provide(NodeServices.layer),
+  Effect.provide(Layer.mergeAll(IdAllocator.layer, FetchHttpClient.layer, NodeServices.layer)),
   Effect.runPromise,
 );

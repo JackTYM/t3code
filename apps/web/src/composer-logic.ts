@@ -325,17 +325,10 @@ export function parseSideChatCommand(text: string): { prompt: string } | null {
 }
 
 /**
- * Reads a leading `/plan` or `/default` off a composer message. A bare command
- * only switches the thread's interaction mode; anything after it is the prompt
- * for that same turn.
- *
- * Callers gate this on the provider supporting T3 plan mode, which is what
- * keeps a provider's own `/plan` (Antigravity ships one) reaching the provider
- * unmodified.
+ * Reads a leading `/plan` or `/default` off a composer message; text after it is the same turn's
+ * prompt. Callers gate on T3 plan mode so a provider's own `/plan` (Antigravity) reaches it unmodified.
  */
-export function parseComposerInteractionModeCommand(
-  text: string,
-): {
+export function parseComposerInteractionModeCommand(text: string): {
   mode: Exclude<ComposerSlashCommand, "model" | "mcp" | "side" | "btw">;
   remainder: string;
 } | null {
