@@ -16,6 +16,7 @@ import {
   type ServerSettings,
 } from "@t3tools/contracts";
 import { acpRegistryClient } from "@t3tools/provider-acp-registry/client";
+import { claudeCloudClient } from "@t3tools/provider-claude-cloud/client";
 import { cursorClient } from "@t3tools/provider-cursor/client";
 import { fxClient } from "@t3tools/provider-fx/client";
 import { grokClient } from "@t3tools/provider-grok/client";
@@ -43,6 +44,7 @@ const known = (
   ] as const;
 
 const PACKAGED_CLIENTS: ReadonlyArray<ProviderClientDefinition> = [
+  claudeCloudClient,
   cursorClient,
   grokClient,
   fxClient,
