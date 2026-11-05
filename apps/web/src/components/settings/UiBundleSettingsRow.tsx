@@ -14,13 +14,15 @@ import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { SettingsRow } from "./settingsLayout";
 
-type Action = "check" | "revert";
+type Action = "check" | "revert" | "update";
 
 export function UiBundleSettingsRow() {
   const { environmentId, capabilities, state } = usePrimaryUiBundle();
   const canCheck = useAtomValue(uiBundleEnvironment.check.permissionAtom(environmentId));
   const canRevert = useAtomValue(uiBundleEnvironment.revert.permissionAtom(environmentId));
+  const canApply = useAtomValue(uiBundleEnvironment.apply.permissionAtom(environmentId));
   const check = useAtomCommand(uiBundleEnvironment.check, { reportFailure: false });
+  const apply = useAtomCommand(uiBundleEnvironment.apply, { reportFailure: false });
   const revert = useAtomCommand(uiBundleEnvironment.revert, { reportFailure: false });
   const [pending, setPending] = useState<Action | null>(null);
 
@@ -49,6 +51,36 @@ export function UiBundleSettingsRow() {
     setPending(null);
     // The window keeps running the UI it loaded until it reloads.
     if (action === "revert") window.location.reload();
+  };
+
+  // Checks first when nothing is staged, so one click reaches the newest UI the server can offer.
+  const updateNow = async () => {
+    if (pending !== null) return;
+    setPending("update");
+    const fail = (title: string, cause: Parameters<typeof uiBundleFailureMessage>[0]) => {
+      setPending(null);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title,
+          description: uiBundleFailureMessage(cause),
+        }),
+      );
+    };
+    let ready = state.ready;
+    if (ready === null) {
+      const checked = await check({ environmentId, input: {} });
+      if (checked._tag === "Failure") return fail("Could not check for a UI update", checked.cause);
+      ready = checked.value.ready;
+    }
+    if (ready === null) {
+      setPending(null);
+      toastManager.add({ type: "success", title: "Already on the newest UI" });
+      return;
+    }
+    const applied = await apply({ environmentId, input: {} });
+    if (applied._tag === "Failure") return fail("Could not apply UI update", applied.cause);
+    window.location.reload();
   };
 
   return (
@@ -99,6 +131,14 @@ export function UiBundleSettingsRow() {
             }
           >
             {pending === "check" ? "Checking…" : "Check now"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!canCheck || !canApply || pending !== null}
+            onClick={() => void updateNow()}
+          >
+            {pending === "update" ? "Updating…" : "Update now"}
           </Button>
         </div>
       }

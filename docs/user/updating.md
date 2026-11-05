@@ -131,7 +131,9 @@ restarting anything. Running threads and agents are not touched.
 When one is ready, a **UI update ready** button appears in the sidebar. Click it and
 this window reloads on the new interface; other open windows keep the old one until
 you reload them. **Settings → About** shows the active interface version, with
-**Check now** and **Revert to built-in**.
+**Check now**, **Update now** and **Revert to built-in**. The server looks for a new
+interface when it starts and every 6 hours; **Update now** checks, installs and reloads
+this window in one step without waiting for the button to appear.
 
 - It only offers an interface built against the same server contracts as your server.
   A release that changes the server or those contracts still needs the full update
