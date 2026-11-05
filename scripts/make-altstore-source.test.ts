@@ -17,6 +17,7 @@ const base = {
   ipaUrl: "https://github.com/JackTYM/t3code/releases/download/v0.1.6-fork.9/T3Code.ipa",
   ipaSize: 12345678,
   date: "2026-11-05T12:00:00Z",
+  iconUrl: "https://example.com/icon.png",
 };
 
 describe("buildAltStoreSource", () => {
@@ -26,6 +27,7 @@ describe("buildAltStoreSource", () => {
       identifier: "com.example.t3code.source",
       subtitle: expect.any(String),
       description: expect.any(String),
+      iconURL: "https://example.com/icon.png",
       website: "https://github.com/JackTYM/t3code",
       apps: [
         {
@@ -34,6 +36,7 @@ describe("buildAltStoreSource", () => {
           developerName: "JackTYM",
           subtitle: expect.any(String),
           localizedDescription: expect.any(String),
+          iconURL: "https://example.com/icon.png",
           tintColor: "#000000",
           version: "0.1.6-fork.9",
           versionDate: "2026-11-05T12:00:00.000Z",
@@ -70,26 +73,26 @@ describe("buildAltStoreSource", () => {
     });
   });
 
-  it("includes optional name and icon/source URLs when given", () => {
+  it("includes the optional name and source URL when given", () => {
     const source = buildAltStoreSource({
       ...base,
       name: "My Source",
-      iconUrl: "https://example.com/icon.png",
       sourceUrl: "https://example.com/source.json",
     });
     expect(source).toMatchObject({
       name: "My Source",
-      iconURL: "https://example.com/icon.png",
       sourceURL: "https://example.com/source.json",
     });
-    expect(source.apps[0]?.iconURL).toBe("https://example.com/icon.png");
   });
 
-  it("omits optional fields when not given", () => {
+  it("puts the icon on the source and on every app, which Feather requires", () => {
     const source = buildAltStoreSource(base);
-    expect(source).not.toHaveProperty("iconURL");
-    expect(source).not.toHaveProperty("sourceURL");
-    expect(source.apps[0]).not.toHaveProperty("iconURL");
+    expect(source.iconURL).toBe(base.iconUrl);
+    expect(source.apps.every((app) => app.iconURL === base.iconUrl)).toBe(true);
+  });
+
+  it("omits the source URL when not given", () => {
+    expect(buildAltStoreSource(base)).not.toHaveProperty("sourceURL");
   });
 
   it.each([
@@ -133,6 +136,8 @@ describe("make-altstore-source CLI", () => {
       String(base.ipaSize),
       "--date",
       base.date,
+      "--icon-url",
+      base.iconUrl,
       "--source-url",
       "https://example.com/source.json",
     ]);

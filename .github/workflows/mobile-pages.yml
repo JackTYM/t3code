@@ -1,0 +1,104 @@
+name: Mobile pages
+
+# Republishes the Feather source and the JS update to GitHub Pages from an
+# earlier Fork binaries run, so fixing either does not need a full rebuild.
+# Pages serves one deployment, so it always redeploys both together.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Fork binaries run whose ios-meta and ota-site artifacts to publish."
+        required: true
+        type: string
+      version:
+        description: "Release version that run published, for example 0.1.7-fork.14."
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  pages:
+    name: Publish mobile updates
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        shell: bash
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --detach FETCH_HEAD
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Download IPA metadata
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ios-meta
+          path: meta
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      # Absent when that run had no update URL configured; the source is still published.
+      - name: Download JS update
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ota-site
+          path: site
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Build the Feather source
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          owner="$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          pages="https://${owner}.github.io/${GITHUB_REPOSITORY#*/}"
+          ipa_name="$(node -p "require('./meta/ios-meta.json').ipaName")"
+          cp assets/prod/black-ios-1024.png site/icon.png
+          node scripts/make-altstore-source.ts \
+            --out site/source.json \
+            --bundle-id "$(node -p "require('./meta/ios-meta.json').bundleId")" \
+            --version "${VERSION}" \
+            --ipa-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/${ipa_name}" \
+            --ipa-size "$(node -p "require('./meta/ios-meta.json').ipaSize")" \
+            --date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --icon-url "${pages}/icon.png" \
+            --source-url "${pages}/source.json"
+          cat site/source.json
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5

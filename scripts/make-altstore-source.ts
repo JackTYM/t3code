@@ -9,7 +9,8 @@ export interface AltStoreSourceInput {
   readonly ipaSize: number;
   readonly date: string;
   readonly name?: string | undefined;
-  readonly iconUrl?: string | undefined;
+  // Feather refuses a source whose app has no icon.
+  readonly iconUrl: string;
   readonly sourceUrl?: string | undefined;
 }
 
@@ -44,8 +45,7 @@ export function buildAltStoreSource(input: AltStoreSourceInput) {
   }
   const date = parsedDate.toISOString();
   const name = requireText("name", input.name ?? "T3 Code (fork)");
-  const iconURL =
-    input.iconUrl === undefined ? undefined : requireHttpsUrl("icon-url", input.iconUrl);
+  const iconURL = requireHttpsUrl("icon-url", input.iconUrl);
   const sourceURL =
     input.sourceUrl === undefined ? undefined : requireHttpsUrl("source-url", input.sourceUrl);
 
@@ -55,7 +55,7 @@ export function buildAltStoreSource(input: AltStoreSourceInput) {
     identifier: `${bundleId}.source`,
     subtitle: "T3 Code fork builds",
     description,
-    ...(iconURL === undefined ? {} : { iconURL }),
+    iconURL,
     website: "https://github.com/JackTYM/t3code",
     ...(sourceURL === undefined ? {} : { sourceURL }),
     apps: [
@@ -65,7 +65,7 @@ export function buildAltStoreSource(input: AltStoreSourceInput) {
         developerName: "JackTYM",
         subtitle: "A minimal GUI for coding agents",
         localizedDescription: description,
-        ...(iconURL === undefined ? {} : { iconURL }),
+        iconURL,
         tintColor: "#000000",
         // Legacy AltStore clients read these instead of versions[].
         version,
@@ -92,7 +92,7 @@ export function buildAltStoreSource(input: AltStoreSourceInput) {
 }
 
 const USAGE =
-  'usage: make-altstore-source.ts --out <file> --bundle-id <id> --version <v> --ipa-url <https url> --ipa-size <bytes> --date <ISO date> [--name "T3 Code (fork)"] [--icon-url <url>] [--source-url <url>]';
+  'usage: make-altstore-source.ts --out <file> --bundle-id <id> --version <v> --ipa-url <https url> --ipa-size <bytes> --date <ISO date> --icon-url <https url> [--name "T3 Code (fork)"] [--source-url <url>]';
 
 if (import.meta.main) {
   const { values } = NodeUtil.parseArgs({
@@ -114,7 +114,10 @@ if (import.meta.main) {
   const ipaUrl = values["ipa-url"];
   const ipaSize = values["ipa-size"];
   const date = values.date;
-  if (!out || !bundleId || !version || !ipaUrl || !ipaSize || !date) throw new Error(USAGE);
+  const iconUrl = values["icon-url"];
+  if (!out || !bundleId || !version || !ipaUrl || !ipaSize || !date || !iconUrl) {
+    throw new Error(USAGE);
+  }
   const source = buildAltStoreSource({
     bundleId,
     version,
@@ -122,7 +125,7 @@ if (import.meta.main) {
     ipaSize: Number(ipaSize),
     date,
     name: values.name,
-    iconUrl: values["icon-url"],
+    iconUrl,
     sourceUrl: values["source-url"],
   });
   NodeFS.writeFileSync(out, `${JSON.stringify(source, null, 2)}\n`);
