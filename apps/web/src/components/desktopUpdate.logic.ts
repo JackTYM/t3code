@@ -86,6 +86,12 @@ export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState):
   return "This Mac has Apple Silicon, but T3 Code is still running the Intel build under Rosetta. The next app update will replace it with the native Apple Silicon build.";
 }
 
+function installActionHint(state: Pick<DesktopUpdateState, "fullInstaller">): string {
+  return state.fullInstaller
+    ? "Click to quit and open the installer."
+    : "Click to restart and install.";
+}
+
 export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string {
   if (
     state.notAppliedVersion !== undefined &&
@@ -103,7 +109,7 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
     return `Downloading update${progress}`;
   }
   if (state.status === "downloaded") {
-    return `Update ${state.downloadedVersion ?? state.availableVersion ?? "ready"} downloaded. Click to restart and install.`;
+    return `Update ${state.downloadedVersion ?? state.availableVersion ?? "ready"} downloaded. ${installActionHint(state)}`;
   }
   if (state.status === "error") {
     if (state.errorContext === "download" && state.availableVersion) {
@@ -113,7 +119,7 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
       return `Install failed for ${state.downloadedVersion}. Click to retry.`;
     }
     if (state.downloadedVersion) {
-      return `Update ${state.downloadedVersion} downloaded. Click to restart and install.`;
+      return `Update ${state.downloadedVersion} downloaded. ${installActionHint(state)}`;
     }
     return state.message ?? "Update failed";
   }
@@ -121,9 +127,12 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
 }
 
 export function getDesktopUpdateInstallConfirmationMessage(
-  state: Pick<DesktopUpdateState, "availableVersion" | "downloadedVersion">,
+  state: Pick<DesktopUpdateState, "availableVersion" | "downloadedVersion" | "fullInstaller">,
 ): string {
   const version = state.downloadedVersion ?? state.availableVersion;
+  if (state.fullInstaller) {
+    return `Open the installer for update${version ? ` ${version}` : ""} and quit T3 Code?\n\nT3 Code and its background servers will close, and any running tasks will be interrupted. Drag the new app into Applications to finish.`;
+  }
   return `Install update${version ? ` ${version}` : ""} and restart T3 Code?\n\nAny running tasks will be interrupted. Make sure you're ready before continuing.`;
 }
 

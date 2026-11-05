@@ -284,6 +284,8 @@ export interface DesktopUpdateState {
   notAppliedVersion?: string;
   /** Off only because a managed policy rules out this channel; switching channels turns it on. */
   channelBlockedByPolicy?: true;
+  /** Unsigned macOS: updates are a downloaded DMG the user opens, because the updater cannot install them. */
+  fullInstaller?: true;
 }
 
 export interface DesktopUpdateReleaseNote {

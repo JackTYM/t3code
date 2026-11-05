@@ -35,6 +35,8 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
+import * as FullInstaller from "./FullInstaller.ts";
+import type { FullUpdateDownloadError, FullUpdateOpenError } from "./FullUpdate.ts";
 import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
 import { desktopUpdateChannelOf } from "@t3tools/shared/cliRelease";
 import { compareSemverVersions } from "@t3tools/shared/semver";
@@ -67,8 +69,16 @@ interface DesktopPreparedUpdateInstallResult extends DesktopUpdateActionResult {
 const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
 type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
 
+const UpdateFile = Schema.Struct({
+  url: Schema.String,
+  sha512: Schema.String,
+  size: Schema.optional(Schema.Number),
+});
+
 const UpdateInfo = Schema.Struct({
   version: Schema.String,
+  // Only the full installer reads these, so a malformed list must not block update-state decoding.
+  files: Schema.optional(Schema.Unknown),
   // Malformed notes must not block update-state decoding; normalizeDesktopUpdateReleaseNotes validates separately.
   releaseNotes: Schema.optional(Schema.Unknown),
   releaseDate: Schema.optional(Schema.String),
@@ -86,6 +96,7 @@ const encodeInstallRecord = Schema.encodeEffect(DesktopUpdateInstallRecord);
 
 const decodeAppUpdateYmlConfig = Schema.decodeUnknownEffect(AppUpdateYmlConfig);
 const decodeUpdateInfo = Schema.decodeUnknownEffect(UpdateInfo);
+const decodeUpdateFiles = Schema.decodeUnknownOption(Schema.Array(UpdateFile));
 const decodeDownloadProgressInfo = Schema.decodeUnknownEffect(DownloadProgressInfo);
 
 const currentIsoTimestamp = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -367,6 +378,8 @@ export const make = Effect.gen(function* () {
   const desktopState = yield* DesktopState.DesktopState;
   const electronUpdater = yield* ElectronUpdater.ElectronUpdater;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
+  const fullInstaller = yield* FullInstaller.FullInstaller;
+  const fullInstallerEnabled = yield* fullInstaller.enabled;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
@@ -381,6 +394,10 @@ export const make = Effect.gen(function* () {
   >([]);
   const finishedUpdateActions = yield* PubSub.unbounded<UpdateAction>();
   const updaterConfiguredRef = yield* Ref.make(false);
+  const offeredFilesRef = yield* Ref.make<
+    ReadonlyArray<FullInstaller.FullInstallerDownloadInput["files"][number]>
+  >([]);
+  const downloadedInstallerRef = yield* Ref.make(Option.none<string>());
   const lastLoggedDownloadMilestoneRef = yield* Ref.make(-1);
   const notAppliedVersionRef = yield* Ref.make(Option.none<string>());
   // The release a track switch's database check cleared. A build crosses to another track only
@@ -397,13 +414,14 @@ export const make = Effect.gen(function* () {
             : desktopUpdateChannelOf(environment.appVersion) === state.channel),
       ),
     );
-  const updateStateRef = yield* Ref.make<DesktopUpdateState>(
-    createInitialDesktopUpdateState(
+  const updateStateRef = yield* Ref.make<DesktopUpdateState>({
+    ...createInitialDesktopUpdateState(
       environment.appVersion,
       environment.runtimeInfo,
       environment.defaultDesktopSettings.updateChannel,
     ),
-  );
+    ...(fullInstallerEnabled ? { fullInstaller: true as const } : {}),
+  });
 
   const stateChanges = yield* PubSub.sliding<DesktopUpdateState>(16);
   // Serialize writes and publishes against subscription so snapshots cannot overlap the first change.
@@ -587,6 +605,19 @@ export const make = Effect.gen(function* () {
         );
   });
 
+  const handleFullInstallerDownloadFailure = Effect.fn(
+    "desktop.updates.handleFullInstallerDownloadFailure",
+  )(function* (error: FullUpdateDownloadError | FullInstaller.FullInstallerUnavailableError) {
+    yield* updateState((current) =>
+      reduceDesktopUpdateStateOnDownloadFailure(current, error.message),
+    );
+    yield* logUpdaterError(error.message, {
+      errorTag: error._tag,
+      cause: describeUpdateErrorCause("cause" in error ? error.cause : undefined),
+    });
+    return { accepted: true, completed: false };
+  });
+
   const downloadAvailableUpdate = Effect.gen(function* () {
     const state = yield* Ref.get(updateStateRef);
     if (!(yield* Ref.get(updaterConfiguredRef)) || state.status !== "available") {
@@ -599,14 +630,41 @@ export const make = Effect.gen(function* () {
 
     return yield* Effect.gen(function* () {
       yield* setState(reduceDesktopUpdateStateOnDownloadStart(state));
+      yield* logUpdaterInfo("downloading update");
+      if (fullInstallerEnabled && state.availableVersion !== null) {
+        const appUpdateYml = yield* Ref.get(appUpdateYmlConfigRef);
+        const version = state.availableVersion;
+        const installerPath = yield* fullInstaller.download({
+          version,
+          files: yield* Ref.get(offeredFilesRef),
+          source: Option.flatMap(appUpdateYml, (config) =>
+            config.owner && config.repo
+              ? Option.some({ owner: config.owner, repo: config.repo })
+              : Option.none(),
+          ),
+          onProgress: (percent) =>
+            updateState((current) =>
+              shouldBroadcastDownloadProgress(current, percent)
+                ? reduceDesktopUpdateStateOnDownloadProgress(current, percent)
+                : current,
+            ).pipe(Effect.asVoid),
+        });
+        yield* Ref.set(downloadedInstallerRef, Option.some(installerPath));
+        yield* updateState((current) =>
+          reduceDesktopUpdateStateOnDownloadComplete(current, version),
+        );
+        yield* logUpdaterInfo("update installer downloaded", { version });
+        return { accepted: true, completed: true };
+      }
       yield* electronUpdater.setDisableDifferentialDownload(
         isArm64HostRunningIntelBuild(environment.runtimeInfo),
       );
-      yield* logUpdaterInfo("downloading update");
       yield* electronUpdater.downloadUpdate;
       return { accepted: true, completed: true };
     }).pipe(
       Effect.catchTags({
+        FullUpdateDownloadError: handleFullInstallerDownloadFailure,
+        FullInstallerUnavailableError: handleFullInstallerDownloadFailure,
         ElectronUpdaterDownloadUpdateError: Effect.fn("desktop.updates.handleDownloadFailure")(
           function* (error) {
             yield* updateState((current) =>
@@ -698,6 +756,7 @@ export const make = Effect.gen(function* () {
     Ref.get(notAppliedVersionRef).pipe(
       Effect.map((notAppliedVersion) => ({
         ...createBaseUpdateState(channel, disabledReason, environment),
+        ...(fullInstallerEnabled ? { fullInstaller: true as const } : {}),
         // Callers fall back to the channel's reason only when nothing else turns updates off.
         ...(Option.isSome(disabledReason) &&
         disabledReason.value === Option.getOrUndefined(channelBlockedReason(channel))
@@ -753,6 +812,17 @@ export const make = Effect.gen(function* () {
       ),
       Effect.ensuring(finishUpdateAction("install-recovery")),
     );
+  });
+
+  const handleFullInstallerInstallFailure = Effect.fn(
+    "desktop.updates.handleFullInstallerInstallFailure",
+  )(function* (error: FullUpdateOpenError | FullInstaller.FullInstallerUnavailableError) {
+    yield* recoverFailedInstall(error.message);
+    yield* logUpdaterError(error.message, {
+      errorTag: error._tag,
+      cause: describeUpdateErrorCause("cause" in error ? error.cause : undefined),
+    });
+    return { accepted: true, completed: false, failed: true };
   });
 
   const installDownloadedUpdate = (expectedVersion?: string) =>
@@ -822,13 +892,23 @@ export const make = Effect.gen(function* () {
             (instance) => instance.stop({ timeout: Duration.seconds(5) }),
             { concurrency: "unbounded" },
           );
-          yield* electronUpdater.quitAndInstall({
-            isSilent: true,
-            isForceRunAfter: true,
-          });
+          if (fullInstallerEnabled) {
+            const installerPath = yield* Ref.get(downloadedInstallerRef);
+            if (Option.isNone(installerPath)) {
+              return yield* new FullInstaller.FullInstallerUnavailableError({ reason: "no-dmg" });
+            }
+            yield* fullInstaller.openAndQuit(installerPath.value);
+          } else {
+            yield* electronUpdater.quitAndInstall({
+              isSilent: true,
+              isForceRunAfter: true,
+            });
+          }
           return { accepted: true, completed: false, failed: false };
         }).pipe(
           Effect.catchTags({
+            FullUpdateOpenError: handleFullInstallerInstallFailure,
+            FullInstallerUnavailableError: handleFullInstallerInstallFailure,
             ElectronUpdaterQuitAndInstallError: Effect.fn("desktop.updates.handleInstallFailure")(
               function* (error) {
                 yield* recoverFailedInstall(error.message);
@@ -952,6 +1032,10 @@ export const make = Effect.gen(function* () {
             ),
           );
           yield* Ref.set(lastLoggedDownloadMilestoneRef, -1);
+          yield* Ref.set(
+            offeredFilesRef,
+            Option.getOrElse(decodeUpdateFiles(info.files), () => []),
+          );
           yield* logUpdaterInfo("update available", {
             version: info.version,
             releaseNoteGroups: releaseNotes.length,

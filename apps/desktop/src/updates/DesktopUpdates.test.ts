@@ -20,6 +20,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
+import { FullUpdateDownloadError, FullUpdateOpenError } from "./FullUpdate.ts";
 import { flushCallbacks, makeHarness } from "./updatesTestHarness.ts";
 
 describe("DesktopUpdates", () => {
@@ -1074,5 +1075,119 @@ describe("DesktopUpdates under a managed policy", () => {
         assert.equal(harness.checkCount(), 1);
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  describe("full installer on unsigned macOS", () => {
+    const files = [{ url: "T3-Code-1.2.4-arm64.dmg", sha512: "abc", size: 10 }];
+
+    it.effect(
+      "downloads the installer, then opens it and quits instead of using the updater",
+      () => {
+        const downloads: Array<{ version: string; fileCount: number }> = [];
+        const opened: string[] = [];
+        const harness = makeHarness({
+          fullInstaller: {
+            enabled: Effect.succeed(true),
+            download: (input) =>
+              Effect.sync(() => {
+                downloads.push({ version: input.version, fileCount: input.files.length });
+                return "/cache/updates/T3-Code-1.2.4-arm64.dmg";
+              }),
+            openAndQuit: (path) =>
+              Effect.sync(() => {
+                opened.push(path);
+              }),
+          },
+        });
+
+        return Effect.scoped(
+          Effect.gen(function* () {
+            const updates = yield* DesktopUpdates.DesktopUpdates;
+            yield* updates.configure;
+            assert.isTrue((yield* updates.getState).fullInstaller);
+
+            harness.emit("update-available", { version: "1.2.4", files });
+            yield* flushCallbacks;
+            const downloaded = yield* updates.download;
+            assert.isTrue(downloaded.completed);
+            assert.equal(harness.downloadCount(), 0);
+            assert.deepEqual(downloads, [{ version: "1.2.4", fileCount: 1 }]);
+            assert.equal((yield* updates.getState).status, "downloaded");
+            assert.equal((yield* updates.getState).downloadedVersion, "1.2.4");
+
+            const installed = yield* updates.install;
+            assert.isTrue(installed.accepted);
+            assert.deepEqual(opened, ["/cache/updates/T3-Code-1.2.4-arm64.dmg"]);
+            assert.equal(harness.quitAndInstalls(), 0);
+            assert.equal(harness.updateRestartMarkers.size, 1);
+          }),
+        ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+      },
+    );
+
+    it.effect("reports a failed download and keeps the update retryable", () => {
+      const harness = makeHarness({
+        fullInstaller: {
+          enabled: Effect.succeed(true),
+          download: () => Effect.fail(new FullUpdateDownloadError({ reason: "hash-mismatch" })),
+        },
+      });
+
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
+          harness.emit("update-available", { version: "1.2.4", files });
+          yield* flushCallbacks;
+
+          const result = yield* updates.download;
+          assert.isFalse(result.completed);
+          const state = yield* updates.getState;
+          assert.equal(state.status, "available");
+          assert.equal(state.errorContext, "download");
+          assert.isNotNull(state.message);
+          assert.equal(state.availableVersion, "1.2.4");
+          assert.isTrue(state.canRetry);
+        }),
+      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+    });
+
+    it.effect("recovers when the installer cannot be opened", () => {
+      const harness = makeHarness({
+        fullInstaller: {
+          enabled: Effect.succeed(true),
+          download: () => Effect.succeed("/cache/updates/T3-Code-1.2.4-arm64.dmg"),
+          openAndQuit: () =>
+            Effect.fail(new FullUpdateOpenError({ reason: "exit-code", exitCode: 1 })),
+        },
+      });
+
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
+          harness.emit("update-available", { version: "1.2.4", files });
+          yield* flushCallbacks;
+          yield* updates.download;
+
+          const result = yield* updates.install;
+          assert.isTrue(result.accepted);
+          assert.equal(result.state.errorContext, "install");
+          assert.equal(harness.updateRestartMarkers.size, 0);
+          assert.isFalse(yield* updates.isInstallActive);
+        }),
+      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+    });
+
+    it.effect("leaves signed builds on the updater path", () => {
+      const harness = makeHarness();
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
+          assert.isUndefined((yield* updates.getState).fullInstaller);
+        }),
+      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+    });
   });
 });

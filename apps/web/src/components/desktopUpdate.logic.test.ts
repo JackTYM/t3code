@@ -4,6 +4,7 @@ import type { DesktopUpdateState } from "@t3tools/contracts";
 import {
   canCheckForUpdate,
   getDesktopUpdateButtonTooltip,
+  getDesktopUpdateInstallConfirmationMessage,
   getDesktopUpdateReleaseHistoryUrl,
   getDesktopUpdateReleaseUrl,
   resolveDesktopUpdateButtonAction,
@@ -88,5 +89,22 @@ describe("canCheckForUpdate", () => {
         downloadedVersion: "1.1.0",
       }),
     ).toBe(true);
+  });
+});
+
+describe("full installer wording", () => {
+  const downloaded: DesktopUpdateState = {
+    ...baseState,
+    status: "downloaded",
+    availableVersion: "1.1.0",
+    downloadedVersion: "1.1.0",
+  };
+
+  it("says the app quits and opens the installer instead of restarting", () => {
+    const state = { ...downloaded, fullInstaller: true as const };
+    expect(getDesktopUpdateButtonTooltip(state)).toContain("quit and open the installer");
+    expect(getDesktopUpdateButtonTooltip(downloaded)).toContain("restart and install");
+    expect(getDesktopUpdateInstallConfirmationMessage(state)).toContain("Open the installer");
+    expect(getDesktopUpdateInstallConfirmationMessage(downloaded)).toContain("restart T3 Code");
   });
 });

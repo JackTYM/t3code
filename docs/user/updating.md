@@ -225,6 +225,14 @@ It saves drafts and queued messages before restarting. If you keep the app open
 for a long time, it may ask to install immediately; choosing **Later** leaves the
 update queued for the next suitable moment.
 
+### Unsigned macOS builds from the fork
+
+A Mac app that is not signed with an Apple Developer ID cannot update itself, and a DMG
+downloaded in a browser is blocked until you run `xattr -cr` on it. On these builds the
+update button downloads the DMG for you without that block, then asks before it opens the
+installer and quits T3 Code and its background servers. Drag the new app into Applications
+to finish. Running threads are interrupted and continue after you reopen the app.
+
 ### Sideloaded iOS builds from the fork
 
 An IPA from the fork's releases updates two ways. JavaScript-only releases arrive in
