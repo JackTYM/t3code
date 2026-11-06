@@ -19,7 +19,9 @@ import {
   collectLimitPools,
   elapsedShare,
   exhaustedUsageWindow,
+  formatPaceOffset,
   paceOf,
+  paceOffsetMs,
   paceRemainingPercent,
   usesChatGptSharing,
   resolveNewThreadModelSelection,
@@ -160,6 +162,47 @@ describe("pace", () => {
     expect(paceOf(window, now)).toBe("under");
     expect(paceOf({ ...window, usedPercent: 62 }, now)).toBe("on");
     expect(paceOf({ ...window, usedPercent: 80 }, now)).toBe("ahead");
+  });
+
+  it("measures the gap to an even pace in the window's own time", () => {
+    const hour = 60 * 60 * 1000;
+    // Three of five hours elapsed: even pace is 60% used, and 20% of the window is one hour.
+    expect(paceOffsetMs({ ...window, usedPercent: 40 }, now)).toBeCloseTo(-hour);
+    expect(paceOffsetMs({ ...window, usedPercent: 80 }, now)).toBeCloseTo(hour);
+    expect(paceOffsetMs({ ...window, usedPercent: 60 }, now)).toBeCloseTo(0);
+    expect(paceOffsetMs({ ...window, resetsAt: undefined }, now)).toBeNull();
+    expect(paceOffsetMs({ ...window, windowDurationMins: undefined }, now)).toBeNull();
+  });
+
+  it("words the gap as ahead of or behind pace, and calls a near-zero gap on pace", () => {
+    const hour = 60 * 60 * 1000;
+    expect(formatPaceOffset(12 * hour)).toBe("12h 0m ahead of pace");
+    expect(formatPaceOffset(-30 * hour)).toBe("1d 6h behind pace");
+    expect(formatPaceOffset(4 * 60 * 1000)).toBe("On pace");
+    expect(formatPaceOffset(-4 * 60 * 1000)).toBe("On pace");
+  });
+
+  it("pools the gap as the mean across accounts that have a reset clock", () => {
+    const hour = 60 * 60 * 1000;
+    const member = (usedPercent: number, timed = true) => ({
+      ...window,
+      usedPercent,
+      ...(timed ? {} : { resetsAt: undefined }),
+    });
+    const account = (key: string, w: ReturnType<typeof member>) =>
+      ({
+        key,
+        driver: ProviderDriverKind.make("claudeAgent"),
+        limits: { windows: [w] },
+      }) as unknown as LimitAccount;
+    const [pool] = collectLimitPools(
+      [account("a", member(80)), account("b", member(40)), account("c", member(99, false))],
+      now,
+    );
+    // +1h and -1h average to even; the account without a clock adds spend but no offset.
+    expect(pool?.windows[0]?.paceOffsetMs).toBeCloseTo(0);
+    const [ahead] = collectLimitPools([account("a", member(80))], now);
+    expect(ahead?.windows[0]?.paceOffsetMs).toBeCloseTo(hour);
   });
 });
 

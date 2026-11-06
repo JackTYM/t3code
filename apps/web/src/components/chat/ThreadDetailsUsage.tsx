@@ -9,7 +9,9 @@ import {
   formatDuration,
   type LimitPace,
   limitsNotice,
+  formatPaceOffset,
   paceOf,
+  paceOffsetMs,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
 import type { ReactNode } from "react";
@@ -148,6 +150,7 @@ function LimitRow({
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const left = remainingPercent(window);
   const pace = paceOf(window, now);
+  const paceGap = paceOffsetMs(window, now);
   const resetsAt = window.resetsAt ? Date.parse(window.resetsAt) : Number.NaN;
   return (
     <UsageRow
@@ -167,7 +170,11 @@ function LimitRow({
               {formatUpcomingTimestamp(window.resetsAt, timestampFormat, now)}
             </span>
           ) : null}
-          {pace ? <span className="text-muted-foreground">{PACE_LABEL[pace]}</span> : null}
+          {pace ? (
+            <span className="text-muted-foreground">
+              {paceGap === null ? PACE_LABEL[pace] : formatPaceOffset(paceGap)}
+            </span>
+          ) : null}
         </>
       }
     />

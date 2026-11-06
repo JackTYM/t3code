@@ -14,7 +14,9 @@ import {
   formatDuration,
   formatResetsIn,
   type LimitPace,
+  formatPaceOffset,
   paceOf,
+  paceOffsetMs,
   paceRemainingPercent,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
@@ -55,22 +57,28 @@ export function barColor(driver: ServerProvider["driver"]): string {
   return presentation?.color ?? "var(--foreground)";
 }
 
-export function PaceIcon({ pace }: { readonly pace: LimitPace }) {
+export function PaceIcon({
+  pace,
+  offsetMs,
+}: {
+  readonly pace: LimitPace;
+  readonly offsetMs?: number | null | undefined;
+}) {
   const Icon = PACE[pace].icon;
+  const label =
+    offsetMs === null || offsetMs === undefined
+      ? PACE[pace].label
+      : `${PACE[pace].label}. ${formatPaceOffset(offsetMs)}`;
   return (
     <Tooltip>
       <TooltipTrigger
         render={
-          <span
-            role="img"
-            aria-label={PACE[pace].label}
-            className="inline-flex text-muted-foreground"
-          />
+          <span role="img" aria-label={label} className="inline-flex text-muted-foreground" />
         }
       >
         <Icon className="size-3.5" aria-hidden />
       </TooltipTrigger>
-      <TooltipPopup side="top">{PACE[pace].label}</TooltipPopup>
+      <TooltipPopup side="top">{label}</TooltipPopup>
     </Tooltip>
   );
 }
@@ -220,7 +228,7 @@ export function LimitWindows({
             </span>
             <WindowBar color={color} window={window} now={now} />
             <span className="flex items-center gap-2 text-xs whitespace-nowrap text-muted-foreground tabular-nums">
-              {pace ? <PaceIcon pace={pace} /> : null}
+              {pace ? <PaceIcon pace={pace} offsetMs={paceOffsetMs(window, now)} /> : null}
               <span className="ms-auto shrink-0">{resetsIn ?? ""}</span>
             </span>
           </Fragment>

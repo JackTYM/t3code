@@ -11,6 +11,7 @@ import {
   type LimitPool,
   type LimitPoolMember,
   type LimitPoolWindow,
+  formatPaceOffset,
   paceRemainingPercent,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
@@ -552,9 +553,14 @@ function PoolWindowCard({
           </span>
           <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
             <span>left</span>
-            {pool.pace ? <PaceIcon pace={pool.pace} /> : null}
+            {pool.pace ? <PaceIcon pace={pool.pace} offsetMs={pool.paceOffsetMs} /> : null}
           </span>
         </span>
+        {pool.paceOffsetMs !== null ? (
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {formatPaceOffset(pool.paceOffsetMs)}
+          </span>
+        ) : null}
         {nextRefill && pool.columns.length > 1 ? (
           <span className="text-xs font-medium text-foreground tabular-nums">
             ↻ +{nextRefill.restoresPercent}%

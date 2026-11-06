@@ -10,6 +10,7 @@ import {
   cursorUsageWindowDetails,
   displayLimitWindows,
   formatResetsIn,
+  formatPaceOffset,
   paceRemainingPercent,
   remainingPercent,
   type LimitAccount,
@@ -209,7 +210,11 @@ function PoolWindowCard({
           </View>
         </View>
         {pool.pace ? (
-          <Text className="text-xs text-foreground-tertiary">{PACE_LABEL[pool.pace]}</Text>
+          <Text className="text-xs text-foreground-tertiary">
+            {pool.paceOffsetMs === null
+              ? PACE_LABEL[pool.pace]
+              : formatPaceOffset(pool.paceOffsetMs)}
+          </Text>
         ) : null}
       </View>
       {description ? <Text className="text-xs text-foreground-muted">{description}</Text> : null}

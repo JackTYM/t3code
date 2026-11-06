@@ -429,6 +429,8 @@ export interface LimitPoolWindow {
   readonly remainingPercent: number;
   readonly usedPercent: number;
   readonly pace: LimitPace | null;
+  /** Positive when usage is ahead of an even pace, in the window's own time; see `paceOffsetMs`. */
+  readonly paceOffsetMs: number | null;
   readonly resets: ReadonlyArray<{
     readonly member: LimitPoolMember;
     readonly at: number;
@@ -578,11 +580,16 @@ function poolWindows(accounts: readonly LimitAccount[], now: number): readonly L
     // Judge pace only for windows with reset clocks; others add spend without elapsed time.
     const timed = members.flatMap((m) => {
       const share = elapsedShare(m.window, now);
-      return share === null ? [] : [{ used: m.window.usedPercent, elapsed: share }];
+      return share === null
+        ? []
+        : [{ used: m.window.usedPercent, elapsed: share, offsetMs: paceOffsetMs(m.window, now) }];
     });
     const timedUsed = timed.reduce((sum, t) => sum + t.used, 0) / timed.length;
     const meanElapsed =
       timed.length > 0 ? timed.reduce((sum, t) => sum + t.elapsed, 0) / timed.length : null;
+    const offsets = timed.flatMap((t) => (t.offsetMs === null ? [] : [t.offsetMs]));
+    const meanOffsetMs =
+      offsets.length > 0 ? offsets.reduce((sum, ms) => sum + ms, 0) / offsets.length : null;
     const resets = members
       .flatMap((member) => {
         const at = resetMillis(member.window);
@@ -608,6 +615,7 @@ function poolWindows(accounts: readonly LimitAccount[], now: number): readonly L
       usedPercent: Math.round(usedPercent),
       remainingPercent: Math.round(100 - usedPercent),
       pace: meanElapsed === null ? null : paceOfShares(timedUsed, meanElapsed),
+      paceOffsetMs: meanOffsetMs,
       resets,
     };
   });
@@ -656,6 +664,25 @@ export type LimitPace = "ahead" | "on" | "under";
 export function paceOf(window: ServerProviderUsageWindow, now: number): LimitPace | null {
   const elapsed = elapsedShare(window, now);
   return elapsed === null ? null : paceOfShares(window.usedPercent, elapsed);
+}
+
+/**
+ * How far usage is from an even pace, as time: the gap between the share used and the share of
+ * the window elapsed, times the window's length. Positive means ahead (the even-pace line would
+ * need this long to reach current usage), negative means that much headroom.
+ */
+export function paceOffsetMs(window: ServerProviderUsageWindow, now: number): number | null {
+  const elapsed = elapsedShare(window, now);
+  if (elapsed === null || window.windowDurationMins === undefined) return null;
+  const used = Math.max(0, Math.min(100, window.usedPercent)) / 100;
+  return (used - elapsed) * window.windowDurationMins * MINUTE;
+}
+
+const PACE_OFFSET_FLOOR_MS = 5 * MINUTE;
+
+export function formatPaceOffset(offsetMs: number): string {
+  if (Math.abs(offsetMs) < PACE_OFFSET_FLOOR_MS) return "On pace";
+  return `${formatDuration(Math.abs(offsetMs))} ${offsetMs > 0 ? "ahead of pace" : "behind pace"}`;
 }
 
 function paceOfShares(usedPercent: number, elapsed: number): LimitPace {

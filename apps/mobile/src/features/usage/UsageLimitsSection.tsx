@@ -14,7 +14,9 @@ import {
   formatDuration,
   formatResetsIn,
   limitsNotice,
+  formatPaceOffset,
   paceOf,
+  paceOffsetMs,
   paceRemainingPercent,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
@@ -56,6 +58,7 @@ function WindowRow(props: {
   const remaining = remainingPercent(window);
   const timeLeft = paceRemainingPercent(window, now);
   const pace = paceOf(window, now);
+  const paceGap = paceOffsetMs(window, now);
   const resetsIn = formatResetsIn(window, now);
   const [barWidth, setBarWidth] = useState(0);
   const tickX =
@@ -125,7 +128,13 @@ function WindowRow(props: {
       </View>
       {pace || resetsIn ? (
         <View className="flex-row justify-between gap-3">
-          <Text className="text-xs text-foreground-tertiary">{pace ? PACE_LABEL[pace] : ""}</Text>
+          <Text className="text-xs text-foreground-tertiary">
+            {paceGap !== null
+              ? formatPaceOffset(paceGap).toLowerCase()
+              : pace
+                ? PACE_LABEL[pace]
+                : ""}
+          </Text>
           <Text className="text-xs tabular-nums text-foreground-tertiary">{resetsIn ?? ""}</Text>
         </View>
       ) : null}
