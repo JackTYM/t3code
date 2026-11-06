@@ -18,7 +18,7 @@ import {
 import { resolveShortcutCommand, type ShortcutEventLike } from "./keybindings";
 
 export type ComposerTriggerKind = "path" | "pull-request" | "slash-command" | "skill";
-export type ComposerSlashCommand = "model" | "mcp" | "plan" | "default" | "side" | "btw";
+export type ComposerSlashCommand = "model" | "mcp" | "plan" | "default" | "side" | "btw" | "clear";
 export type ComposerSubmissionIntent = "foreground" | "background" | "alternate";
 
 export interface ComposerTrigger {
@@ -318,18 +318,12 @@ export function composerStateAtPromptEnd(
   };
 }
 
-/** `/side [prompt]`, or its alias `/btw [prompt]`, as the whole message. */
-export function parseSideChatCommand(text: string): { prompt: string } | null {
-  const match = /^\/(?:side|btw)(?:\s+([\s\S]*))?$/i.exec(text.trim());
-  return match ? { prompt: match[1]?.trim() ?? "" } : null;
-}
-
 /**
  * Reads a leading `/plan` or `/default` off a composer message; text after it is the same turn's
  * prompt. Callers gate on T3 plan mode so a provider's own `/plan` (Antigravity) reaches it unmodified.
  */
 export function parseComposerInteractionModeCommand(text: string): {
-  mode: Exclude<ComposerSlashCommand, "model" | "mcp" | "side" | "btw">;
+  mode: Exclude<ComposerSlashCommand, "model" | "mcp" | "side" | "btw" | "clear">;
   remainder: string;
 } | null {
   const match = /^\/(plan|default)(?:\s+([\s\S]*?))?\s*$/i.exec(text.trim());

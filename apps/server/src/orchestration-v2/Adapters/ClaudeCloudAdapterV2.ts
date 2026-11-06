@@ -76,7 +76,7 @@ const DEFAULT_TITLE = "T3 Code";
 const RESUME_EVENT_WINDOW = 50;
 /**
  * Effort levels the cloud accepts. The catalog also lists Claude Code modes
- * (`ultracode`, `ultrathink`) that are not API effort levels.
+ * (`ultrathink`) that are not API effort levels.
  */
 const CLOUD_EFFORT_LEVELS: ReadonlySet<string> = new Set(["low", "medium", "high", "xhigh", "max"]);
 /** Back-off between reconnects of a dropped stream; running out fails the active turn. */

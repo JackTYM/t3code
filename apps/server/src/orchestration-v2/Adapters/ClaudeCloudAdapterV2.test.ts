@@ -629,7 +629,8 @@ describe("ClaudeCloudAdapterV2", () => {
     Effect.gen(function* () {
       const fake = yield* makeFakeApi();
       const harness = yield* makeHarness(fake);
-      // Ultracode is a Claude Code orchestration mode, not an API effort level.
+      // Ultracode is a Claude Code orchestration toggle now; a thread still carrying it as an
+      // effort value falls back to the model's default API effort.
       yield* harness.runtime.ensureThread({
         threadId: THREAD_ID,
         modelSelection: {
@@ -640,7 +641,7 @@ describe("ClaudeCloudAdapterV2", () => {
         runtimePolicy,
       });
       const created = yield* fake.takeCall("createSession");
-      assert.isUndefined((created.args[0] as { effort?: string }).effort);
+      assert.strictEqual((created.args[0] as { effort?: string }).effort, "xhigh");
 
       const other = yield* makeFakeApi();
       const otherHarness = yield* makeHarness(other);
