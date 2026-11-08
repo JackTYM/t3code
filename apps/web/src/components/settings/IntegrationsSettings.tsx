@@ -708,7 +708,7 @@ function FileOpenTargetSetting() {
   return (
     <SettingsRow
       {...searchableSetting("file-open-target")}
-      description="Where files clicked in a thread, a diff, or search results open. Hold ⌘ or Ctrl while clicking to use the other destination. Your editor and file manager only open for a server on this machine; otherwise files open in T3 Code."
+      description="Where files clicked in a thread, diff, or search open. Hold ⌘ or Ctrl to use the other destination. Editor and file manager only open for a server on this machine; otherwise files open in T3 Code."
       resetAction={
         fileOpenTarget !== DEFAULT_FILE_OPEN_TARGET ? (
           <SettingResetButton
@@ -968,7 +968,7 @@ function DeviceIntegrationControls({
                   .finally(() => setPending(null));
               }}
             >
-              {pending === `update-${tool}` ? "Updating…" : `Update to v${version.requiredVersion}`}
+              {pending === `update-${tool}` ? "Updating…" : "Update"}
             </Button>
           ) : null}
           {state.supportsToolInspection ? (
