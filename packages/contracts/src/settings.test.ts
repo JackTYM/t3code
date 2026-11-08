@@ -250,6 +250,15 @@ describe("custom model settings", () => {
       { slug: "named", name: "Named", capabilities },
     ]);
   });
+
+  it("accepts an auto-compact window from 100,000 to 10,000,000 tokens", () => {
+    for (const autoCompactWindow of ["", "100000", "1048576", "10000000"]) {
+      expect(decodeClaudeSettings({ autoCompactWindow }).autoCompactWindow).toBe(autoCompactWindow);
+    }
+    for (const autoCompactWindow of ["99999", "10000001", "20000000", "1e6"]) {
+      expect(() => decodeClaudeSettings({ autoCompactWindow })).toThrow();
+    }
+  });
 });
 
 describe("resolveIdleCompaction", () => {
