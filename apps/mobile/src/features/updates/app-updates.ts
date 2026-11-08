@@ -34,9 +34,9 @@ export interface AppUpdateClient {
 export interface AppUpdateEnvironment {
   readonly confirmInstallNow: () => Promise<boolean>;
   readonly flushPendingWrites: () => Promise<void>;
-  /** Re-check background state after flushing; exclude app-initiated handoffs such as image pickers. */
+  /** Re-check after flushing; exclude app-initiated handoffs such as image pickers. */
   readonly isSafeToRestartInBackground: () => Promise<boolean>;
-  /** includeCurrent covers module-load backgrounding; omit after failure to prevent tight same-session retries. */
+  /** Runs after an absence of an hour or more. includeCurrent covers module-load backgrounding; omit after failure to prevent tight retries. */
   readonly onNextBackground: (apply: () => void, includeCurrent: boolean) => void;
   readonly onForegroundStay: (apply: () => void) => void;
 }
@@ -377,7 +377,7 @@ async function defaultConfirmInstallNow(): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     Dialog.alert(
       "Update ready",
-      "A new version has been downloaded and installs automatically the next time you leave the app. Install it now instead?",
+      "A new version has been downloaded and installs the next time you open the app after an hour away. Install it now instead?",
       [
         { onPress: () => resolve(false), style: "cancel", text: "Later" },
         { onPress: () => resolve(true), text: "Install Now" },
@@ -400,20 +400,32 @@ async function defaultFlushPendingWrites(): Promise<void> {
 
 async function defaultIsSafeToRestartInBackground(): Promise<boolean> {
   const { isForegroundHandoffActive } = await import("../../lib/foreground-handoff");
-  if (isForegroundHandoffActive()) return false;
-  return AppState.currentState === "background";
+  return !isForegroundHandoffActive();
 }
 
+// Restarting on every backgrounding closes the open chat each time a build publishes an update.
+const RESTART_AFTER_ABSENCE_MS = 60 * 60 * 1000;
+
+export function shouldRestartAfterAbsence(backgroundedAtMs: number, nowMs: number): boolean {
+  return nowMs - backgroundedAtMs >= RESTART_AFTER_ABSENCE_MS;
+}
+
+/** Applies when the app returns from an absence of an hour or more, never on a short trip home. */
 function defaultOnNextBackground(apply: () => void, includeCurrent: boolean): void {
+  let backgroundedAtMs: number | null =
+    includeCurrent && AppState.currentState === "background" ? Date.now() : null;
   const subscription = AppState.addEventListener("change", (state) => {
-    if (state !== "background") return;
+    if (state === "background") {
+      backgroundedAtMs ??= Date.now();
+      return;
+    }
+    if (state !== "active" || backgroundedAtMs === null) return;
+    const away = backgroundedAtMs;
+    backgroundedAtMs = null;
+    if (!shouldRestartAfterAbsence(away, Date.now())) return;
     subscription.remove();
     apply();
   });
-  if (includeCurrent && AppState.currentState === "background") {
-    subscription.remove();
-    apply();
-  }
 }
 
 const DEFERRED_INSTALL_PROMPT_AFTER_MS = 30 * 60 * 1000;

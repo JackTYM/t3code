@@ -5,6 +5,7 @@ import {
   createAppUpdateDeferral,
   installAppUpdateChecks,
   runAppUpdateCheck,
+  shouldRestartAfterAbsence,
   type AppUpdateCheckState,
   type AppUpdateClient,
   type AppUpdateEnvironment,
@@ -314,5 +315,14 @@ describe("installAppUpdateChecks", () => {
     dispose();
 
     expect(remove).toHaveBeenCalledOnce();
+  });
+});
+
+describe("shouldRestartAfterAbsence", () => {
+  it("restarts after an hour away but not after a quick trip home", () => {
+    const hour = 60 * 60 * 1000;
+    expect(shouldRestartAfterAbsence(0, 30_000)).toBe(false);
+    expect(shouldRestartAfterAbsence(0, hour - 1)).toBe(false);
+    expect(shouldRestartAfterAbsence(0, hour)).toBe(true);
   });
 });
