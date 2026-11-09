@@ -8,6 +8,7 @@ import type {
   EnvironmentId,
   ProjectId,
   ProviderDriverKind,
+  ProviderInstanceId,
   PullRequestListInput,
   ServerProvider,
   ThreadId,
@@ -26,7 +27,6 @@ import { basenameOfPath } from "../../pierre-icons";
 import {
   getProviderSkillsForSlashMenu,
   getProviderSlashCommandsForSlashMenu,
-  withInteractionModeCommandPrecedence,
 } from "@t3tools/client-runtime/providerSkills";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useVisibleThreadShells } from "~/state/entities";
@@ -44,6 +44,9 @@ import {
   rankPullRequestMatches,
 } from "../pullRequest/pullRequestList.logic";
 import type { ComposerCommandItem } from "./ComposerCommandMenu";
+import { matchComposerModelItems } from "./composerModelMentions";
+import type { ModelEsque } from "./providerIconUtils";
+import type { ProviderInstanceEntry } from "../../providerInstances";
 import {
   searchSlashCommandItems,
   slashCommandItemsForPromptPosition,
@@ -64,7 +67,6 @@ export function useComposerMenuItems({
   pullRequestProjectId,
   pullRequestRepository,
   threadPullRequests,
-  planModeUiEnabled,
   routeKind,
   sideChatAvailable,
   sideChatDisabledReason,
@@ -76,6 +78,7 @@ export function useComposerMenuItems({
   showSkillsInSlashMenu,
   workspaceSkillsScanning,
   questionAttachmentTarget,
+  modelMentions,
 }: {
   readonly composerTrigger: ComposerTrigger | null;
   readonly environmentId: EnvironmentId;
@@ -85,7 +88,6 @@ export function useComposerMenuItems({
   readonly pullRequestProjectId: ProjectId | null;
   readonly pullRequestRepository: string | null;
   readonly threadPullRequests: ReadonlyArray<ThreadPullRequestLink> | undefined;
-  readonly planModeUiEnabled: boolean;
   readonly routeKind: "server" | "draft";
   readonly sideChatAvailable: boolean;
   readonly sideChatDisabledReason: string | null;
@@ -97,6 +99,10 @@ export function useComposerMenuItems({
   readonly showSkillsInSlashMenu: boolean;
   readonly workspaceSkillsScanning: boolean;
   readonly questionAttachmentTarget: DraftId | null;
+  readonly modelMentions: {
+    readonly instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
+    readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
+  };
 }) {
   // Thread mentions rank by recency as of when the composer mounted.
   const [now] = useState(() => Date.now());
@@ -209,6 +215,11 @@ export function useComposerMenuItems({
               query: composerTrigger.query,
             })
           : []),
+        ...matchComposerModelItems({
+          instanceEntries: modelMentions.instanceEntries,
+          modelOptionsByInstance: modelMentions.modelOptionsByInstance,
+          query: composerTrigger.query,
+        }),
         ...workspaceEntries.entries.map((entry) => ({
           id: `path:${entry.kind}:${entry.path}`,
           type: "path" as const,
@@ -238,24 +249,6 @@ export function useComposerMenuItems({
                 command: "mcp",
                 label: "/mcp",
                 description: "See and repair this session's MCP servers",
-              },
-            ] as const)
-          : []),
-        ...(planModeUiEnabled
-          ? ([
-              {
-                id: "slash:plan",
-                type: "slash-command",
-                command: "plan",
-                label: "/plan",
-                description: "Switch this thread into plan mode",
-              },
-              {
-                id: "slash:default",
-                type: "slash-command",
-                command: "default",
-                label: "/default",
-                description: "Switch this thread back to normal build mode",
               },
             ] as const)
           : []),
@@ -293,9 +286,9 @@ export function useComposerMenuItems({
         selectedProviderSkills,
         showSkillsInSlashMenu,
       );
-      const providerSlashCommandItems = withInteractionModeCommandPrecedence(
-        getProviderSlashCommandsForSlashMenu(selectedProviderSlashCommands, slashMenuSkills),
-        planModeUiEnabled,
+      const providerSlashCommandItems = getProviderSlashCommandsForSlashMenu(
+        selectedProviderSlashCommands,
+        slashMenuSkills,
       ).map((command) => ({
         id: `provider-slash-command:${selectedProvider}:${command.name}`,
         type: "provider-slash-command" as const,

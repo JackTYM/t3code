@@ -22,7 +22,6 @@ import {
   extendReplacementRangeForTrailingSpace,
   formatAssistantCitationForComposer,
   isPathSuggestionCurrent,
-  parseComposerInteractionModeCommand,
   replaceTextRange,
 } from "./composer-logic";
 import { slashCommandItemsForPromptPosition } from "./components/chat/composerSlashCommandSearch";
@@ -512,49 +511,6 @@ describe("assistant citation cursor offsets", () => {
   });
 });
 
-describe("parseComposerInteractionModeCommand", () => {
-  it("parses a bare /plan command", () => {
-    expect(parseComposerInteractionModeCommand(" /plan ")).toEqual({
-      mode: "plan",
-      remainder: "",
-    });
-  });
-
-  it("parses a bare /default command", () => {
-    expect(parseComposerInteractionModeCommand("/default")).toEqual({
-      mode: "default",
-      remainder: "",
-    });
-  });
-
-  it("returns the rest of the message as the turn's prompt", () => {
-    expect(parseComposerInteractionModeCommand("/plan explain this")).toEqual({
-      mode: "plan",
-      remainder: "explain this",
-    });
-    expect(parseComposerInteractionModeCommand("/default ship it")).toEqual({
-      mode: "default",
-      remainder: "ship it",
-    });
-  });
-
-  it("keeps a multi-line remainder intact", () => {
-    expect(parseComposerInteractionModeCommand("/plan\nrewrite the parser\nthen test it")).toEqual({
-      mode: "plan",
-      remainder: "rewrite the parser\nthen test it",
-    });
-  });
-
-  it("ignores commands that only share a prefix", () => {
-    expect(parseComposerInteractionModeCommand("/planning")).toBeNull();
-    expect(parseComposerInteractionModeCommand("/defaults off")).toBeNull();
-  });
-
-  it("ignores a command that does not lead the message", () => {
-    expect(parseComposerInteractionModeCommand("please /plan this")).toBeNull();
-  });
-});
-
 describe("literal editor answer cursor state", () => {
   const prefill = "- [X] done $my-skill ";
 
@@ -596,7 +552,7 @@ describe("extendReplacementRangeForTrailingSpace", () => {
 
 describe("side chat slash commands", () => {
   it("are not offered after the start of a message", () => {
-    const items = (["side", "btw", "clear", "plan"] as const).map((command) => ({
+    const items = (["side", "btw", "clear", "model"] as const).map((command) => ({
       id: `slash:${command}`,
       type: "slash-command" as const,
       command,
@@ -604,7 +560,7 @@ describe("side chat slash commands", () => {
       description: "",
     }));
     expect(slashCommandItemsForPromptPosition(items, false).map((item) => item.id)).toEqual([
-      "slash:plan",
+      "slash:model",
     ]);
   });
 });
