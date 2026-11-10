@@ -12,9 +12,8 @@ import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
-import * as NodeModule from "node:module";
-import type * as Undici from "undici";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 import { parseGitRemoteHost } from "@t3tools/source-control-core/shared/definition";
@@ -487,43 +486,11 @@ const make = Effect.gen(function* () {
   return OriginCli.of({ execute, api, viewer, personalNamespace, resolveRepository });
 });
 
-// undici is external to the CLI bundle and a single-executable can only load it with require.
-// NodeHttpClient's undici layers and its Undici re-export would import it statically.
-const requireUndici = NodeModule.createRequire(import.meta.url);
-
 /**
  * Origin answers from a few hundred milliseconds away, so a new TLS connection doubles a request.
- * Undici's default drops an idle connection after four seconds, which a person reading a pull
- * request always outlasts; Origin keeps one open for minutes, and HTTP/2 carries a detail's
- * parallel reads on it at once.
+ * A keep-alive agent holds idle connections until Origin closes them. Undici would add HTTP/2, but
+ * the single-executable CLI cannot resolve its static import.
  */
-const httpClientLayer = Layer.effect(HttpClient.HttpClient)(
-  Effect.gen(function* () {
-    const undici = requireUndici("undici") as typeof Undici;
-    const agent = yield* Effect.acquireRelease(
-      Effect.sync(
-        () =>
-          new undici.Agent({
-            allowH2: true,
-            keepAliveTimeout: 300_000,
-            keepAliveMaxTimeout: 300_000,
-          }),
-      ),
-      (agent) => Effect.promise(() => agent.destroy()),
-    );
-    const client = yield* HttpClient.HttpClient;
-    return HttpClient.transform(client, (response) =>
-      response.pipe(
-        Effect.provideService(
-          FetchHttpClient.Fetch,
-          undici.fetch as unknown as typeof globalThis.fetch,
-        ),
-        Effect.provideService(FetchHttpClient.RequestInit, {
-          dispatcher: agent,
-        } as unknown as globalThis.RequestInit),
-      ),
-    );
-  }),
-).pipe(Layer.provide(FetchHttpClient.layer));
+const httpClientLayer = NodeHttpClient.layerNodeHttpOptions({ keepAlive: true });
 
 export const layer = Layer.effect(OriginCli, make).pipe(Layer.provide(httpClientLayer));
