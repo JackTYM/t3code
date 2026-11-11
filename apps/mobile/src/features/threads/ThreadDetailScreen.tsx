@@ -1516,7 +1516,6 @@ function ThreadDetailBody(
                   keyboardOffset={composerKeyboardOffset}
                   sendingWithKeyboard={sendingWithKeyboard}
                   fitShortFeedToViewport={questionInFlow && !isKeyboardVisible}
-                  contentTopInset={0}
                   contentBottomInset={
                     questionInFlow
                       ? 0
@@ -1787,6 +1786,8 @@ function ThreadDetailBody(
                         {props.activePendingUserInput ? (
                           <PendingUserInputCard
                             environmentId={props.environmentId}
+                            threadId={props.selectedThread.id}
+                            workspaceRoot={props.threadCwd}
                             canOperateThread={props.canOperateThread}
                             pendingUserInput={props.activePendingUserInput}
                             maxHeight={pendingUserInputMaxHeight}

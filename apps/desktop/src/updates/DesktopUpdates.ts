@@ -38,7 +38,10 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
 import * as FullInstaller from "./FullInstaller.ts";
 import type { FullUpdateDownloadError, FullUpdateOpenError } from "./FullUpdate.ts";
-import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
+import {
+  normalizeDesktopUpdateReleaseNotes,
+  releaseNotesOfOfferedVersion,
+} from "./releaseNotes.ts";
 import { desktopUpdateChannelOf } from "@t3tools/shared/cliRelease";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import {
@@ -82,6 +85,7 @@ const UpdateInfo = Schema.Struct({
   files: Schema.optional(Schema.Unknown),
   // Malformed notes must not block update-state decoding; normalizeDesktopUpdateReleaseNotes validates separately.
   releaseNotes: Schema.optional(Schema.Unknown),
+  releaseName: Schema.optional(Schema.NullOr(Schema.String)),
   releaseDate: Schema.optional(Schema.String),
 });
 
@@ -1019,7 +1023,7 @@ export const make = Effect.gen(function* () {
 
           const checkedAt = yield* currentIsoTimestamp;
           const { releaseNotes, omittedReleaseCount } = normalizeDesktopUpdateReleaseNotes(
-            info.releaseNotes,
+            releaseNotesOfOfferedVersion(info),
             info.version,
             state.channel,
             info.releaseDate,
