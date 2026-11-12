@@ -33,7 +33,8 @@ import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 
-import { getInitialServerConfig, request } from "../rpc/client.ts";
+import * as EnvironmentSupervisor from "../connection/supervisor.ts";
+import { EnvironmentRpcUnavailableError, getInitialServerConfig, request } from "../rpc/client.ts";
 
 interface CommandMetadata {
   readonly commandId?: CommandId;
@@ -276,11 +277,34 @@ const allocateCommandId = Effect.fn("EnvironmentCommands.allocateCommandId")(fun
   return CommandId.make(yield* random.uuidV4());
 });
 
+// A socket can go half-open with a request in flight and never answer. Commands for one thread
+// run one at a time, so a request that never settles would hold every later command behind it.
+// Dispatch is idempotent by command id, so a retry after this timeout cannot double-apply.
+const withResponseTimeout = Effect.fn("EnvironmentCommands.withResponseTimeout")(function* <
+  A,
+  E,
+  R,
+>(effect: Effect.Effect<A, E, R>) {
+  const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+  return yield* effect.pipe(
+    Effect.timeoutOrElse({
+      duration: "90 seconds",
+      orElse: () =>
+        Effect.fail(
+          new EnvironmentRpcUnavailableError({
+            environmentId: supervisor.target.environmentId,
+            message: "The environment did not answer in time.",
+          }),
+        ),
+    }),
+  );
+});
+
 const dispatch = (command: OrchestrationV2Command) =>
-  request(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, command);
+  withResponseTimeout(request(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, command));
 
 const getProjection = (threadId: ThreadId) =>
-  request(ORCHESTRATION_V2_WS_METHODS.getThreadProjection, { threadId });
+  withResponseTimeout(request(ORCHESTRATION_V2_WS_METHODS.getThreadProjection, { threadId }));
 
 const persistAttachments = Effect.fn("EnvironmentCommands.persistAttachments")(function* (
   threadId: ThreadId,

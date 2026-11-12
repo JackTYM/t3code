@@ -22,9 +22,11 @@ import {
 import { describe, expect, it } from "@effect/vitest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 
 import {
   AVAILABLE_CONNECTION_STATE,
@@ -62,13 +64,16 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
   readonly projection?: OrchestrationV2ThreadProjection;
   readonly projectionRequests?: ThreadId[];
   readonly advertiseThreadStop?: boolean;
+  readonly hangDispatch?: boolean;
 }) {
   const client = {
     [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command: OrchestrationV2Command) =>
-      Effect.sync(() => {
-        input.commands.push(command);
-        return { sequence: input.commands.length };
-      }),
+      input.hangDispatch === true
+        ? Effect.never
+        : Effect.sync(() => {
+            input.commands.push(command);
+            return { sequence: input.commands.length };
+          }),
     [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (requestInput: {
       readonly threadId: ThreadId;
     }) =>
@@ -131,6 +136,23 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 });
 
 describe("V2 environment commands", () => {
+  it.effect("fails a dispatch the environment never answers so the thread's queue moves on", () =>
+    Effect.gen(function* () {
+      const supervisor = yield* makeSupervisor({ commands: [], projects: [], hangDispatch: true });
+      const fiber = yield* resumeThreadQueue({
+        commandId: CommandId.make("hung-resume"),
+        threadId: ThreadId.make("thread-1"),
+      }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.flip,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("90 seconds");
+      const error = yield* Fiber.join(fiber);
+      expect(error).toMatchObject({ _tag: "EnvironmentRpcUnavailableError" });
+    }).pipe(Effect.provide(layerTestRandom)),
+  );
+
   it.effect("distinguishes sending a selected queued message from resuming queue order", () =>
     Effect.gen(function* () {
       const commands: OrchestrationV2Command[] = [];
