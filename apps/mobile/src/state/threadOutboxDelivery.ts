@@ -184,7 +184,21 @@ function setQueuedMessageWaitReason(queuedMessageId: MessageId, reason: string |
   );
 }
 
+// One delivery is in flight at a time, so one clock and one abort controller describe it. A step
+// that stops answering (an upload on a half-open socket, a request nobody replies to) would
+// otherwise hold the slot, and with it every queued message, forever.
+const DELIVERY_IDLE_LIMIT_MS = 5 * 60_000;
+const DELIVERY_WATCHDOG_INTERVAL_MS = 15_000;
+let deliveryAbort = new AbortController();
+let deliveryActivityAt = 0;
+
+function touchDeliveryActivity(): void {
+  deliveryActivityAt = Date.now();
+}
+
 function beginDispatchingQueuedMessage(queuedMessageId: MessageId): void {
+  deliveryAbort = new AbortController();
+  touchDeliveryActivity();
   setQueuedMessageWaitReason(queuedMessageId, null);
   // An attempt in flight is sending, even while its retry count is kept.
   setQueuedMessageRetrying(queuedMessageId, false);
@@ -246,6 +260,8 @@ export async function prepareQueuedMessageAttachments(queuedMessage: QueuedThrea
     environmentId: queuedMessage.environmentId,
     attachments: queuedMessage.attachments,
     supportsImageUploads: true,
+    signal: deliveryAbort.signal,
+    onUploadProgress: touchDeliveryActivity,
     persistUploadedReferences: async (draftAttachments) => {
       if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
         return "abandon";
@@ -747,15 +763,35 @@ export function createThreadOutboxDelivery(): {
   // A delivery that throws backs off like any failure. Releasing the slot
   // without a retry would re-run the drain straight into the same message.
   const settle = (messageId: MessageId, delivery: Promise<boolean>): void => {
+    let abandoned = false;
+    const watchdog = setInterval(() => {
+      if (Date.now() - deliveryActivityAt < DELIVERY_IDLE_LIMIT_MS) return;
+      abandoned = true;
+      clearInterval(watchdog);
+      console.warn("[thread-outbox] delivery stopped answering; releasing the send slot", {
+        messageId,
+      });
+      deliveryAbort.abort();
+      scheduleRetry(messageId);
+      setQueuedMessageWaitReason(messageId, "the last send stopped answering, retrying shortly");
+      finishDispatchingQueuedMessage(messageId);
+    }, DELIVERY_WATCHDOG_INTERVAL_MS);
     void delivery
       .then(
-        (sent) => (sent ? clearRetry(messageId) : scheduleRetry(messageId)),
+        (sent) => {
+          if (abandoned) return;
+          if (sent) clearRetry(messageId);
+          else scheduleRetry(messageId);
+        },
         (error: unknown) => {
           console.warn("[thread-outbox] queued message delivery threw", { messageId, error });
-          scheduleRetry(messageId);
+          if (!abandoned) scheduleRetry(messageId);
         },
       )
-      .finally(() => finishDispatchingQueuedMessage(messageId));
+      .finally(() => {
+        clearInterval(watchdog);
+        if (!abandoned) finishDispatchingQueuedMessage(messageId);
+      });
   };
 
   // An over-cap draft blocks recovery until the user changes its attachments;
@@ -1221,6 +1257,9 @@ export function createThreadOutboxDelivery(): {
       if (!queuedMessageIds.has(messageId)) {
         acknowledgedExistingThreadMessageIds.delete(messageId);
       }
+    }
+    for (const messageId of [...retries.keys()]) {
+      if (!queuedMessageIds.has(messageId)) clearRetry(messageId);
     }
     for (const [messageId, release] of familyMounts) {
       if (!queuedMessageIds.has(messageId)) {

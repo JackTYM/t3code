@@ -350,6 +350,26 @@ describe("queued task operation access", () => {
     expect(appAtomRegistry.get(queuedMessageWaitReasonsAtom)).toEqual({});
   });
 
+  it("releases the send slot when a delivery stops answering, so later messages are not stuck behind it", async () => {
+    vi.useFakeTimers();
+    try {
+      setOperateGrant("secondary", true);
+      const queued = message();
+      await state.manager.enqueue(queued);
+      state.start.mockReturnValueOnce(new Promise(() => {}));
+      startDelivery();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(appAtomRegistry.get(dispatchingQueuedMessageIdAtom)).toBe(queued.messageId);
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
+      // The retry goes through once the hung attempt no longer holds the slot.
+      expect(state.start).toHaveBeenCalledTimes(2);
+      expect(appAtomRegistry.get(dispatchingQueuedMessageIdAtom)).toBeNull();
+      expect(remaining()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("backs off instead of redelivering at once when a delivery hits a defect", async () => {
     setOperateGrant("secondary", true);
     const queued = message();
