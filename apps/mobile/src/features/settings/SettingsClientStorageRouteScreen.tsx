@@ -19,6 +19,7 @@ import {
 import { useServerConfigs } from "../../state/entities";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
+import { SendQueueSection } from "./SendQueueSection";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { formatBytes } from "../../lib/formatBytes";
@@ -77,6 +78,8 @@ export function SettingsClientStorageRouteScreen() {
         className="flex-1"
         contentContainerClassName="gap-6 px-5 pt-4 pb-[18px]"
       >
+        <SendQueueSection />
+
         <SettingsSection title="Environment caches">
           {AsyncResult.isFailure(summaryResult) ? (
             <View className="items-center gap-2 px-6 py-8">

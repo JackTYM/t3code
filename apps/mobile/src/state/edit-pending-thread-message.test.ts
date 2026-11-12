@@ -12,11 +12,16 @@ const state = vi.hoisted(() => ({
 }));
 vi.mock("./atom-registry", () => ({
   appAtomRegistry: {
-    get: (atom: string) => (atom === "dispatching" ? state.dispatching : state.held),
+    get: (atom: string) =>
+      atom === "dispatching"
+        ? state.dispatching === null
+          ? {}
+          : { [state.dispatching]: true }
+        : state.held,
   },
 }));
 vi.mock("./use-thread-outbox", () => ({
-  dispatchingQueuedMessageIdAtom: "dispatching",
+  dispatchingQueuedMessageIdsAtom: "dispatching",
   editingQueuedMessageIdsAtom: "editing",
   holdEditingQueuedMessage: (id: string) => {
     state.held[id] = true;

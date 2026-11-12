@@ -1334,7 +1334,8 @@ function useMarkdownStyles(): MarkdownStyleSets {
 
 function PendingMessageStatus(props: { readonly messageId: MessageId }) {
   const reason = useQueuedMessageWaitReason(props.messageId);
-  return <>{reason === undefined ? "Pending" : `Pending: ${reason}`}</>;
+  if (reason === undefined) return <>Pending</>;
+  return <>{`Pending: ${reason.length > 64 ? `${reason.slice(0, 61)}...` : reason}`}</>;
 }
 
 /** Messages from other agents fold to one line so the user's own messages stay easy to find. */

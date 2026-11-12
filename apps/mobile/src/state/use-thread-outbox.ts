@@ -26,20 +26,32 @@ export const editingQueuedMessageIdsAtom = Atom.make<Readonly<Record<MessageId, 
   Atom.withLabel("mobile:thread-outbox:editing-message-ids"),
 );
 
-export const dispatchingQueuedMessageIdAtom = Atom.make<MessageId | null>(null).pipe(
-  Atom.keepAlive,
-  Atom.withLabel("mobile:thread-outbox:dispatching-message-id"),
-);
+/** Messages with a delivery in flight. Each thread sends one at a time, but threads send in parallel. */
+export const dispatchingQueuedMessageIdsAtom = Atom.make<
+  Readonly<Partial<Record<MessageId, true>>>
+>({}).pipe(Atom.keepAlive, Atom.withLabel("mobile:thread-outbox:dispatching-message-ids"));
 
 /** Messages waiting out a retry backoff, which can repeat for as long as the failure lasts. */
 export const retryingQueuedMessageIdsAtom = Atom.make<Readonly<Partial<Record<MessageId, true>>>>(
   {},
 ).pipe(Atom.keepAlive, Atom.withLabel("mobile:thread-outbox:retrying-message-ids"));
 
-/** Why a queued message is not being sent right now; absent while it is sending or ready to. */
+/** What a queued message is doing or waiting for, in words. Every queued message has one. */
 export const queuedMessageWaitReasonsAtom = Atom.make<Readonly<Partial<Record<MessageId, string>>>>(
   {},
 ).pipe(Atom.keepAlive, Atom.withLabel("mobile:thread-outbox:wait-reasons"));
+
+export interface ThreadOutboxLogEntry {
+  readonly at: number;
+  readonly messageId: MessageId;
+  readonly line: string;
+}
+
+/** The most recent status changes and failures across all queued messages, newest last. */
+export const threadOutboxLogAtom = Atom.make<ReadonlyArray<ThreadOutboxLogEntry>>([]).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("mobile:thread-outbox:log"),
+);
 
 export function useQueuedMessageWaitReason(messageId: MessageId): string | undefined {
   return useAtomValue(queuedMessageWaitReasonsAtom)[messageId];

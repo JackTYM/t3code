@@ -85,10 +85,11 @@ import {
   waitForComposerDraftsLoaded,
 } from "./use-composer-drafts";
 import {
-  dispatchingQueuedMessageIdAtom,
+  dispatchingQueuedMessageIdsAtom,
   editingQueuedMessageIdsAtom,
   queuedMessageWaitReasonsAtom,
   retryingQueuedMessageIdsAtom,
+  threadOutboxLogAtom,
   threadOutboxShellStatusesAtom,
 } from "./use-thread-outbox";
 import { clearThreadComposerError, setThreadComposerError } from "./thread-composer-error";
@@ -145,6 +146,7 @@ function logThreadOutboxDeliveryFailure(input: {
 }
 
 function logThreadOutboxUploadFailure(queuedMessage: QueuedThreadMessage, error: unknown): void {
+  lastDeliveryFailures.set(queuedMessage.messageId, `upload failed: ${describeFailure(error)}`);
   const context = {
     environmentId: queuedMessage.environmentId,
     threadId: queuedMessage.threadId,
@@ -168,46 +170,95 @@ function setQueuedMessageRetrying(queuedMessageId: MessageId, retrying: boolean)
   );
 }
 
-// Every gate that holds a message back is otherwise silent, so a stuck send
-// looks the same whatever is blocking it.
-function setQueuedMessageWaitReason(queuedMessageId: MessageId, reason: string | null): void {
+const THREAD_OUTBOX_LOG_LIMIT = 300;
+
+function logThreadOutbox(messageId: MessageId, line: string): void {
+  threadOutboxDebug.log(line, { messageId });
+  const next = [...appAtomRegistry.get(threadOutboxLogAtom), { at: Date.now(), messageId, line }];
+  appAtomRegistry.set(
+    threadOutboxLogAtom,
+    next.length > THREAD_OUTBOX_LOG_LIMIT ? next.slice(-THREAD_OUTBOX_LOG_LIMIT) : next,
+  );
+}
+
+// A queued message is never just "Pending": whatever holds it back, or whatever step it is on,
+// is written here and shown on the message and in the send log.
+function setQueuedMessageStatus(queuedMessageId: MessageId, status: string | null): void {
   const { [queuedMessageId]: current, ...others } = appAtomRegistry.get(
     queuedMessageWaitReasonsAtom,
   );
-  if ((current ?? null) === reason) return;
-  if (reason !== null) {
-    threadOutboxDebug.log("waiting", { messageId: queuedMessageId, reason });
-  }
+  if ((current ?? null) === status) return;
+  if (status !== null) logThreadOutbox(queuedMessageId, status);
   appAtomRegistry.set(
     queuedMessageWaitReasonsAtom,
-    reason === null ? others : { ...others, [queuedMessageId]: reason },
+    status === null ? others : { ...others, [queuedMessageId]: status },
   );
 }
 
-// One delivery is in flight at a time, so one clock and one abort controller describe it. A step
-// that stops answering (an upload on a half-open socket, a request nobody replies to) would
-// otherwise hold the slot, and with it every queued message, forever.
-const DELIVERY_IDLE_LIMIT_MS = 5 * 60_000;
-const DELIVERY_WATCHDOG_INTERVAL_MS = 15_000;
-let deliveryAbort = new AbortController();
-let deliveryActivityAt = 0;
+function describeFailure(error: unknown): string {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : typeof error === "object" && error !== null && "_tag" in error
+          ? String(error._tag)
+          : "unknown error";
+  return message.length > 140 ? `${message.slice(0, 137)}...` : message;
+}
 
-function touchDeliveryActivity(): void {
-  deliveryActivityAt = Date.now();
+// Each message gets its own clock and abort controller. A step that stops answering (an upload
+// on a half-open socket, a request nobody replies to) must cost that message its slot, not the
+// whole queue.
+const DELIVERY_IDLE_LIMIT_MS = 5 * 60_000;
+const DELIVERY_MAX_MS = 20 * 60_000;
+const DELIVERY_WATCHDOG_INTERVAL_MS = 15_000;
+const MAX_PARALLEL_DELIVERIES = 4;
+
+interface DeliveryAttempt {
+  readonly abort: AbortController;
+  readonly startedAt: number;
+  activityAt: number;
+}
+
+const deliveryAttempts = new Map<MessageId, DeliveryAttempt>();
+const lastDeliveryFailures = new Map<MessageId, string>();
+
+function touchDeliveryActivity(messageId: MessageId): void {
+  const attempt = deliveryAttempts.get(messageId);
+  if (attempt) attempt.activityAt = Date.now();
 }
 
 function beginDispatchingQueuedMessage(queuedMessageId: MessageId): void {
-  deliveryAbort = new AbortController();
-  touchDeliveryActivity();
-  setQueuedMessageWaitReason(queuedMessageId, null);
+  const now = Date.now();
+  deliveryAttempts.set(queuedMessageId, {
+    abort: new AbortController(),
+    startedAt: now,
+    activityAt: now,
+  });
+  setQueuedMessageStatus(queuedMessageId, "starting to send");
   // An attempt in flight is sending, even while its retry count is kept.
   setQueuedMessageRetrying(queuedMessageId, false);
-  appAtomRegistry.set(dispatchingQueuedMessageIdAtom, queuedMessageId);
+  appAtomRegistry.set(dispatchingQueuedMessageIdsAtom, {
+    ...appAtomRegistry.get(dispatchingQueuedMessageIdsAtom),
+    [queuedMessageId]: true,
+  });
 }
 
 function finishDispatchingQueuedMessage(queuedMessageId: MessageId): void {
-  const current = appAtomRegistry.get(dispatchingQueuedMessageIdAtom);
-  appAtomRegistry.set(dispatchingQueuedMessageIdAtom, current === queuedMessageId ? null : current);
+  deliveryAttempts.delete(queuedMessageId);
+  const { [queuedMessageId]: _finished, ...others } = appAtomRegistry.get(
+    dispatchingQueuedMessageIdsAtom,
+  );
+  appAtomRegistry.set(dispatchingQueuedMessageIdsAtom, others);
+}
+
+/** Throws away a queued message, cancelling an upload or send it still has in flight. */
+export async function discardQueuedMessage(message: QueuedThreadMessage): Promise<boolean> {
+  deliveryAttempts.get(message.messageId)?.abort.abort();
+  const removed = await removeThreadOutboxMessage(message);
+  if (removed) logThreadOutbox(message.messageId, "discarded by you");
+  return removed;
 }
 
 function findThread(
@@ -260,8 +311,16 @@ export async function prepareQueuedMessageAttachments(queuedMessage: QueuedThrea
     environmentId: queuedMessage.environmentId,
     attachments: queuedMessage.attachments,
     supportsImageUploads: true,
-    signal: deliveryAbort.signal,
-    onUploadProgress: touchDeliveryActivity,
+    ...(deliveryAttempts.has(queuedMessage.messageId)
+      ? { signal: deliveryAttempts.get(queuedMessage.messageId)!.abort.signal }
+      : {}),
+    onUploadProgress: (_attachmentId, progress) => {
+      touchDeliveryActivity(queuedMessage.messageId);
+      setQueuedMessageStatus(
+        queuedMessage.messageId,
+        `uploading attachments, ${Math.min(99, Math.floor(progress * 10) * 10)}%`,
+      );
+    },
     persistUploadedReferences: async (draftAttachments) => {
       if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
         return "abandon";
@@ -637,7 +696,7 @@ const deliveryInputsAtom = Atom.make((get) => {
     }
   }
   return {
-    dispatchingQueuedMessageId: get(dispatchingQueuedMessageIdAtom),
+    dispatchingQueuedMessageIds: get(dispatchingQueuedMessageIdsAtom),
     editingQueuedMessageIds: get(editingQueuedMessageIdsAtom),
     queuedMessagesByThreadKey: get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
     shellStatuses: get(threadOutboxShellStatusesAtom),
@@ -690,6 +749,7 @@ function reportCommandFailure(
     return null;
   }
   const error = Cause.squash(commandResult.cause);
+  lastDeliveryFailures.set(queuedMessage.messageId, describeFailure(error));
   const action = logThreadOutboxDeliveryFailure({
     stage,
     error,
@@ -716,11 +776,12 @@ interface ThreadOutboxRetry {
 /**
  * Delivers queued thread messages one at a time. A drain pass runs whenever its inputs
  * change (outbox, locks, shells, projects, configs, connections, scopes) and when a retry
- * backoff expires. `dispatchingQueuedMessageIdAtom` is the single in-flight slot; clearing
- * it re-runs the drain for the next message.
+ * backoff expires. Each thread has one in-flight delivery at a time (`dispatchingQueuedMessageIdsAtom`),
+ * and clearing it re-runs the drain for that thread's next message.
  */
 export function createThreadOutboxDelivery(): {
   readonly drain: () => void;
+  readonly retryNow: (messageId: MessageId) => void;
   readonly dispose: () => void;
 } {
   let disposed = false;
@@ -738,7 +799,7 @@ export function createThreadOutboxDelivery(): {
 
   const retryNotBefore = (messageId: MessageId): number => retries.get(messageId)?.notBefore ?? 0;
 
-  const scheduleRetry = (messageId: MessageId): void => {
+  const scheduleRetry = (messageId: MessageId, why?: string): void => {
     if (disposed) return;
     const previous = retries.get(messageId);
     if (previous !== undefined) clearTimeout(previous.timer);
@@ -750,9 +811,15 @@ export function createThreadOutboxDelivery(): {
       timer: setTimeout(drain, delayMs),
     });
     setQueuedMessageRetrying(messageId, true);
+    const reason = why ?? lastDeliveryFailures.get(messageId);
+    setQueuedMessageStatus(
+      messageId,
+      `retrying, attempt ${attempt + 1}${reason === undefined ? "" : ` (last try: ${reason})`}`,
+    );
   };
 
   const clearRetry = (messageId: MessageId): void => {
+    lastDeliveryFailures.delete(messageId);
     const retry = retries.get(messageId);
     if (retry === undefined) return;
     clearTimeout(retry.timer);
@@ -760,22 +827,36 @@ export function createThreadOutboxDelivery(): {
     setQueuedMessageRetrying(messageId, false);
   };
 
+  // Gives up on the attempt in flight, frees its slot, and retries with the usual backoff. The
+  // abandoned attempt may still finish later; its result is ignored (delivery is idempotent by
+  // command id, so a late success cannot double-send).
+  const abandoners = new Map<MessageId, (why: string) => void>();
+
   // A delivery that throws backs off like any failure. Releasing the slot
   // without a retry would re-run the drain straight into the same message.
   const settle = (messageId: MessageId, delivery: Promise<boolean>): void => {
     let abandoned = false;
-    const watchdog = setInterval(() => {
-      if (Date.now() - deliveryActivityAt < DELIVERY_IDLE_LIMIT_MS) return;
+    const abandon = (why: string): void => {
+      if (abandoned) return;
       abandoned = true;
       clearInterval(watchdog);
-      console.warn("[thread-outbox] delivery stopped answering; releasing the send slot", {
-        messageId,
-      });
-      deliveryAbort.abort();
-      scheduleRetry(messageId);
-      setQueuedMessageWaitReason(messageId, "the last send stopped answering, retrying shortly");
+      abandoners.delete(messageId);
+      console.warn("[thread-outbox] abandoning a delivery", { messageId, why });
+      deliveryAttempts.get(messageId)?.abort.abort();
+      scheduleRetry(messageId, why);
       finishDispatchingQueuedMessage(messageId);
+    };
+    const watchdog = setInterval(() => {
+      const attempt = deliveryAttempts.get(messageId);
+      if (attempt === undefined) return;
+      const now = Date.now();
+      if (now - attempt.activityAt >= DELIVERY_IDLE_LIMIT_MS) {
+        abandon("it stopped answering for 5 minutes");
+      } else if (now - attempt.startedAt >= DELIVERY_MAX_MS) {
+        abandon("it took longer than 20 minutes");
+      }
     }, DELIVERY_WATCHDOG_INTERVAL_MS);
+    abandoners.set(messageId, abandon);
     void delivery
       .then(
         (sent) => {
@@ -785,13 +866,28 @@ export function createThreadOutboxDelivery(): {
         },
         (error: unknown) => {
           console.warn("[thread-outbox] queued message delivery threw", { messageId, error });
+          lastDeliveryFailures.set(messageId, describeFailure(error));
           if (!abandoned) scheduleRetry(messageId);
         },
       )
       .finally(() => {
         clearInterval(watchdog);
-        if (!abandoned) finishDispatchingQueuedMessage(messageId);
+        if (!abandoned) {
+          abandoners.delete(messageId);
+          finishDispatchingQueuedMessage(messageId);
+        }
       });
+  };
+
+  /** Skips a message's retry backoff, restarting a send that is stuck mid-flight. */
+  const retryNow = (messageId: MessageId): void => {
+    logThreadOutbox(messageId, "retry requested by you");
+    if (abandoners.has(messageId)) {
+      abandoners.get(messageId)?.("you asked to retry");
+    }
+    const retry = retries.get(messageId);
+    if (retry !== undefined) retries.set(messageId, { ...retry, notBefore: 0 });
+    drain();
   };
 
   // An over-cap draft blocks recovery until the user changes its attachments;
@@ -865,6 +961,7 @@ export function createThreadOutboxDelivery(): {
 
     if (settings.runtimeMode !== thread.runtimeMode) {
       if (!hasAccess()) return true;
+      setQueuedMessageStatus(queuedMessage.messageId, "syncing the thread's settings");
       const runtimeResult = await runDeliveryCommand(threadEnvironment.setRuntimeMode, {
         environmentId: queuedMessage.environmentId,
         input: {
@@ -882,6 +979,7 @@ export function createThreadOutboxDelivery(): {
 
     if (settings.interactionMode !== thread.interactionMode) {
       if (!hasAccess()) return true;
+      setQueuedMessageStatus(queuedMessage.messageId, "syncing the thread's settings");
       const interactionResult = await runDeliveryCommand(threadEnvironment.setInteractionMode, {
         environmentId: queuedMessage.environmentId,
         input: {
@@ -947,6 +1045,7 @@ export function createThreadOutboxDelivery(): {
     if (queuedMessage.compactBeforeSend === true) {
       if (!hasAccess()) return true;
       // Queued, since steering a running turn with a compaction is rejected.
+      setQueuedMessageStatus(queuedMessage.messageId, "compacting the thread first");
       const compactionResult = await runDeliveryCommand(threadEnvironment.startTurn, {
         environmentId: queuedMessage.environmentId,
         input: {
@@ -976,6 +1075,7 @@ export function createThreadOutboxDelivery(): {
       if (!isQueuedMessagePayloadCurrent(persistedMessage, deliveryRevision)) return true;
     }
     if (!hasAccess()) return true;
+    setQueuedMessageStatus(queuedMessage.messageId, "waiting for the server to accept the message");
     const deliveryResult = await runDeliveryCommand(threadEnvironment.startTurn, {
       environmentId: queuedMessage.environmentId,
       input: {
@@ -1117,6 +1217,7 @@ export function createThreadOutboxDelivery(): {
     if (!hasAccess()) return true;
     let workspace = creation;
     if (creation.pullRequestReference) {
+      setQueuedMessageStatus(queuedMessage.messageId, "checking out the pull request");
       const checkout = await runDeliveryCommand(gitEnvironment.preparePullRequestThread, {
         environmentId: queuedMessage.environmentId,
         input: { cwd: projectCwd, reference: creation.pullRequestReference, mode: "worktree" },
@@ -1146,6 +1247,7 @@ export function createThreadOutboxDelivery(): {
         startFromOrigin: false,
       };
     }
+    setQueuedMessageStatus(queuedMessage.messageId, "waiting for the server to accept the message");
     const deliveryResult = await runDeliveryCommand(threadEnvironment.startTurn, {
       environmentId: queuedMessage.environmentId,
       input: buildProjectThreadStartTurnInput({
@@ -1224,7 +1326,7 @@ export function createThreadOutboxDelivery(): {
 
   function drainPass(): void {
     const {
-      dispatchingQueuedMessageId,
+      dispatchingQueuedMessageIds,
       editingQueuedMessageIds,
       queuedMessagesByThreadKey,
       shellStatuses,
@@ -1239,26 +1341,19 @@ export function createThreadOutboxDelivery(): {
         .flat()
         .map((message) => message.messageId),
     );
-    const staleWaitReasons = appAtomRegistry.get(queuedMessageWaitReasonsAtom);
-    for (const messageId of Object.keys(staleWaitReasons) as Array<MessageId>) {
-      if (!queuedMessageIds.has(messageId)) setQueuedMessageWaitReason(messageId, null);
+    for (const messageId of Object.keys(
+      appAtomRegistry.get(queuedMessageWaitReasonsAtom),
+    ) as Array<MessageId>) {
+      if (!queuedMessageIds.has(messageId)) setQueuedMessageStatus(messageId, null);
     }
-    if (dispatchingQueuedMessageId !== null) {
-      for (const queue of Object.values(queuedMessagesByThreadKey)) {
-        const waiting = queue[0];
-        if (waiting && waiting.messageId !== dispatchingQueuedMessageId) {
-          setQueuedMessageWaitReason(waiting.messageId, "an earlier message is still sending");
-        }
-      }
-      return;
-    }
+    let inFlight = Object.keys(dispatchingQueuedMessageIds).length;
 
     for (const messageId of acknowledgedExistingThreadMessageIds) {
       if (!queuedMessageIds.has(messageId)) {
         acknowledgedExistingThreadMessageIds.delete(messageId);
       }
     }
-    for (const messageId of [...retries.keys()]) {
+    for (const messageId of retries.keys()) {
       if (!queuedMessageIds.has(messageId)) clearRetry(messageId);
     }
     for (const [messageId, release] of familyMounts) {
@@ -1273,7 +1368,17 @@ export function createThreadOutboxDelivery(): {
       if (!nextQueuedMessage) {
         continue;
       }
+      for (const later of queuedMessages.slice(1)) {
+        setQueuedMessageStatus(later.messageId, "waiting for the earlier message in this thread");
+      }
       const messageId = nextQueuedMessage.messageId;
+      if (dispatchingQueuedMessageIds[messageId]) {
+        continue;
+      }
+      if (inFlight >= MAX_PARALLEL_DELIVERIES) {
+        setQueuedMessageStatus(messageId, "waiting for other messages to finish sending");
+        continue;
+      }
       if (
         nextQueuedMessage.creation === undefined &&
         acknowledgedExistingThreadMessageIds.has(messageId)
@@ -1289,14 +1394,17 @@ export function createThreadOutboxDelivery(): {
             acknowledgedExistingThreadMessageIds,
           ),
         );
-        return;
+        inFlight += 1;
+        continue;
       }
       if (editingQueuedMessageIds[messageId]) {
+        setQueuedMessageStatus(messageId, "open for editing");
         continue;
       }
       const blockedRecovery = blockedRecoveries.get(messageId);
       if (blockedRecovery) {
         if (blockedRecovery.message === nextQueuedMessage) {
+          setQueuedMessageStatus(messageId, "waiting for you to remove attachments from the draft");
           continue;
         }
         blockedRecoveries.delete(messageId);
@@ -1304,7 +1412,7 @@ export function createThreadOutboxDelivery(): {
       }
       if (retryNotBefore(messageId) > Date.now()) {
         if (appAtomRegistry.get(queuedMessageWaitReasonsAtom)[messageId] === undefined) {
-          setQueuedMessageWaitReason(messageId, "the last send failed, retrying shortly");
+          setQueuedMessageStatus(messageId, "the last send failed, retrying shortly");
         }
         continue;
       }
@@ -1376,7 +1484,7 @@ export function createThreadOutboxDelivery(): {
         continue;
       }
       if (deliveryAction === "send" && !operableEnvironments.has(nextQueuedMessage.environmentId)) {
-        setQueuedMessageWaitReason(messageId, "this session's send permission is not loaded");
+        setQueuedMessageStatus(messageId, "this session's send permission is not loaded");
         continue;
       }
       const dispatchStep = resolveThreadOutboxDispatchStep({
@@ -1392,7 +1500,7 @@ export function createThreadOutboxDelivery(): {
           : null,
       });
       if (dispatchStep.step === "wait") {
-        setQueuedMessageWaitReason(
+        setQueuedMessageStatus(
           messageId,
           environment?.connectionState !== "connected"
             ? "the environment is not connected"
@@ -1403,7 +1511,7 @@ export function createThreadOutboxDelivery(): {
         continue;
       }
       if (dispatchStep.step === "retry") {
-        setQueuedMessageWaitReason(messageId, "the server's settings have not loaded");
+        setQueuedMessageStatus(messageId, "the server's settings have not loaded");
         scheduleRetry(messageId);
         continue;
       }
@@ -1418,7 +1526,8 @@ export function createThreadOutboxDelivery(): {
               : restoreQueuedMessage(nextQueuedMessage, attachmentError),
           ),
         );
-        return;
+        inFlight += 1;
+        continue;
       }
       const creationProjectCwd =
         creation !== undefined
@@ -1428,9 +1537,11 @@ export function createThreadOutboxDelivery(): {
           : null;
       if (deliveryAction === "send" && creation !== undefined) {
         if (!isQueuedThreadCreationSendable(nextQueuedMessage)) {
+          setQueuedMessageStatus(messageId, "the new task is missing details");
           continue;
         }
         if (creationProjectCwd === null && shellStatus !== "live") {
+          setQueuedMessageStatus(messageId, "the project list is still syncing");
           continue;
         }
       }
@@ -1487,7 +1598,8 @@ export function createThreadOutboxDelivery(): {
               : Promise.resolve(false);
       });
       settle(messageId, delivery);
-      return;
+      inFlight += 1;
+      continue;
     }
   }
 
@@ -1502,6 +1614,7 @@ export function createThreadOutboxDelivery(): {
 
   return {
     drain,
+    retryNow,
     dispose: () => {
       disposed = true;
       stopDraining();
@@ -1531,13 +1644,22 @@ function loadThreadOutbox(isActive: () => boolean): void {
   });
 }
 
+let activeDelivery: ReturnType<typeof createThreadOutboxDelivery> | null = null;
+
+/** Skips a queued message's backoff and restarts a send that is stuck in flight. */
+export function retryQueuedMessageNow(messageId: MessageId): void {
+  activeDelivery?.retryNow(messageId);
+}
+
 /** App-lifetime: loads the persisted outbox and delivers queued messages. */
 export function installThreadOutboxDelivery(): () => void {
   let active = true;
   loadThreadOutbox(() => active);
   const delivery = createThreadOutboxDelivery();
+  activeDelivery = delivery;
   return () => {
     active = false;
+    if (activeDelivery === delivery) activeDelivery = null;
     delivery.dispose();
   };
 }

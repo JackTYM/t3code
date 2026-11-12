@@ -128,14 +128,15 @@ vi.mock("./thread-outbox", async () => {
   };
 });
 vi.mock("./thread-outbox-removal", () => ({
-  removeThreadOutboxMessage: (message: QueuedThreadMessage, revision?: number) =>
-    state.manager.remove(message, revision),
+  removeThreadOutboxMessage: async (message: QueuedThreadMessage, revision?: number) =>
+    (await state.manager.remove(message, revision)) !== null,
 }));
 vi.mock("./use-thread-outbox", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
     editingQueuedMessageIdsAtom: Atom.make({}).pipe(Atom.keepAlive),
-    dispatchingQueuedMessageIdAtom: Atom.make<MessageId | null>(null).pipe(Atom.keepAlive),
+    dispatchingQueuedMessageIdsAtom: Atom.make<Record<string, true>>({}).pipe(Atom.keepAlive),
+    threadOutboxLogAtom: Atom.make([]).pipe(Atom.keepAlive),
     retryingQueuedMessageIdsAtom: Atom.make({}).pipe(Atom.keepAlive),
     queuedMessageWaitReasonsAtom: Atom.make({}).pipe(Atom.keepAlive),
     threadOutboxShellStatusesAtom: Atom.make(new Map([["secondary", "live"]])),
@@ -163,11 +164,11 @@ vi.mock("./use-composer-drafts", async () => {
 import { appAtomRegistry } from "./atom-registry";
 import { environmentSession } from "./session";
 import {
-  dispatchingQueuedMessageIdAtom,
+  dispatchingQueuedMessageIdsAtom,
   editingQueuedMessageIdsAtom,
   queuedMessageWaitReasonsAtom,
 } from "./use-thread-outbox";
-import { createThreadOutboxDelivery } from "./threadOutboxDelivery";
+import { createThreadOutboxDelivery, discardQueuedMessage } from "./threadOutboxDelivery";
 
 const message = (overrides: Partial<QueuedThreadMessage> = {}): QueuedThreadMessage => ({
   environmentId: EnvironmentId.make("secondary"),
@@ -190,8 +191,8 @@ function setOperateGrant(environmentId: string, granted: boolean): void {
 
 function runDrain() {
   const settled = Promise.withResolvers<void>();
-  const release = appAtomRegistry.subscribe(dispatchingQueuedMessageIdAtom, (id) => {
-    if (id === null) settled.resolve();
+  const release = appAtomRegistry.subscribe(dispatchingQueuedMessageIdsAtom, (ids) => {
+    if (Object.keys(ids).length === 0) settled.resolve();
   });
   startDelivery();
   return settled.promise.finally(release);
@@ -220,7 +221,7 @@ beforeEach(() => {
   state.familyMount.mockReset().mockReturnValue(() => {});
   appAtomRegistry.set(state.threadShells, [state.thread]);
   appAtomRegistry.set(state.manager.queuedMessagesByThreadKeyAtom, {});
-  appAtomRegistry.set(dispatchingQueuedMessageIdAtom, null);
+  appAtomRegistry.set(dispatchingQueuedMessageIdsAtom, {});
   appAtomRegistry.set(editingQueuedMessageIdsAtom, {});
   for (const command of [
     state.start,
@@ -359,15 +360,72 @@ describe("queued task operation access", () => {
       state.start.mockReturnValueOnce(new Promise(() => {}));
       startDelivery();
       await vi.advanceTimersByTimeAsync(0);
-      expect(appAtomRegistry.get(dispatchingQueuedMessageIdAtom)).toBe(queued.messageId);
+      expect(Object.keys(appAtomRegistry.get(dispatchingQueuedMessageIdsAtom))).toEqual([
+        queued.messageId,
+      ]);
       await vi.advanceTimersByTimeAsync(6 * 60_000);
       // The retry goes through once the hung attempt no longer holds the slot.
       expect(state.start).toHaveBeenCalledTimes(2);
-      expect(appAtomRegistry.get(dispatchingQueuedMessageIdAtom)).toBeNull();
+      expect(appAtomRegistry.get(dispatchingQueuedMessageIdsAtom)).toEqual({});
       expect(remaining()).toEqual([]);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps sending other threads while one thread's send never answers", async () => {
+    setOperateGrant("secondary", true);
+    appAtomRegistry.set(state.threadShells, [state.thread, { ...state.thread, id: "thread-b" }]);
+    const stuck = message();
+    const other = message({
+      threadId: ThreadId.make("thread-b"),
+      commandId: CommandId.make("command-b"),
+      messageId: MessageId.make("message-b"),
+    });
+    await state.manager.enqueue(stuck);
+    await state.manager.enqueue(other);
+    state.start.mockReturnValueOnce(new Promise(() => {}));
+    startDelivery();
+    await vi.waitFor(() => expect(remaining()).toEqual([stuck]));
+    expect(Object.keys(appAtomRegistry.get(dispatchingQueuedMessageIdsAtom))).toEqual([
+      stuck.messageId,
+    ]);
+    expect(appAtomRegistry.get(queuedMessageWaitReasonsAtom)[stuck.messageId]).toMatch(
+      /waiting for the server/,
+    );
+  });
+
+  it("lets you discard a message whose send is stuck in flight", async () => {
+    setOperateGrant("secondary", true);
+    const stuck = message();
+    await state.manager.enqueue(stuck);
+    state.start.mockReturnValueOnce(new Promise(() => {}));
+    startDelivery();
+    await vi.waitFor(() =>
+      expect(Object.keys(appAtomRegistry.get(dispatchingQueuedMessageIdsAtom))).toEqual([
+        stuck.messageId,
+      ]),
+    );
+    await expect(discardQueuedMessage(stuck)).resolves.toBe(true);
+    expect(remaining()).toEqual([]);
+  });
+
+  it("gives a message waiting behind an earlier one in its thread a reason", async () => {
+    setOperateGrant("secondary", true);
+    const first = message();
+    const second = message({
+      commandId: CommandId.make("command-2"),
+      messageId: MessageId.make("message-2"),
+    });
+    await state.manager.enqueue(first);
+    await state.manager.enqueue(second);
+    state.start.mockReturnValueOnce(new Promise(() => {}));
+    startDelivery();
+    await vi.waitFor(() =>
+      expect(appAtomRegistry.get(queuedMessageWaitReasonsAtom)[second.messageId]).toMatch(
+        /earlier message in this thread/,
+      ),
+    );
   });
 
   it("backs off instead of redelivering at once when a delivery hits a defect", async () => {
@@ -383,7 +441,7 @@ describe("queued task operation access", () => {
     expect(state.modelUnavailable).toHaveBeenCalledOnce();
     expect(state.prepare).not.toHaveBeenCalled();
     expect(state.start).not.toHaveBeenCalled();
-    expect(appAtomRegistry.get(dispatchingQueuedMessageIdAtom)).toBeNull();
+    expect(appAtomRegistry.get(dispatchingQueuedMessageIdsAtom)).toEqual({});
     expect(remaining()).toEqual([queued]);
   });
 
@@ -402,8 +460,8 @@ describe("queued task operation access", () => {
     await state.manager.enqueue(queued);
     using confirm = vi.spyOn(state.manager, "confirmQueued");
     const delivered = Promise.withResolvers<void>();
-    const release = appAtomRegistry.subscribe(dispatchingQueuedMessageIdAtom, (id) => {
-      if (id === null) delivered.resolve();
+    const release = appAtomRegistry.subscribe(dispatchingQueuedMessageIdsAtom, (ids) => {
+      if (Object.keys(ids).length === 0) delivered.resolve();
     });
     // Ending the edit wakes the drain through a registry notification, the path on which the
     // mount's synchronous row change notifies the drain again mid-pass.
