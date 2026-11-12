@@ -89,7 +89,9 @@ vi.mock("expo-file-system", () => ({
   UploadType: { BINARY_CONTENT: 0 },
 }));
 
+import { shouldRetryThreadOutboxDelivery } from "../state/thread-outbox-model";
 import {
+  ATTACHMENT_UPLOAD_STALL_MS,
   prepareTurnAttachments,
   releasePendingAttachmentUploads,
   withUploadedMobileAttachmentReferences,
@@ -187,6 +189,26 @@ describe("prepareTurnAttachments", () => {
     ).rejects.toThrow("cannot upload attachments");
     expect(mocks.runAtomCommand).not.toHaveBeenCalled();
     expect(mocks.upload).not.toHaveBeenCalled();
+  });
+
+  it("cuts off an upload that never moves a byte so the send can retry", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.upload.mockImplementation(() => new Promise(() => {}));
+      const outcome = prepareTurnAttachments({
+        environmentId,
+        attachments: [fileBackedImage],
+        supportsImageUploads: true,
+      }).then(
+        () => "resolved",
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(ATTACHMENT_UPLOAD_STALL_MS + 1);
+      expect(await outcome).toMatchObject({ _tag: "AttachmentUploadStalledError" });
+      expect(shouldRetryThreadOutboxDelivery(await outcome)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rechecks access after a signed URL is minted before sending any bytes", async () => {

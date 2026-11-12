@@ -287,6 +287,7 @@ export function shouldRetryThreadOutboxDelivery(error: unknown): boolean {
       case "RpcClientError":
       case "EnvironmentRpcUnavailableError":
       case "EnvironmentNotRegisteredError":
+      case "AttachmentUploadStalledError":
         return true;
       default:
         break;

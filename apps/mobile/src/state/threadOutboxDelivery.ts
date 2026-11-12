@@ -145,8 +145,23 @@ function logThreadOutboxDeliveryFailure(input: {
   return action;
 }
 
+// A message whose HTTP upload stalled sends its images inline on the next try, which skips the upload endpoint.
+const inlineImageFallbacks = new Set<MessageId>();
+
 function logThreadOutboxUploadFailure(queuedMessage: QueuedThreadMessage, error: unknown): void {
   lastDeliveryFailures.set(queuedMessage.messageId, `upload failed: ${describeFailure(error)}`);
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "_tag" in error &&
+    error._tag === "AttachmentUploadStalledError"
+  ) {
+    inlineImageFallbacks.add(queuedMessage.messageId);
+    logThreadOutbox(
+      queuedMessage.messageId,
+      "upload stalled; sending images inline on the next try",
+    );
+  }
   const context = {
     environmentId: queuedMessage.environmentId,
     threadId: queuedMessage.threadId,
@@ -310,7 +325,7 @@ export async function prepareQueuedMessageAttachments(queuedMessage: QueuedThrea
   const result = await prepareTurnAttachments({
     environmentId: queuedMessage.environmentId,
     attachments: queuedMessage.attachments,
-    supportsImageUploads: true,
+    supportsImageUploads: !inlineImageFallbacks.has(queuedMessage.messageId),
     ...(deliveryAttempts.has(queuedMessage.messageId)
       ? { signal: deliveryAttempts.get(queuedMessage.messageId)!.abort.signal }
       : {}),

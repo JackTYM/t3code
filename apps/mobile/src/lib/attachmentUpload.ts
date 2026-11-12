@@ -16,6 +16,7 @@ import {
   PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { appAtomRegistry } from "../state/atom-registry";
 import { assetEnvironment } from "../state/assets";
@@ -197,6 +198,14 @@ async function composerImageAttachmentDataUrl(
   }
 }
 
+/** An upload that stops moving bytes is cut off so the send can retry instead of sitting at the same percentage. */
+export const ATTACHMENT_UPLOAD_STALL_MS = 45_000;
+
+export class AttachmentUploadStalledError extends Schema.TaggedError<AttachmentUploadStalledError>()(
+  "AttachmentUploadStalledError",
+  { message: Schema.String },
+) {}
+
 async function uploadFileBytes(
   environmentId: EnvironmentId,
   attachment: DraftComposerAttachment,
@@ -225,21 +234,56 @@ async function uploadFileBytes(
         encoding: "base64",
       });
     }
-    const result = await file.upload(url, {
-      httpMethod: "POST",
-      uploadType: UploadType.BINARY_CONTENT,
-      headers: { "Content-Type": composerAttachmentWireMimeType(attachment) },
-      signal,
-      ...(onProgress
-        ? {
-            // Native events carry Int64 counts, which expo-modules-jsi delivers as BigInt despite the `number` type.
-            onProgress: ({ bytesSent, totalBytes }) => {
-              const total = Number(totalBytes);
-              if (total > 0) onProgress(Number(bytesSent) / total);
-            },
-          }
-        : {}),
+    const local = new AbortController();
+    const relayAbort = () => local.abort();
+    signal.addEventListener("abort", relayAbort, { once: true });
+    let stallTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastSent = -1;
+    let lastPercent = 0;
+    let rejectStalled: (error: Error) => void = () => {};
+    const stalled = new Promise<never>((_resolve, reject) => {
+      rejectStalled = reject;
     });
+    const armStallTimer = () => {
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        local.abort();
+        rejectStalled(
+          new AttachmentUploadStalledError({
+            message: `Uploading '${attachment.name}' stopped at ${lastPercent}% for ${ATTACHMENT_UPLOAD_STALL_MS / 1000}s.`,
+          }),
+        );
+      }, ATTACHMENT_UPLOAD_STALL_MS);
+    };
+    armStallTimer();
+    let result: Awaited<ReturnType<typeof file.upload>>;
+    try {
+      result = await Promise.race([
+        file.upload(url, {
+          httpMethod: "POST",
+          uploadType: UploadType.BINARY_CONTENT,
+          headers: { "Content-Type": composerAttachmentWireMimeType(attachment) },
+          signal: local.signal,
+          // Native events carry Int64 counts, which expo-modules-jsi delivers as BigInt despite the `number` type.
+          onProgress: ({ bytesSent, totalBytes }) => {
+            const sent = Number(bytesSent);
+            const total = Number(totalBytes);
+            if (sent > lastSent) {
+              lastSent = sent;
+              armStallTimer();
+            }
+            if (total > 0) {
+              lastPercent = Math.floor((sent / total) * 100);
+              onProgress?.(sent / total);
+            }
+          },
+        }),
+        stalled,
+      ]);
+    } finally {
+      clearTimeout(stallTimer);
+      signal.removeEventListener("abort", relayAbort);
+    }
     if (result.status < 200 || result.status >= 300) {
       throw new Error(`Upload failed for '${attachment.name}' (${result.status}).`);
     }
