@@ -137,6 +137,7 @@ vi.mock("./use-thread-outbox", async () => {
     editingQueuedMessageIdsAtom: Atom.make({}).pipe(Atom.keepAlive),
     dispatchingQueuedMessageIdAtom: Atom.make<MessageId | null>(null).pipe(Atom.keepAlive),
     retryingQueuedMessageIdsAtom: Atom.make({}).pipe(Atom.keepAlive),
+    queuedMessageWaitReasonsAtom: Atom.make({}).pipe(Atom.keepAlive),
     threadOutboxShellStatusesAtom: Atom.make(new Map([["secondary", "live"]])),
   };
 });
@@ -161,7 +162,11 @@ vi.mock("./use-composer-drafts", async () => {
 
 import { appAtomRegistry } from "./atom-registry";
 import { environmentSession } from "./session";
-import { dispatchingQueuedMessageIdAtom, editingQueuedMessageIdsAtom } from "./use-thread-outbox";
+import {
+  dispatchingQueuedMessageIdAtom,
+  editingQueuedMessageIdsAtom,
+  queuedMessageWaitReasonsAtom,
+} from "./use-thread-outbox";
 import { createThreadOutboxDelivery } from "./threadOutboxDelivery";
 
 const message = (overrides: Partial<QueuedThreadMessage> = {}): QueuedThreadMessage => ({
@@ -335,10 +340,14 @@ describe("queued task operation access", () => {
     expect(state.start).not.toHaveBeenCalled();
     expect(state.prepare).not.toHaveBeenCalled();
     expect(remaining()).toEqual([queued]);
+    expect(appAtomRegistry.get(queuedMessageWaitReasonsAtom)[queued.messageId]).toMatch(
+      /send permission/,
+    );
     setOperateGrant("secondary", true);
     await runDrain();
     expect(state.start).toHaveBeenCalledOnce();
     expect(remaining()).toEqual([]);
+    expect(appAtomRegistry.get(queuedMessageWaitReasonsAtom)).toEqual({});
   });
 
   it("backs off instead of redelivering at once when a delivery hits a defect", async () => {

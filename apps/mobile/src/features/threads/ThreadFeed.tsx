@@ -227,6 +227,7 @@ import {
   type ThreadFeedRow,
 } from "./pending-thread-feed";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
+import { useQueuedMessageWaitReason } from "../../state/use-thread-outbox";
 import { resolveThreadFeedFixedItemSize } from "./thread-feed-item-size";
 import { htmlRenderFrameHeight } from "@t3tools/shared/htmlRender";
 import { htmlRenderRowHeight, ThreadHtmlRender } from "./HtmlRenderWebView";
@@ -1331,6 +1332,11 @@ function useMarkdownStyles(): MarkdownStyleSets {
   };
 }
 
+function PendingMessageStatus(props: { readonly messageId: MessageId }) {
+  const reason = useQueuedMessageWaitReason(props.messageId);
+  return <>{reason === undefined ? "Pending" : `Pending: ${reason}`}</>;
+}
+
 /** Messages from other agents fold to one line so the user's own messages stay easy to find. */
 function AgentMessageFoldHeader(props: {
   readonly environmentId: EnvironmentId;
@@ -2176,7 +2182,11 @@ function renderFeedEntry(
                 </Text>
               ) : null}
               <Text className="font-t3-medium text-xs tabular-nums text-foreground-secondary">
-                {entry.pendingMessage && !entry.acknowledged ? "Pending" : timestampLabel}
+                {entry.pendingMessage && !entry.acknowledged ? (
+                  <PendingMessageStatus messageId={entry.pendingMessage.messageId} />
+                ) : (
+                  timestampLabel
+                )}
               </Text>
               {props.onEditPendingMessage !== null &&
               entry.pendingMessage &&

@@ -87,6 +87,7 @@ import {
 import {
   dispatchingQueuedMessageIdAtom,
   editingQueuedMessageIdsAtom,
+  queuedMessageWaitReasonsAtom,
   retryingQueuedMessageIdsAtom,
   threadOutboxShellStatusesAtom,
 } from "./use-thread-outbox";
@@ -167,7 +168,24 @@ function setQueuedMessageRetrying(queuedMessageId: MessageId, retrying: boolean)
   );
 }
 
+// Every gate that holds a message back is otherwise silent, so a stuck send
+// looks the same whatever is blocking it.
+function setQueuedMessageWaitReason(queuedMessageId: MessageId, reason: string | null): void {
+  const { [queuedMessageId]: current, ...others } = appAtomRegistry.get(
+    queuedMessageWaitReasonsAtom,
+  );
+  if ((current ?? null) === reason) return;
+  if (reason !== null) {
+    threadOutboxDebug.log("waiting", { messageId: queuedMessageId, reason });
+  }
+  appAtomRegistry.set(
+    queuedMessageWaitReasonsAtom,
+    reason === null ? others : { ...others, [queuedMessageId]: reason },
+  );
+}
+
 function beginDispatchingQueuedMessage(queuedMessageId: MessageId): void {
+  setQueuedMessageWaitReason(queuedMessageId, null);
   // An attempt in flight is sending, even while its retry count is kept.
   setQueuedMessageRetrying(queuedMessageId, false);
   appAtomRegistry.set(dispatchingQueuedMessageIdAtom, queuedMessageId);
@@ -1180,15 +1198,25 @@ export function createThreadOutboxDelivery(): {
       connectedEnvironments,
       operableEnvironments,
     } = appAtomRegistry.get(deliveryInputsAtom);
-    if (dispatchingQueuedMessageId !== null) {
-      return;
-    }
-
     const queuedMessageIds = new Set(
       Object.values(queuedMessagesByThreadKey)
         .flat()
         .map((message) => message.messageId),
     );
+    const staleWaitReasons = appAtomRegistry.get(queuedMessageWaitReasonsAtom);
+    for (const messageId of Object.keys(staleWaitReasons) as Array<MessageId>) {
+      if (!queuedMessageIds.has(messageId)) setQueuedMessageWaitReason(messageId, null);
+    }
+    if (dispatchingQueuedMessageId !== null) {
+      for (const queue of Object.values(queuedMessagesByThreadKey)) {
+        const waiting = queue[0];
+        if (waiting && waiting.messageId !== dispatchingQueuedMessageId) {
+          setQueuedMessageWaitReason(waiting.messageId, "an earlier message is still sending");
+        }
+      }
+      return;
+    }
+
     for (const messageId of acknowledgedExistingThreadMessageIds) {
       if (!queuedMessageIds.has(messageId)) {
         acknowledgedExistingThreadMessageIds.delete(messageId);
@@ -1236,6 +1264,9 @@ export function createThreadOutboxDelivery(): {
         blockedRecovery.unsubscribe();
       }
       if (retryNotBefore(messageId) > Date.now()) {
+        if (appAtomRegistry.get(queuedMessageWaitReasonsAtom)[messageId] === undefined) {
+          setQueuedMessageWaitReason(messageId, "the last send failed, retrying shortly");
+        }
         continue;
       }
 
@@ -1306,6 +1337,7 @@ export function createThreadOutboxDelivery(): {
         continue;
       }
       if (deliveryAction === "send" && !operableEnvironments.has(nextQueuedMessage.environmentId)) {
+        setQueuedMessageWaitReason(messageId, "this session's send permission is not loaded");
         continue;
       }
       const dispatchStep = resolveThreadOutboxDispatchStep({
@@ -1321,9 +1353,18 @@ export function createThreadOutboxDelivery(): {
           : null,
       });
       if (dispatchStep.step === "wait") {
+        setQueuedMessageWaitReason(
+          messageId,
+          environment?.connectionState !== "connected"
+            ? "the environment is not connected"
+            : shellStatus !== "live"
+              ? "the thread list is still syncing"
+              : "the thread is not loaded yet",
+        );
         continue;
       }
       if (dispatchStep.step === "retry") {
+        setQueuedMessageWaitReason(messageId, "the server's settings have not loaded");
         scheduleRetry(messageId);
         continue;
       }

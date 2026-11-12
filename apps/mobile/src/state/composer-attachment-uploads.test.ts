@@ -171,6 +171,7 @@ vi.mock("./use-thread-outbox", async () => {
     useThreadOutboxMessages: () =>
       appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
     retryingQueuedMessageIdsAtom: Atom.make({}).pipe(Atom.keepAlive),
+    queuedMessageWaitReasonsAtom: Atom.make({}).pipe(Atom.keepAlive),
     threadOutboxShellStatusesAtom: Atom.make(new Map()),
   };
 });

@@ -36,6 +36,15 @@ export const retryingQueuedMessageIdsAtom = Atom.make<Readonly<Partial<Record<Me
   {},
 ).pipe(Atom.keepAlive, Atom.withLabel("mobile:thread-outbox:retrying-message-ids"));
 
+/** Why a queued message is not being sent right now; absent while it is sending or ready to. */
+export const queuedMessageWaitReasonsAtom = Atom.make<Readonly<Partial<Record<MessageId, string>>>>(
+  {},
+).pipe(Atom.keepAlive, Atom.withLabel("mobile:thread-outbox:wait-reasons"));
+
+export function useQueuedMessageWaitReason(messageId: MessageId): string | undefined {
+  return useAtomValue(queuedMessageWaitReasonsAtom)[messageId];
+}
+
 export function holdEditingQueuedMessage(messageId: MessageId): void {
   const current = appAtomRegistry.get(editingQueuedMessageIdsAtom);
   if (current[messageId]) {
