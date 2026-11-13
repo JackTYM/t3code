@@ -269,6 +269,8 @@ export type OrchestratorFixtureInputStep =
   | {
       readonly type: "advance_clock";
       readonly duration: Duration.Input;
+      /** The jump idle-releases the provider session; later steps wait for that release. */
+      readonly releasesProviderSession?: boolean;
     }
   | {
       /** Picks another model of the same provider instance; later messages use it. */
@@ -889,7 +891,13 @@ export function materializeFixtureInput(input: {
           });
           break;
         case "advance_clock":
-          steps.push({ type: "advance_clock", duration: step.duration });
+          steps.push({
+            type: "advance_clock",
+            duration: step.duration,
+            ...(step.releasesProviderSession === true
+              ? { awaitProviderSessionRelease: ids.threadId }
+              : {}),
+          });
           break;
         case "set_model":
           modelSelection = { ...input.modelSelection, model: step.model };
