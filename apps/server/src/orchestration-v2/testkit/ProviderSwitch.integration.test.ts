@@ -2663,7 +2663,7 @@ describe("orchestration v2 provider switching", () => {
       { background: false, queued: false, sharedHistory: false },
     ],
     [
-      "refuses the hand-off while the previous instance still runs background work",
+      "switches anyway and ends the previous instance's background work",
       { background: true, queued: false, sharedHistory: false },
     ],
     [
@@ -2840,17 +2840,6 @@ describe("orchestration v2 provider switching", () => {
             // Native subagents live only in the adapter's roster, so the projection's
             // pendingBackgroundTasks stays empty while the probe still reports work.
             assert.deepEqual(afterFirst.providerThreads[0]?.pendingBackgroundTasks ?? [], []);
-            const refused = yield* send(2, secondSelection, ":refused").pipe(Effect.flip);
-            assert.include(String(refused.cause), "still running background agents or commands");
-            const unchanged = yield* orchestrator.getThreadProjection(handoffThreadId);
-            assert.lengthOf(unchanged.runs, 1);
-            assert.deepEqual(yield* Ref.get(closedSessions), []);
-            assert.equal(unchanged.thread.providerInstanceId, CLAUDE_MODEL_SELECTION.instanceId);
-            assert.deepEqual(
-              unchanged.providerSessions.map((session) => [session.id, session.status]),
-              [[firstSession!.id, "ready"]],
-            );
-            yield* Ref.set(backgroundWork, false);
           }
 
           yield* send(2, secondSelection);
@@ -2871,7 +2860,8 @@ describe("orchestration v2 provider switching", () => {
             projection.providerSessions.map((session) => session.providerInstanceId),
             [secondSelection.instanceId],
           );
-          // The detached event alone hides the session; the runtime must also close.
+          // The detached event alone hides the session; the runtime must also close, even
+          // when it still reports background work: the user's switch wins.
           assert.deepEqual(yield* Ref.get(closedSessions), [firstSession!.id]);
         }).pipe(
           Effect.provide(

@@ -7486,14 +7486,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const sessionsToDetach: Array<OrchestrationV2ProviderSession> = [];
     for (const detaching of releasableSessions) {
       if (yield* sessionHasBackgroundWork(detaching, projection.providerThreads)) {
-        // A schedule has nobody to wait or press Stop; like a queued fresh start, leave it running.
-        if (freshContext && command.scheduledTaskId !== undefined) continue;
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: freshContext
-            ? "The current session is still running background agents or commands, and a fresh session would end them. Wait for them to finish, or press Stop, then send the message again."
-            : "The previous provider is still running background agents or commands, and switching would end them. Wait for them to finish, or press Stop, then send the message again.",
+        if (freshContext) {
+          // A schedule has nobody to wait or press Stop; like a queued fresh start, leave it running.
+          if (command.scheduledTaskId !== undefined) continue;
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause:
+              "The current session is still running background agents or commands, and a fresh session would end them. Wait for them to finish, or press Stop, then send the message again.",
+          });
+        }
+        // The probe reads the old provider's in-memory roster, which can keep entries nothing
+        // is running anymore, and a refusal left users unable to switch. The user chose the
+        // switch, so end whatever the old session still holds.
+        yield* Effect.logWarning("Provider switch ends background work in the previous session", {
+          threadId: command.threadId,
+          providerSessionId: detaching.id,
+          providerInstanceId: detaching.providerInstanceId,
         });
       }
       sessionsToDetach.push(detaching);
