@@ -128,6 +128,10 @@ function agentEndedAt(agent: AgentOrderKeys): string {
   return agent.completedAt ?? agent.updatedAt;
 }
 
+export function waitingOnSubagentsLabel(count: number): string {
+  return count === 1 ? "Waiting on a subagent" : `Waiting on ${count} subagents`;
+}
+
 export interface SubagentWorkflowGroup {
   readonly workflow: RuntimeSubagent;
   readonly phases: ReadonlyArray<{
