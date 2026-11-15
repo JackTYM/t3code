@@ -101,10 +101,18 @@ async function releaseCreatedUploadsQuietly(
   environmentId: EnvironmentId,
   attachmentIds: ReadonlyArray<string>,
 ): Promise<void> {
+  let releaseTimer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await releasePendingAttachmentUploads(environmentId, attachmentIds);
+    await Promise.race([
+      releasePendingAttachmentUploads(environmentId, attachmentIds),
+      new Promise<void>((resolve) => {
+        releaseTimer = setTimeout(resolve, RELEASE_UPLOADS_MS);
+      }),
+    ]);
   } catch (error) {
     console.warn("[attachments] could not delete abandoned pending uploads", error);
+  } finally {
+    clearTimeout(releaseTimer);
   }
 }
 
@@ -201,10 +209,28 @@ async function composerImageAttachmentDataUrl(
 /** An upload that stops moving bytes is cut off so the send can retry instead of sitting at the same percentage. */
 export const ATTACHMENT_UPLOAD_STALL_MS = 45_000;
 
+/** Minting the signed upload URL is one RPC; if it never answers, the composer would sit on 0% forever. */
+export const ATTACHMENT_UPLOAD_MINT_MS = 30_000;
+const INLINE_IMAGE_FALLBACK_MS = 10 * 60_000;
+const RELEASE_UPLOADS_MS = 5_000;
+
+// After an upload stalls, images to that environment go inline (skipping the upload endpoint) for a while.
+const inlineImageFallbackUntil = new Map<EnvironmentId, number>();
+
+export function clearInlineImageUploadFallback(): void {
+  inlineImageFallbackUntil.clear();
+}
+
+function inlineImageFallbackActive(environmentId: EnvironmentId): boolean {
+  return (inlineImageFallbackUntil.get(environmentId) ?? 0) > Date.now();
+}
+
 export class AttachmentUploadStalledError extends Schema.TaggedError<AttachmentUploadStalledError>()(
   "AttachmentUploadStalledError",
   { message: Schema.String },
 ) {}
+
+const isAttachmentUploadStalledError = Schema.is(AttachmentUploadStalledError);
 
 async function uploadFileBytes(
   environmentId: EnvironmentId,
@@ -305,6 +331,8 @@ export async function prepareTurnAttachments(input: {
 }): Promise<PrepareTurnAttachmentsResult> {
   const { environmentId } = input;
   if (input.signal?.aborted) return { status: "abandoned" };
+  const imageUploads =
+    input.supportsImageUploads === true && !inlineImageFallbackActive(environmentId);
   const files = input.attachments.filter((attachment) => attachment.type === "file");
   const ready = (
     attachments: ReadonlyArray<UploadedMobileAttachment>,
@@ -317,7 +345,7 @@ export async function prepareTurnAttachments(input: {
     pendingAttachmentIds,
   });
 
-  if (input.attachments.length === 0 || (files.length === 0 && !input.supportsImageUploads)) {
+  if (input.attachments.length === 0 || (files.length === 0 && !imageUploads)) {
     try {
       const imageAttachments = await toUploadChatImageAttachments(
         input.attachments.filter((attachment) => attachment.type === "image"),
@@ -354,7 +382,7 @@ export async function prepareTurnAttachments(input: {
     for (const attachment of input.attachments) {
       if (controller.signal.aborted) throw new Error("Upload cancelled.");
       requireUploadAccess();
-      if (attachment.type === "image" && !input.supportsImageUploads) {
+      if (attachment.type === "image" && !imageUploads) {
         uploadedAttachments.push(...(await toUploadChatImageAttachments([attachment])));
         continue;
       }
@@ -380,7 +408,19 @@ export async function prepareTurnAttachments(input: {
       }
 
       requireUploadAccess();
-      const result = await runAttachmentUploadCycle({
+      let mintTimer: ReturnType<typeof setTimeout> | undefined;
+      let mintTimedOut = false;
+      const mintStalled = new Promise<never>((_resolve, reject) => {
+        mintTimer = setTimeout(() => {
+          mintTimedOut = true;
+          reject(
+            new AttachmentUploadStalledError({
+              message: `Preparing '${attachment.name}' for upload did not finish in ${ATTACHMENT_UPLOAD_MINT_MS / 1000}s.`,
+            }),
+          );
+        }, ATTACHMENT_UPLOAD_MINT_MS);
+      });
+      const cycle = runAttachmentUploadCycle({
         registry: appAtomRegistry,
         createUploadUrl: attachmentEnvironment.createUploadUrl,
         remove: attachmentEnvironment.remove,
@@ -409,12 +449,19 @@ export async function prepareTurnAttachments(input: {
           abort,
         }),
         onMinted: (attachmentId) => {
-          if (controller.signal.aborted) return "cancel";
+          clearTimeout(mintTimer);
+          if (controller.signal.aborted || mintTimedOut) return "cancel";
           pendingAttachmentIds.push(attachmentId);
           createdAttachmentIds.push(attachmentId);
           return "continue";
         },
       });
+      let result: Awaited<typeof cycle>;
+      try {
+        result = await Promise.race([cycle, mintStalled]);
+      } finally {
+        clearTimeout(mintTimer);
+      }
       if (result.status !== "uploaded") {
         throw result.status === "failed" && result.error !== undefined
           ? result.error
@@ -441,6 +488,9 @@ export async function prepareTurnAttachments(input: {
     }
     return ready(uploadedAttachments, pendingAttachmentIds, draftAttachments);
   } catch (error) {
+    if (isAttachmentUploadStalledError(error)) {
+      inlineImageFallbackUntil.set(environmentId, Date.now() + INLINE_IMAGE_FALLBACK_MS);
+    }
     await releaseCreatedUploadsQuietly(environmentId, createdAttachmentIds);
     if (controller.signal.aborted) return { status: "abandoned" };
     throw error;

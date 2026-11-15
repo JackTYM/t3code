@@ -1,6 +1,6 @@
 import { EnvironmentId, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES } from "@t3tools/contracts";
 import * as Option from "effect/Option";
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const mocks = vi.hoisted(() => ({
   canOperate: true,
@@ -91,7 +91,9 @@ vi.mock("expo-file-system", () => ({
 
 import { shouldRetryThreadOutboxDelivery } from "../state/thread-outbox-model";
 import {
+  ATTACHMENT_UPLOAD_MINT_MS,
   ATTACHMENT_UPLOAD_STALL_MS,
+  clearInlineImageUploadFallback,
   prepareTurnAttachments,
   releasePendingAttachmentUploads,
   withUploadedMobileAttachmentReferences,
@@ -148,6 +150,10 @@ function removeCallsFor(attachmentId: string): number {
 }
 
 describe("prepareTurnAttachments", () => {
+  afterEach(() => {
+    clearInlineImageUploadFallback();
+  });
+
   beforeEach(() => {
     mocks.canOperate = true;
     mocks.documentUri = "file:///documents";
@@ -206,6 +212,37 @@ describe("prepareTurnAttachments", () => {
       await vi.advanceTimersByTimeAsync(ATTACHMENT_UPLOAD_STALL_MS + 1);
       expect(await outcome).toMatchObject({ _tag: "AttachmentUploadStalledError" });
       expect(shouldRetryThreadOutboxDelivery(await outcome)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up when the signed upload URL never arrives, then sends the next image inline", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.runAtomCommand.mockImplementation(() => new Promise(() => {}));
+      const outcome = prepareTurnAttachments({
+        environmentId,
+        attachments: [fileBackedImage],
+        supportsImageUploads: true,
+      }).then(
+        () => "resolved",
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(ATTACHMENT_UPLOAD_MINT_MS + 1);
+      expect(await outcome).toMatchObject({ _tag: "AttachmentUploadStalledError" });
+
+      mocks.runAtomCommand.mockClear();
+      const retry = await prepareTurnAttachments({
+        environmentId,
+        attachments: [fileBackedImage],
+        supportsImageUploads: true,
+      });
+      expect(retry).toMatchObject({
+        status: "ready",
+        attachments: [{ type: "image", dataUrl: "data:image/png;base64,YWJj" }],
+      });
+      expect(mocks.runAtomCommand).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

@@ -139,41 +139,51 @@ export function createComposerAttachmentUploadWorker(
       const release = isFileBackedComposerAttachment(attachment)
         ? retainComposerAttachmentFileForPreview(attachment)
         : undefined;
-      const prepared = await settlePromise(() =>
-        prepareTurnAttachments({
-          environmentId,
-          attachments: [attachment],
-          supportsImageUploads: true,
-          signal,
-          onUploadProgress: (_, progress) => onProgress(progress),
-          persistUploadedReferences: async ([uploaded]) => {
-            if (signal.aborted || !uploaded) return "abandon";
-            const queued = flattenQueuedThreadMessages(
-              appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
-            );
-            const knownEnvironmentIds = appAtomRegistry
-              .get(workspaceConnections.environmentsAtom)
-              .map((environment) => environment.environmentId);
-            let retained = false;
-            for (const [key, draft] of Object.entries(appAtomRegistry.get(composerDraftsAtom))) {
-              if (
-                composerDraftEnvironmentId(key, knownEnvironmentIds, queued, draft) ===
-                  environmentId &&
-                draft.attachments.some((candidate) => candidate.id === attachment.id)
-              ) {
-                retained = setComposerDraftAttachmentUpload(key, uploaded) || retained;
+      const prepare = () =>
+        settlePromise(() =>
+          prepareTurnAttachments({
+            environmentId,
+            attachments: [attachment],
+            supportsImageUploads: true,
+            signal,
+            onUploadProgress: (_, progress) => onProgress(progress),
+            persistUploadedReferences: async ([uploaded]) => {
+              if (signal.aborted || !uploaded) return "abandon";
+              const queued = flattenQueuedThreadMessages(
+                appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
+              );
+              const knownEnvironmentIds = appAtomRegistry
+                .get(workspaceConnections.environmentsAtom)
+                .map((environment) => environment.environmentId);
+              let retained = false;
+              for (const [key, draft] of Object.entries(appAtomRegistry.get(composerDraftsAtom))) {
+                if (
+                  composerDraftEnvironmentId(key, knownEnvironmentIds, queued, draft) ===
+                    environmentId &&
+                  draft.attachments.some((candidate) => candidate.id === attachment.id)
+                ) {
+                  retained = setComposerDraftAttachmentUpload(key, uploaded) || retained;
+                }
               }
-            }
-            if (!retained) return "abandon";
-            // Draft-save failure only costs re-upload after restart; the outbox saves references independently, so preserve accepted uploads.
-            await flushComposerDrafts().catch((error: unknown) => {
-              if (!isComposerDraftPersistenceError(error)) throw error;
-              console.warn("[composer-attachments] could not save the uploaded reference", error);
-            });
-            return "persisted";
-          },
-        }),
-      );
+              if (!retained) return "abandon";
+              // Draft-save failure only costs re-upload after restart; the outbox saves references independently, so preserve accepted uploads.
+              await flushComposerDrafts().catch((error: unknown) => {
+                if (!isComposerDraftPersistenceError(error)) throw error;
+                console.warn("[composer-attachments] could not save the uploaded reference", error);
+              });
+              return "persisted";
+            },
+          }),
+        );
+      let prepared = await prepare();
+      // A stalled upload switches the environment's images to inline sending, so one more pass finishes the attachment.
+      if (
+        AsyncResult.isFailure(prepared) &&
+        (squashAtomCommandFailure(prepared) as { _tag?: unknown })?._tag ===
+          "AttachmentUploadStalledError"
+      ) {
+        prepared = await prepare();
+      }
       release?.();
       if (AsyncResult.isFailure(prepared)) throw squashAtomCommandFailure(prepared);
       return prepared.value.status === "ready";
