@@ -109,8 +109,8 @@ export interface ProjectThreadAwarenessV2Input {
 
 /**
  * The roster is the active inbox: an archived thread's long-ready session would
- * otherwise render as a permanent Done row. A blocked agent outranks snooze, as in
- * the clients' inbox. Settled threads are handled separately.
+ * otherwise render as a permanent Done row. Snooze hides only finished work: live or
+ * blocked agents stay visible, as with settlement. Settled threads are handled separately.
  */
 function isThreadParkedForAwareness(
   thread: ProjectThreadAwarenessV2Input["thread"],
@@ -120,7 +120,7 @@ function isThreadParkedForAwareness(
   if (thread.archivedAt !== null) return true;
   if (thread.snoozedUntil == null) return false;
   if (DateTime.toEpochMillis(thread.snoozedUntil) <= DateTime.toEpochMillis(now)) return false;
-  return phase !== "waiting_for_approval" && phase !== "waiting_for_input";
+  return phase === "completed" || phase === "failed";
 }
 
 export function projectThreadAwarenessV2(

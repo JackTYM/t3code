@@ -70,6 +70,7 @@ import {
   serverConfigForCwd,
   type ModelOption,
   type ProviderGroup,
+  withStoredThreadModelOptions,
 } from "../../lib/modelOptions";
 import { applyProviderOptionSelection } from "../../lib/providerOptions";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
@@ -1424,7 +1425,14 @@ export function ExistingThreadSettingsRouteScreen({
       prompt={prompt}
       onPromptChange={(text) => setComposerDraftText(draftKey, text)}
       reportedModelSelection={reportedModelSelection}
-      onSelectModel={(option) => updateModelSelection(withRememberedModelOptions(option.selection))}
+      onSelectModel={(option) =>
+        updateModelSelection(
+          withStoredThreadModelOptions(
+            withRememberedModelOptions(option.selection),
+            selectedThread.modelSelection,
+          ),
+        )
+      }
       restoreSelection={withRememberedModelOptions}
       optionDescriptors={resolveProviderOptionDescriptors({
         capabilities: currentModelOption?.capabilities,
