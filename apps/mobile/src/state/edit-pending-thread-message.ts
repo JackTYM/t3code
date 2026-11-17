@@ -26,7 +26,7 @@ import {
 export async function editPendingThreadMessage(message: QueuedThreadMessage): Promise<boolean> {
   if (
     message.creation ||
-    appAtomRegistry.get(dispatchingQueuedMessageIdsAtom)[message.messageId] === true ||
+    appAtomRegistry.get(dispatchingQueuedMessageIdsAtom)[message.messageId] ||
     appAtomRegistry.get(editingQueuedMessageIdsAtom)[message.messageId]
   ) {
     return false;

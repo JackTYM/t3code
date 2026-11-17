@@ -289,6 +289,9 @@ export function shouldRetryThreadOutboxDelivery(error: unknown): boolean {
       case "EnvironmentNotRegisteredError":
       case "AttachmentUploadStalledError":
         return true;
+      // A shared upload's failure decides by what made the upload fail.
+      case "AttachmentUploadError":
+        return "cause" in error && shouldRetryThreadOutboxDelivery(error.cause);
       default:
         break;
     }

@@ -26,7 +26,7 @@ export const editingQueuedMessageIdsAtom = Atom.make<Readonly<Record<MessageId, 
   Atom.withLabel("mobile:thread-outbox:editing-message-ids"),
 );
 
-/** Messages with a delivery in flight. Each thread sends one at a time, but threads send in parallel. */
+/** Messages being sent now: at most one per thread, the head of its queue. */
 export const dispatchingQueuedMessageIdsAtom = Atom.make<
   Readonly<Partial<Record<MessageId, true>>>
 >({}).pipe(Atom.keepAlive, Atom.withLabel("mobile:thread-outbox:dispatching-message-ids"));
