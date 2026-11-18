@@ -1,4 +1,6 @@
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
+import { changeRequestTermKind } from "../lib/changeRequestTerm";
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import * as Dialog from "../components/ui/Dialog";
 import {
   type EnvironmentProject,
@@ -11,13 +13,13 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { threadFamilyRead, type ThreadFamilyRead } from "@t3tools/client-runtime/state/threads";
 import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
+import { managedRuntimeModeDenial } from "@t3tools/client-runtime/contract-labels";
 import {
   AuthOrchestrationOperateScope,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   MessageId,
-  managedRuntimeModeDenial,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   type EnvironmentId,
 } from "@t3tools/contracts";
@@ -31,6 +33,8 @@ import * as Fiber from "effect/Fiber";
 import * as Latch from "effect/Latch";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { msg } from "gt-react-native";
+import { m } from "../i18n/messages";
 
 import { createDebugLogger } from "../lib/debugLog";
 import type { DraftComposerAttachment } from "../lib/composerImages";
@@ -258,6 +262,7 @@ function beginDispatchingQueuedMessage(
     abandonedFor: undefined,
   };
   deliveryAttempts.set(queuedMessageId, attempt);
+  // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
   setQueuedMessageStatus(queuedMessageId, "starting to send");
   // An attempt in flight is sending, even while its retry count is kept.
   setQueuedMessageRetrying(queuedMessageId, false);
@@ -412,6 +417,7 @@ function reportUploadProgress(
   }, 0);
   setQueuedMessageStatus(
     queuedMessage.messageId,
+    // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
     `uploading attachments, ${Math.min(99, Math.floor((total / awaiting.length) * 10) * 10)}%`,
   );
 }
@@ -650,7 +656,12 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
       if (existingAttachmentIds.size + addedAttachmentCount > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
         setThreadComposerError(
           threadKey,
-          `Remove attachments from the draft before restoring this message. Messages can contain at most ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} attachments.`,
+          m(
+            msg(
+              "Remove attachments from the draft before restoring this message. Messages can contain at most {max} attachments.",
+              { max: PROVIDER_SEND_TURN_MAX_ATTACHMENTS },
+            ),
+          ),
           queuedMessage.messageId,
         );
         return "blocked" as const;
@@ -742,9 +753,8 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
           );
           setThreadComposerError(
             threadKey,
-            error.cause instanceof Error
-              ? error.cause.message
-              : "The unsent message could not be restored.",
+            errorDisplayMessage(error.cause, m) ??
+              m(msg("The unsent message could not be restored.")),
             queuedMessage.messageId,
           );
           return "retry" as const;
@@ -889,7 +899,7 @@ function reportCommandFailure(
   });
   return {
     action,
-    message: error instanceof Error ? error.message : "The message could not be sent.",
+    message: errorDisplayMessage(error, m) ?? m(msg("The message could not be sent.")),
   };
 }
 
@@ -962,6 +972,7 @@ export function createThreadOutboxDelivery(): {
     const reason = why ?? lastDeliveryFailures.get(messageId);
     setQueuedMessageStatus(
       messageId,
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
       `retrying, attempt ${attempt + 1}${reason === undefined ? "" : ` (last try: ${reason})`}`,
     );
   };
@@ -1038,6 +1049,7 @@ export function createThreadOutboxDelivery(): {
     const runtimeModeDenial = managedRuntimeModeDenial(
       serverConfig.managedPolicy,
       settings.runtimeMode,
+      m,
     );
     if (runtimeModeDenial !== undefined) {
       return yield* restoreQueuedMessage(queuedMessage, runtimeModeDenial);
@@ -1045,6 +1057,7 @@ export function createThreadOutboxDelivery(): {
 
     if (settings.runtimeMode !== thread.runtimeMode) {
       if (!hasAccess()) return;
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
       setQueuedMessageStatus(queuedMessage.messageId, "syncing the thread's settings");
       const runtimeResult = yield* deliveryCommand(threadEnvironment.setRuntimeMode, {
         environmentId: queuedMessage.environmentId,
@@ -1063,6 +1076,7 @@ export function createThreadOutboxDelivery(): {
 
     if (settings.interactionMode !== thread.interactionMode) {
       if (!hasAccess()) return;
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
       setQueuedMessageStatus(queuedMessage.messageId, "syncing the thread's settings");
       const interactionResult = yield* deliveryCommand(threadEnvironment.setInteractionMode, {
         environmentId: queuedMessage.environmentId,
@@ -1092,7 +1106,7 @@ export function createThreadOutboxDelivery(): {
       if (!shouldRetryThreadOutboxDelivery(error)) {
         return yield* restoreQueuedMessage(
           queuedMessage,
-          error instanceof Error ? error.message : "An attachment could not upload.",
+          errorDisplayMessage(error, m) ?? m(msg("An attachment could not upload.")),
         );
       }
       return yield* retryDelivery;
@@ -1126,6 +1140,7 @@ export function createThreadOutboxDelivery(): {
     if (queuedMessage.compactBeforeSend === true) {
       if (!hasAccess()) return;
       // Queued, since steering a running turn with a compaction is rejected.
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
       setQueuedMessageStatus(queuedMessage.messageId, "compacting the thread first");
       const compactionResult = yield* deliveryCommand(threadEnvironment.startTurn, {
         environmentId: queuedMessage.environmentId,
@@ -1157,6 +1172,7 @@ export function createThreadOutboxDelivery(): {
       if (!isQueuedMessagePayloadCurrent(persistedMessage, deliveryRevision)) return;
     }
     if (!hasAccess()) return;
+    // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
     setQueuedMessageStatus(queuedMessage.messageId, "waiting for the server to accept the message");
     const deliveryResult = yield* deliveryCommand(threadEnvironment.startTurn, {
       environmentId: queuedMessage.environmentId,
@@ -1178,10 +1194,10 @@ export function createThreadOutboxDelivery(): {
           attachments: prepared.attachments,
         },
         modelSelection: sendSettings.modelSelection,
-        titleSeed: deriveThreadTitleSeed({
-          text: queuedMessage.text,
-          attachments: queuedMessage.attachments,
-        }),
+        titleSeed: deriveThreadTitleSeed(
+          { text: queuedMessage.text, attachments: queuedMessage.attachments },
+          m,
+        ),
         runtimeMode: sendSettings.runtimeMode,
         interactionMode: sendSettings.interactionMode,
         createdAt: queuedMessage.createdAt,
@@ -1244,6 +1260,7 @@ export function createThreadOutboxDelivery(): {
     const runtimeModeDenial = managedRuntimeModeDenial(
       serverConfig.managedPolicy,
       settings.runtimeMode,
+      m,
     );
     if (runtimeModeDenial !== undefined) {
       return yield* restoreQueuedMessage(queuedMessage, runtimeModeDenial);
@@ -1260,7 +1277,7 @@ export function createThreadOutboxDelivery(): {
       if (!shouldRetryThreadOutboxDelivery(error)) {
         return yield* restoreQueuedMessage(
           queuedMessage,
-          error instanceof Error ? error.message : "An attachment could not upload.",
+          errorDisplayMessage(error, m) ?? m(msg("An attachment could not upload.")),
         );
       }
       return yield* retryDelivery;
@@ -1297,6 +1314,7 @@ export function createThreadOutboxDelivery(): {
     if (launched?.revision === deliveryRevision) {
       workspace = launched.workspace;
     } else if (creation.pullRequestReference) {
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
       setQueuedMessageStatus(queuedMessage.messageId, "checking out the pull request");
       const checkout = yield* deliveryCommand(gitEnvironment.preparePullRequestThread, {
         environmentId: queuedMessage.environmentId,
@@ -1310,13 +1328,20 @@ export function createThreadOutboxDelivery(): {
         return yield* restoreQueuedMessage(persistedMessage, failure.message);
       if (!AsyncResult.isSuccess(checkout)) return yield* retryDelivery;
       if (!checkout.value.worktreePath || !checkout.value.isOnPullRequestHead) {
-        const { shortLabel } = (
-          sourceControlClients.findByChangeRequestUrl(creation.pullRequestReference) ??
-          sourceControlClients.get(undefined)
-        ).changeRequest;
+        const term = changeRequestTermKind(
+          (
+            sourceControlClients.findByChangeRequestUrl(creation.pullRequestReference) ??
+            sourceControlClients.get(undefined)
+          ).changeRequest,
+        );
         return yield* restoreQueuedMessage(
           persistedMessage,
-          `The ${shortLabel} worktree has local changes and could not update to the ${shortLabel} head. Resolve them before trying again.`,
+          m(
+            msg(
+              "{term, select, mr {The MR worktree has local changes and could not update to the MR head. Resolve them before trying again.} cr {The change request worktree has local changes and could not update to the change request head. Resolve them before trying again.} other {The PR worktree has local changes and could not update to the PR head. Resolve them before trying again.}}",
+              { term },
+            ),
+          ),
         );
       }
       workspace = {
@@ -1327,6 +1352,7 @@ export function createThreadOutboxDelivery(): {
         startFromOrigin: false,
       };
     }
+    // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
     setQueuedMessageStatus(queuedMessage.messageId, "waiting for the server to accept the message");
     launchedCreations.set(persistedMessage.messageId, { revision: deliveryRevision, workspace });
     const deliveryResult = yield* deliveryCommand(threadEnvironment.startTurn, {
@@ -1381,6 +1407,7 @@ export function createThreadOutboxDelivery(): {
 
   const waitForRetry = (messageId: MessageId): ThreadDeliveryStep => {
     if (appAtomRegistry.get(queuedMessageWaitReasonsAtom)[messageId] === undefined) {
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
       setQueuedMessageStatus(messageId, "the last send failed, retrying shortly");
     }
     return { _tag: "Wait", until: retryNotBefore(messageId) };
@@ -1406,6 +1433,7 @@ export function createThreadOutboxDelivery(): {
       return { _tag: "Wait" };
     }
     for (const later of queuedMessages.slice(1)) {
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
       setQueuedMessageStatus(later.messageId, "waiting for the earlier message in this thread");
     }
     const messageId = nextQueuedMessage.messageId;
@@ -1426,12 +1454,14 @@ export function createThreadOutboxDelivery(): {
       };
     }
     if (editingQueuedMessageIds[messageId]) {
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
       setQueuedMessageStatus(messageId, "open for editing");
       return { _tag: "Wait" };
     }
     const blockedRecovery = blockedRecoveries.get(messageId);
     if (blockedRecovery) {
       if (blockedRecovery.message === nextQueuedMessage) {
+        // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
         setQueuedMessageStatus(messageId, "waiting for you to remove attachments from the draft");
         return { _tag: "Wait" };
       }
@@ -1511,6 +1541,7 @@ export function createThreadOutboxDelivery(): {
       return { _tag: "Backoff", messageId, why: "the thread has not loaded yet" };
     }
     if (deliveryAction === "send" && !operableEnvironments.has(nextQueuedMessage.environmentId)) {
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
       setQueuedMessageStatus(messageId, "this session's send permission is not loaded");
       return { _tag: "Wait" };
     }
@@ -1530,10 +1561,13 @@ export function createThreadOutboxDelivery(): {
       setQueuedMessageStatus(
         messageId,
         environment?.connectionState !== "connected"
-          ? "the environment is not connected"
+          ? // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
+            "the environment is not connected"
           : shellStatus !== "live"
-            ? "the thread list is still syncing"
-            : "the thread is not loaded yet",
+            ? // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
+              "the thread list is still syncing"
+            : // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
+              "the thread is not loaded yet",
       );
       return { _tag: "Wait" };
     }
@@ -1561,10 +1595,12 @@ export function createThreadOutboxDelivery(): {
         : null;
     if (deliveryAction === "send" && creation !== undefined) {
       if (!isQueuedThreadCreationSendable(nextQueuedMessage)) {
+        // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
         setQueuedMessageStatus(messageId, "the new task is missing details");
         return { _tag: "Wait" };
       }
       if (creationProjectCwd === null && shellStatus !== "live") {
+        // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, not localized
         setQueuedMessageStatus(messageId, "the project list is still syncing");
         return { _tag: "Wait" };
       }
@@ -1821,11 +1857,15 @@ function loadThreadOutbox(isActive: () => boolean): void {
   void threadOutboxManager.load().then((loaded) => {
     if (loaded || !isActive()) return;
     Dialog.alert(
-      "Some queued messages could not be loaded",
-      "Unreadable records and attachment files are still saved. Other messages can still be sent.",
+      m(msg("Some queued messages could not be loaded")),
+      m(
+        msg(
+          "Unreadable records and attachment files are still saved. Other messages can still be sent.",
+        ),
+      ),
       [
-        { text: "Dismiss", style: "cancel" },
-        { text: "Retry", onPress: () => loadThreadOutbox(isActive) },
+        { text: m(msg("Dismiss")), style: "cancel" },
+        { text: m(msg("Retry")), onPress: () => loadThreadOutbox(isActive) },
       ],
     );
   });
