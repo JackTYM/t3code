@@ -23,6 +23,9 @@ const native = vi.hoisted(() => ({
     vi.fn<(uri: string, url: string, options: UploadOptions) => Promise<{ status: number }>>(),
 }));
 
+// These tests exercise the upload plumbing with images; the default sends images inline.
+vi.mock("../lib/uploadImagesBeforeSend", () => ({ uploadImagesBeforeSend: () => true }));
+
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: (atom: Parameters<typeof appAtomRegistry.get>[0]) => appAtomRegistry.get(atom),

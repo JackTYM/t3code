@@ -8,6 +8,7 @@ import {
 vi.mock("../state/atom-registry", () => ({ appAtomRegistry: {} }));
 
 import {
+  canUploadComposerAttachment,
   composerAttachmentUploadBlockReason,
   composerAttachmentsStillUploading,
   composerAttachmentUploadKey,
@@ -137,5 +138,30 @@ describe("draft upload scope and offline submission", () => {
       composerAttachmentsStillUploading({ ...input, states: { [key]: { status: "ready" } } }),
     ).toBe(false);
     expect(composerAttachmentsStillUploading({ ...input, serverConfig: null })).toBe(false);
+  });
+});
+
+describe("which attachments upload before send", () => {
+  const config = {
+    environment: { capabilities: { fileAttachments: { maxUploadBytes: 1_000_000 } } },
+  };
+
+  it("sends images inline and uploads files that fit", () => {
+    const [{ attachment: file }] = [request("report")];
+    expect(canUploadComposerAttachment(file, config)).toBe(true);
+    expect(
+      canUploadComposerAttachment(
+        {
+          id: "photo",
+          type: "image",
+          name: "photo.png",
+          mimeType: "image/png",
+          sizeBytes: 3,
+          fileUri: "file:///documents/photo.png",
+          previewUri: "file:///documents/photo.png",
+        },
+        config,
+      ),
+    ).toBe(false);
   });
 });

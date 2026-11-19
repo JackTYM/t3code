@@ -6,6 +6,7 @@ import { m, type MessageResolver } from "../i18n/messages";
 
 import { parseLegacyNewTaskDraftKey } from "../state/new-task-draft-key";
 import type { DraftComposerAttachment } from "./composerImages";
+import { uploadImagesBeforeSend } from "./uploadImagesBeforeSend";
 
 export interface ComposerAttachmentUploadRequest {
   readonly environmentId: EnvironmentId;
@@ -69,10 +70,11 @@ export function canUploadComposerAttachment(
   const capabilities = config?.environment.capabilities;
   return (
     capabilities !== undefined &&
-    (attachment.type === "image" ||
-      (capabilities.fileAttachments !== undefined &&
+    (attachment.type === "image"
+      ? uploadImagesBeforeSend()
+      : capabilities.fileAttachments !== undefined &&
         attachment.sizeBytes <=
-          clampFileAttachmentUploadBytes(capabilities.fileAttachments.maxUploadBytes)))
+          clampFileAttachmentUploadBytes(capabilities.fileAttachments.maxUploadBytes))
   );
 }
 

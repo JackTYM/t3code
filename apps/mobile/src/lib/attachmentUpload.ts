@@ -28,6 +28,7 @@ import { appAtomRegistry } from "../state/atom-registry";
 import { assetEnvironment } from "../state/assets";
 import { attachmentEnvironment } from "../state/attachments";
 import { environmentSession, readEnvironmentScope } from "../state/session";
+import { uploadImagesBeforeSend } from "./uploadImagesBeforeSend";
 import { resolveOwnedComposerAttachmentFileUri } from "./composerAttachmentFiles";
 import { retainComposerAttachmentFileForPreview } from "./composerAttachmentPreviewRetention";
 import {
@@ -458,6 +459,7 @@ export const prepareTurnAttachments = Effect.fn("prepareTurnAttachments")(functi
 }) {
   const { environmentId } = input;
   const imageUploads =
+    uploadImagesBeforeSend() &&
     input.supportsImageUploads === true &&
     !inlineImageFallbackActive(environmentId, yield* Clock.currentTimeMillis);
   const inlineImages = (attachments: ReadonlyArray<DraftComposerAttachment>) =>

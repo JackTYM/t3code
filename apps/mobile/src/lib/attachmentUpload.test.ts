@@ -17,7 +17,10 @@ const mocks = vi.hoisted(() => ({
   writeFile: vi.fn(),
   deleteFile: vi.fn(),
   readBase64: vi.fn(),
+  uploadImages: true,
 }));
+
+vi.mock("./uploadImagesBeforeSend", () => ({ uploadImagesBeforeSend: () => mocks.uploadImages }));
 
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({
   createEnvironmentRpcCommand: () => Symbol("rpc-command"),
@@ -175,6 +178,7 @@ function removeCallsFor(attachmentId: string): number {
 
 describe("prepareTurnAttachments", () => {
   beforeEach(() => {
+    mocks.uploadImages = true;
     clearInlineImageUploadFallback();
     mocks.canOperate = true;
     mocks.documentUri = "file:///documents";
@@ -204,6 +208,25 @@ describe("prepareTurnAttachments", () => {
     );
     mocks.upload.mockResolvedValue({ status: 204, body: "", headers: {} });
   });
+
+  it.effect("sends images inline without minting or transferring when images do not upload", () =>
+    Effect.gen(function* () {
+      mocks.uploadImages = false;
+      expect(
+        yield* prepare({
+          environmentId,
+          attachments: [fileBackedImage],
+          supportsImageUploads: true,
+        }),
+      ).toMatchObject({
+        status: "ready",
+        attachments: [{ type: "image", dataUrl: "data:image/png;base64,YWJj" }],
+        pendingAttachmentIds: [],
+      });
+      expect(mocks.runAtomCommand).not.toHaveBeenCalled();
+      expect(mocks.upload).not.toHaveBeenCalled();
+    }),
+  );
 
   it.effect("does not mint or transfer attachments without task operation access", () =>
     Effect.gen(function* () {
