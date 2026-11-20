@@ -272,6 +272,7 @@ export async function createComposerFileAttachment(input: {
 export async function pickComposerFiles(input: {
   readonly existingCount: number;
   readonly maxBytes?: number;
+  readonly acceptSelection?: () => boolean;
 }): Promise<{
   readonly files: ReadonlyArray<DraftComposerAttachment>;
   readonly error: string | null;
@@ -302,7 +303,7 @@ export async function pickComposerFiles(input: {
   } finally {
     endHandoff();
   }
-  if (result.canceled) {
+  if (result.canceled || input.acceptSelection?.() === false) {
     return { files: [], error: null };
   }
 
@@ -400,6 +401,7 @@ export async function pickComposerImages(input: { readonly existingCount: number
 export async function pickComposerMedia(input: {
   readonly existingCount: number;
   readonly maxVideoBytes?: number;
+  readonly acceptSelection?: () => boolean;
 }): Promise<{
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly error: string | null;
@@ -448,7 +450,7 @@ export async function pickComposerMedia(input: {
     endHandoff();
   }
 
-  if (result.canceled) {
+  if (result.canceled || input.acceptSelection?.() === false) {
     return {
       attachments: [],
       error: null,
@@ -593,6 +595,7 @@ async function collectPickedAssets(
 export async function captureComposerMedia(input: {
   readonly existingCount: number;
   readonly maxVideoBytes?: number;
+  readonly acceptSelection?: () => boolean;
 }): Promise<{
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly error: string | null;
@@ -651,7 +654,7 @@ export async function captureComposerMedia(input: {
     endHandoff();
   }
 
-  if (result.canceled) {
+  if (result.canceled || input.acceptSelection?.() === false) {
     return { attachments: [], error: null };
   }
 

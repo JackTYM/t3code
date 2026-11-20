@@ -1,5 +1,5 @@
 import { requireOptionalNativeModule } from "expo";
-import * as Linking from "expo-linking";
+import { tryOpenExternalUrl } from "../lib/openExternalUrl";
 import type { SubscriptionUsageSnapshot } from "./subscriptionUsageSnapshot";
 import type { WidgetPublishOutcome } from "./widgetPublishDiagnostics";
 
@@ -19,7 +19,7 @@ export async function publishSubscriptionUsage(
     // expo-widgets lacks Android widgetURL. Button events need a live JS runtime to open the app.
     listening = true;
     addUserInteractionListener((event) => {
-      if (event.source === "SubscriptionUsage" && tapUrl) void Linking.openURL(tapUrl);
+      if (event.source === "SubscriptionUsage" && tapUrl) void tryOpenExternalUrl(tapUrl);
     });
   }
   widget.updateSnapshot(snapshot);

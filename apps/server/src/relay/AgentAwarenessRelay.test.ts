@@ -292,9 +292,13 @@ const makeTestRelay = Effect.fnUntraced(function* (
         authorization: new Headers(init?.headers).get("authorization"),
         state: payload.state,
       });
-      return Promise.resolve(
-        options.respond?.(publications.length) ?? Response.json({ ok: true, deliveries: [] }),
-      );
+      try {
+        return Promise.resolve(
+          options.respond?.(publications.length) ?? Response.json({ ok: true, deliveries: [] }),
+        );
+      } catch (error) {
+        return Promise.reject(error);
+      }
     },
     { preconnect: () => {} },
   );
@@ -973,43 +977,40 @@ describe("AgentAwarenessRelay", () => {
     }),
   );
 
-  it.effect("republishes a state identical to the last accepted one after a dropped publish", () =>
+  it.effect("delivers a completion once the network returns after the retry budget runs out", () =>
     Effect.gen(function* () {
-      let unavailable = false;
+      let networkUp = true;
+      const delivered: Array<string | null> = [];
       const { relay, currentShell, publications } = yield* makeTestRelay({
-        respond: () =>
-          unavailable
-            ? new Response("relay unavailable", { status: 503 })
-            : Response.json({ ok: true, deliveries: [] }),
+        respond: (attempt) => {
+          if (!networkUp) throw new TypeError("fetch failed: getaddrinfo EAI_AGAIN");
+          delivered.push(publications[attempt - 1]?.state?.phase ?? null);
+          return Response.json({ ok: true, deliveries: [] });
+        },
       });
-      const finishedShell = shell({
-        status: "completed",
-        latestRunCompletedAt: DateTime.add(yield* DateTime.now, { seconds: 1 }),
-      });
-      yield* Ref.set(currentShell, finishedShell);
+      yield* relay.publishThread(THREAD_ID);
+      networkUp = false;
+      yield* Ref.set(currentShell, shell({ status: "completed" }));
       yield* relay.publishThread(THREAD_ID);
       yield* TestClock.adjust("5 seconds");
       yield* relay.drain;
-      assert.equal(publications.length, 1);
-
-      unavailable = true;
-      yield* Ref.set(currentShell, shell());
-      yield* relay.publishThread(THREAD_ID);
-      for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000]) {
+      for (const delay of [
+        "1 second",
+        "2 seconds",
+        "4 seconds",
+        "8 seconds",
+        "16 seconds",
+      ] as const) {
         yield* TestClock.adjust(delay);
         yield* relay.drain;
       }
       assert.equal(publications.length, 7);
+      assert.deepEqual(delivered, ["running"]);
 
-      // The relay still holds the previous turn's "completed", so the new
-      // turn's identical completion must not be deduped against it.
-      unavailable = false;
-      yield* Ref.set(currentShell, finishedShell);
-      yield* relay.publishThread(THREAD_ID);
-      yield* TestClock.adjust("5 seconds");
+      networkUp = true;
+      yield* TestClock.adjust("10 minutes");
       yield* relay.drain;
-      assert.equal(publications.length, 8);
-      assert.equal(publications[7]?.state?.phase, "completed");
+      assert.deepEqual(delivered, ["running", "completed"]);
     }),
   );
 
