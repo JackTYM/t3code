@@ -45,6 +45,7 @@ import * as ProjectStore from "./ProjectStore.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import { layerNoTaskFolders } from "./ProviderTurnStartService.testkit.ts";
 
 const unrelatedProject = Option.some({
   workspaceRoot: "/nonexistent/t3-rollback-project",
@@ -53,6 +54,7 @@ const layerCheckpointRollbackService = CheckpointRollbackService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       NodeServices.layer,
+      layerNoTaskFolders,
       Layer.mock(ServerConfig.ServerConfig)({ worktreesDir: "/synthetic-worktrees" } as never),
       ServerSettings.layerTest(),
       Layer.mock(GitWorkflow.GitWorkflowService)({}),
@@ -98,7 +100,10 @@ it.effect.each(["initial", "waiting"])(
       Layer.provide(
         Layer.mergeAll(
           ThreadCommandExecutor.layer,
-          Layer.mock(CheckpointService.CheckpointServiceV2)({ restore }),
+          Layer.mock(CheckpointService.CheckpointServiceV2)({
+            restore,
+            discardRepositorySnapshots: () => Effect.void,
+          }),
           Layer.mock(EventSink.EventSinkV2)({}),
           IdAllocator.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
@@ -313,6 +318,7 @@ it.effect.each([
         Layer.mergeAll(
           ThreadCommandExecutor.layer,
           NodeServices.layer,
+          layerNoTaskFolders,
           Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as never),
           ServerSettings.layerTest(),
           Layer.mock(ProjectStore.ProjectStoreV2)({
@@ -343,6 +349,7 @@ it.effect.each([
               }),
           }),
           Layer.mock(CheckpointService.CheckpointServiceV2)({
+            discardRepositorySnapshots: () => Effect.void,
             restore: () =>
               Effect.gen(function* () {
                 assert.isTrue(
@@ -534,8 +541,10 @@ it.effect.each([{ restoreFiles: true }, { restoreFiles: false }])(
             Layer.mock(ProjectStore.ProjectStoreV2)({
               get: () => Effect.succeedSome({ workspaceRoot } as never),
             }),
+            layerNoTaskFolders,
             Layer.mock(GitWorkflow.GitWorkflowService)({}),
             Layer.mock(CheckpointService.CheckpointServiceV2)({
+              discardRepositorySnapshots: () => Effect.void,
               restore: () =>
                 Deferred.succeed(restoreEntered, undefined).pipe(
                   Effect.andThen(Deferred.await(releaseRestore)),
@@ -619,6 +628,7 @@ const seedRollbackHistory = Effect.gen(function* () {
   const modelSelection = { instanceId: providerInstanceId, model: "test" };
   const scopeId = CheckpointScopeId.make("rollback-history-root");
   const otherScopeId = CheckpointScopeId.make("rollback-history-child");
+  const repositoryScopeId = CheckpointScopeId.make("rollback-history-repository");
   const runId = (ordinal: number) => RunId.make(`rollback-history-run-${ordinal}`);
   const nodeId = (ordinal: number) => NodeId.make(`rollback-history-node-${ordinal}`);
   const attemptId = (ordinal: number) => RunAttemptId.make(`rollback-history-attempt-${ordinal}`);
@@ -819,9 +829,49 @@ const seedRollbackHistory = Effect.gen(function* () {
     });
   }
 
+  // A tracked repository records only the turns that changed it: runs 2 and 4 here.
+  yield* apply({
+    type: "checkpoint-scope.created",
+    payload: {
+      id: repositoryScopeId,
+      threadId,
+      runId: runId(2),
+      nodeId: nodeId(2),
+      parentScopeId: scopeId,
+      providerThreadId,
+      kind: "manual",
+      ordinalWithinParent: 1,
+      advancesAppRunCount: false,
+      cwd: process.cwd(),
+      label: "api",
+      repositoryPath: process.cwd(),
+      createdAt: now,
+    },
+  });
+  for (const ordinal of [2, 4]) {
+    yield* apply({
+      type: "checkpoint.captured",
+      payload: {
+        id: CheckpointId.make(`rollback-history-repository-checkpoint-${ordinal}`),
+        threadId,
+        scopeId: repositoryScopeId,
+        runId: runId(ordinal),
+        nodeId: nodeId(ordinal),
+        parentCheckpointId: null,
+        ordinalWithinScope: ordinal,
+        appRunOrdinal: null,
+        ref: CheckpointRef.make(`refs/t3/rollback-history/repository/${ordinal}`),
+        status: "ready",
+        files: [],
+        capturedAt: now,
+      },
+    });
+  }
+
   const rollbackCounts: number[] = [];
   const restored: CheckpointId[] = [];
   const deletedRefs: CheckpointId[] = [];
+  const discardedRepositoryOrdinals: number[] = [];
   const committed: OrchestrationV2DomainEvent[] = [];
   const serviceLayer = layerCheckpointRollbackService.pipe(
     Layer.provide(
@@ -829,13 +879,19 @@ const seedRollbackHistory = Effect.gen(function* () {
         ThreadCommandExecutor.layer,
         IdAllocator.layer,
         Layer.mock(CheckpointService.CheckpointServiceV2)({
-          restore: ({ checkpoint }) =>
+          restore: ({ targets }) =>
             Effect.sync(() => {
-              restored.push(checkpoint.id);
+              restored.push(
+                ...targets.map((target) => checkpointId(target.checkpoint.ordinalWithinScope)),
+              );
             }),
           deleteStaleRefs: ({ checkpoints }) =>
             Effect.sync(() => {
               deletedRefs.push(...checkpoints.map((checkpoint) => checkpoint.id));
+            }),
+          discardRepositorySnapshots: ({ ordinals }) =>
+            Effect.sync(() => {
+              discardedRepositoryOrdinals.push(...ordinals);
             }),
         }),
         Layer.mock(EventSink.EventSinkV2)({
@@ -890,6 +946,8 @@ const seedRollbackHistory = Effect.gen(function* () {
     rollbackCounts,
     restored,
     deletedRefs,
+    discardedRepositoryOrdinals,
+    repositoryScopeId,
     committed,
   };
 });
@@ -950,11 +1008,22 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
         );
         const checkpoints = yield* sql<{ status: string }>`
           SELECT status FROM orchestration_v2_projection_checkpoints
-          WHERE thread_id = ${threadId} ORDER BY ordinal_within_scope`;
+          WHERE thread_id = ${threadId} AND scope_id != ${history.repositoryScopeId}
+          ORDER BY ordinal_within_scope`;
         assert.deepEqual(
           checkpoints.map((checkpoint) => checkpoint.status),
           ["ready", "ready", "ready", "stale", "stale", "stale", "stale", "stale", "ready"],
         );
+        // The repository keeps its state at the target and loses what the discarded runs recorded,
+        // including the snapshots that have no record.
+        const repositoryCheckpoints = yield* sql<{ status: string }>`
+          SELECT status FROM orchestration_v2_projection_checkpoints
+          WHERE scope_id = ${history.repositoryScopeId} ORDER BY ordinal_within_scope`;
+        assert.deepEqual(
+          repositoryCheckpoints.map((checkpoint) => checkpoint.status),
+          ["ready", "stale"],
+        );
+        assert.deepEqual(history.discardedRepositoryOrdinals, [3, 4, 5, 6]);
       }),
     );
 
