@@ -1064,8 +1064,8 @@ export function resolveWindowsServerAsarIgnoreGlobs(arch: typeof BuildArch.Type)
   ];
 }
 
-// transcribe-cpp ships its Windows runtime libraries as loose sidecars (84 files at last count).
-export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 100;
+// transcribe-cpp ships its Windows runtime libraries as loose sidecars (107 files at last count).
+export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 120;
 export const WINDOWS_SERVER_RESOURCE_SOURCE_DIR = "apps/desktop/prod-resources/windows-server";
 export const WINDOWS_SERVER_EXTRA_RESOURCES = [
   {
