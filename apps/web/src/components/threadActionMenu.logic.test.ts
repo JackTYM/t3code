@@ -14,6 +14,7 @@ const baseState: ThreadActionMenuState = {
   isRegeneratingTitle: false,
   isRunning: false,
   hasLiveSession: false,
+  hasCompletedRun: true,
   supports: {
     settlement: true,
     autoSettleOptOut: true,
@@ -94,6 +95,14 @@ describe("buildThreadActionMenuItems", () => {
       hasLiveSession: true,
     });
     expect(denied.find((item) => item.id === "stop-session")?.disabled).toBe(true);
+  });
+
+  it.each([
+    ["while the thread is running", { isRunning: true }],
+    ["before any run has completed", { hasCompletedRun: false }],
+  ])("omits mark unread %s", (_, overrides) => {
+    const items = buildThreadActionMenuItems({ ...baseState, ...overrides });
+    expect(items.map((item) => item.id)).not.toContain("mark-unread");
   });
 
   it("disables only rename where no inline title editor exists", () => {

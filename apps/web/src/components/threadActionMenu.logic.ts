@@ -114,6 +114,8 @@ export interface ThreadActionMenuState {
   readonly isRunning: boolean;
   /** A provider process is attached, so there is something to stop. */
   readonly hasLiveSession: boolean;
+  /** The server marks unread against the latest run's completion, so in-flight runs cannot be. */
+  readonly hasCompletedRun: boolean;
   readonly supports: {
     readonly settlement: boolean;
     readonly autoSettleOptOut: boolean;
@@ -222,7 +224,9 @@ export function buildThreadActionMenuItems(
           },
         ]
       : []),
-    { id: "mark-unread", label: resolve(msg("Mark unread")), icon: "mail-open" },
+    ...(state.hasCompletedRun && !state.isRunning
+      ? [{ id: "mark-unread" as const, label: resolve(msg("Mark unread")), icon: "mail-open" }]
+      : []),
     ...(state.canShareWithGuest
       ? [{ id: "share-guest" as const, label: resolve(msg("Share with guest")), icon: "user-plus" }]
       : []),

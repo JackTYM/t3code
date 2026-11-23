@@ -43,6 +43,7 @@ import {
 import { GuestBubbleTint, GuestMessageName } from "./guestMessageStyle";
 import { ThreadGuestPendingMessage, useThreadGuestShare } from "./ThreadGuestShareBar";
 import { LinkRequestCard } from "./LinkRequestCard";
+import { FeedbackRequestCard } from "./FeedbackRequestCard";
 import { SecretRequestCard } from "./SecretRequestCard";
 import { AssistantReplyEditControls, type ThreadReplyEditing } from "./AssistantReplyEditing";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -160,7 +161,10 @@ import { useResolveClassNames } from "uniwind";
 import { useReduceMotionEnabled } from "../../lib/appState";
 import { useFilePreviewGallery, FilePreviewGallery } from "../../components/ui/FilePreviewGallery";
 import { assetImageSource } from "../../lib/assetImageSource";
-import { filePreviewSourceIdentifier } from "../../lib/filePreviewGallery";
+import {
+  filePreviewSourceIdentifier,
+  remoteAttachmentImageSource,
+} from "../../lib/filePreviewGallery";
 import { composerImageGallery } from "../../lib/composerImageGallery";
 import {
   isFileBackedComposerAttachment,
@@ -243,6 +247,7 @@ import {
   isContextCompactionActivityGroup,
   isContextHandoffActivityGroup,
   isLinkRequestActivityGroup,
+  isFeedbackRequestActivityGroup,
   isSecretRequestActivityGroup,
   type ThreadFeedEntry,
   type ThreadFeedLatestRun,
@@ -620,17 +625,9 @@ function MessageAttachmentImage(props: {
 }) {
   const gt = useGT();
   const withGallery = useFilePreviewGallery();
-  const resource = {
-    _tag: "attachment" as const,
-    attachmentId: props.attachmentId,
-    fileName: props.name,
-    mimeType: props.mimeType,
-  };
-  const sourceIdentifier = filePreviewSourceIdentifier({
-    kind: "image",
-    environmentId: props.environmentId,
-    resource,
-  });
+  const previewSource = remoteAttachmentImageSource(props.environmentId, props.attachmentId, props);
+  const { resource } = previewSource;
+  const sourceIdentifier = filePreviewSourceIdentifier(previewSource);
   const uri = useAssetUrl(props.environmentId, resource);
   const refreshAssetUrl = useRefreshAssetUrl(props.environmentId, resource);
   const retriedImage = useRef(false);
@@ -669,23 +666,7 @@ function MessageAttachmentImage(props: {
         height={props.height}
         accessibilityLabel={gt("Open {name}", { name: props.name })}
         {...handoffProps(handoff)}
-        onPress={() =>
-          props.onPressPreview(
-            withGallery({
-              kind: "image",
-              environmentId: props.environmentId,
-              resource,
-              name: props.name,
-              sourceIdentifier,
-              actionsSource: {
-                name: props.name,
-                mimeType: props.mimeType,
-                environmentId: props.environmentId,
-                resource,
-              },
-            }),
-          )
-        }
+        onPress={() => props.onPressPreview(withGallery({ ...previewSource, sourceIdentifier }))}
         onLoad={(size) => {
           retriedImage.current = false;
           if (handoff)
@@ -2127,6 +2108,7 @@ function renderFeedEntry(
         iconSubtleColor={iconSubtleColor}
         label={entry.label}
         providerStartingLabel={entry.providerStartingLabel}
+        providerStartingDriver={entry.providerStartingDriver}
       />
     );
   }
@@ -2233,6 +2215,16 @@ function renderFeedEntry(
   if (entry.type === "activity-group" && isSecretRequestActivityGroup(entry)) {
     return (
       <SecretRequestCard
+        environmentId={props.environmentId}
+        projectedItem={entry.activities[0]!.projectedItem}
+        iconColor={iconSubtleColor}
+      />
+    );
+  }
+
+  if (entry.type === "activity-group" && isFeedbackRequestActivityGroup(entry)) {
+    return (
+      <FeedbackRequestCard
         environmentId={props.environmentId}
         projectedItem={entry.activities[0]!.projectedItem}
         iconColor={iconSubtleColor}
@@ -3366,7 +3358,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     // A v1 link names no environment, so it falls back to this message's.
     return scopeThreadRef(props.environmentId, link.threadId);
   };
-  // The file a chat link names: in this workspace, else in the one other project that has it.
+  // Prefer the thread workspace before looking across projects or in agent directories.
   const findFileLinkTarget = async (
     linkPath: string,
     path: string,
@@ -3384,6 +3376,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       return relativePath ?? path;
     }
     const workspaceRoot = props.workspaceRoot;
+    const basenameLookup = needsWorkspaceBasenameLookup(relativePath);
     const originalPath = resolveWorkspaceFilePath(workspaceRoot, relativePath);
     const queryOptions = { signal, reportFailure: false, reportDefect: false };
     const searchRoot = (root: string) =>
@@ -3431,13 +3424,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
               ? [project.workspaceRoot]
               : [],
           );
-        match =
-          otherRoots.length === 0
-            ? null
-            : pickProjectLinkMatch(relativePath, await Promise.all(otherRoots.map(searchRoot)));
+        if (otherRoots.length > 0) {
+          const projectSearches = await Promise.all(otherRoots.map(searchRoot));
+          match = pickProjectLinkMatch(relativePath, [own, ...projectSearches]);
+        }
       }
       if (match === null && reply !== undefined && !signal.aborted) {
-        // No project has the file, so it opens where the agent last worked, as written.
+        // An unresolved project lookup falls back to the agent's working directories.
         const agentRoots = agentWorkingDirectories(
           appAtomRegistry.get(
             environmentThreadDetails.quietThreadAtom(
@@ -3456,7 +3449,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           (result) => result._tag === "Success" && result.value?.kind === "file",
         );
         const literal = agentPaths[index];
-        if (literal !== undefined || !needsWorkspaceBasenameLookup(relativePath)) {
+        if (literal !== undefined || !basenameLookup) {
           return literal ?? relativePath;
         }
         return (
@@ -3467,7 +3460,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       const metadata = await metadataOf(originalPath);
       // Another project's file never replaces a thread-local file the search missed.
       return metadata._tag === "Success" &&
-        (needsWorkspaceBasenameLookup(relativePath) && !otherProject
+        (basenameLookup && !otherProject
           ? metadata.value?.kind !== "directory"
           : metadata.value === null)
         ? match

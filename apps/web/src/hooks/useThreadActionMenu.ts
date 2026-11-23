@@ -155,6 +155,7 @@ export function useThreadActionMenu(input: {
         isRegeneratingTitle,
         isRunning: !threadRuntimeCanArchive(thread.runtime),
         hasLiveSession: deriveHasLiveSession(thread.runtime),
+        hasCompletedRun: thread.latestRun?.completedAt != null,
         supports,
         snoozePresets,
         canShareWithGuest,
