@@ -1,7 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import type { ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, type ThreadId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -22,29 +22,43 @@ import * as WatcherService from "./WatcherService.ts";
 const bot = { enabled: true, muteChildren: false } as const;
 const EVERY_MS = 60_000;
 const MINUTE = 60_000;
+const userMessage = { id: "message:user", createdBy: "user" } as const;
 
 type Scripted = Pick<ProcessRunner.ProcessRunOutput, "code" | "stdout" | "timedOut">;
 
-/** A ProcessRunner that answers with whatever the test last set, counting its runs. */
+/** A ProcessRunner that answers with whatever the test last set, counting and recording its runs. */
 const makeScriptedRunner = () => {
-  const state: { result: Scripted | ProcessRunner.ProcessRunError; runs: number } = {
+  const state: {
+    result: Scripted | ProcessRunner.ProcessRunError;
+    runs: number;
+    inputs: Array<ProcessRunner.ProcessRunInput>;
+    /** Runs while the script would be running, for a test that acts mid-run. */
+    onRun: (input: ProcessRunner.ProcessRunInput) => Effect.Effect<void>;
+  } = {
     result: { code: ExitCode(0), stdout: "", timedOut: false },
     runs: 0,
+    inputs: [],
+    onRun: () => Effect.void,
   };
   const layer = Layer.mock(ProcessRunner.ProcessRunner)({
-    run: () => {
+    run: (input) => {
       state.runs += 1;
+      state.inputs.push(input);
       const { result } = state;
-      return "_tag" in result
-        ? Effect.fail(result)
-        : Effect.succeed({
-            ...result,
-            stderr: "",
-            stdoutTruncated: false,
-            stderrTruncated: false,
-            stdoutInvalidUtf8: false,
-            stderrInvalidUtf8: false,
-          });
+      return state.onRun(input).pipe(
+        Effect.andThen(
+          "_tag" in result
+            ? Effect.fail(result)
+            : Effect.succeed({
+                ...result,
+                stderr: "",
+                stdoutTruncated: false,
+                stderrTruncated: false,
+                stdoutInvalidUtf8: false,
+                stderrInvalidUtf8: false,
+              }),
+        ),
+      );
     },
   });
   return { state, layer };
@@ -65,81 +79,352 @@ const provideWatchers = (
     ),
   );
 
+/** A Bot whose active turn began with the user typing, the only kind that may change watchers. */
+const addBot = (orchestration: ReturnType<typeof makeOrchestration>, id: string) => {
+  const thread = orchestration.addThread(id, { botConfig: bot });
+  orchestration.startRun(thread, userMessage);
+  return thread;
+};
+
+const SHELL_FAILS = "#!/bin/sh\nexit 1\n";
+
+const proposeWatcher = (
+  threadId: ThreadId,
+  name: string,
+  options: {
+    readonly run?: string;
+    readonly expect?: string;
+    readonly runtime?: "node" | "sh";
+    readonly intervalSeconds?: number;
+  } = {},
+) =>
+  Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    return yield* watchers.propose({
+      botThreadId: threadId,
+      name,
+      runtime: options.runtime ?? "sh",
+      source: options.run ?? SHELL_FAILS,
+      intervalSeconds: options.intervalSeconds ?? EVERY_MS / 1000,
+      expect: options.expect,
+    });
+  });
+
+/** Proposes a watcher and, unless told not to, approves that exact version as the user. */
 const installWatcher = Effect.fn("installWatcher")(function* (
   threadId: ThreadId,
   name: string,
-  options: { readonly run?: string; readonly expect?: string; readonly approve?: boolean } = {},
+  options: {
+    readonly run?: string;
+    readonly expect?: string;
+    readonly runtime?: "node" | "sh";
+    readonly approve?: boolean;
+  } = {},
 ) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const { baseDir } = yield* ServerConfig.ServerConfig;
-  const directory = path.join(
-    baseDir,
-    "bots",
-    BotService.memoryFolderName(threadId),
-    "watchers",
-    name,
-  );
-  const run = options.run ?? "#!/bin/sh\nexit 1\n";
-  const config = {
-    everyMs: EVERY_MS,
-    timeoutMs: 5_000,
-    ...(options.expect === undefined ? {} : { expect: options.expect }),
-  };
-  const approvedHash = WatcherService.computeHash({ run: new TextEncoder().encode(run), config });
-  yield* fileSystem.makeDirectory(directory, { recursive: true });
-  yield* fileSystem.writeFileString(path.join(directory, "run"), run);
-  yield* fileSystem.chmod(path.join(directory, "run"), 0o755);
-  yield* fileSystem.writeFileString(
-    path.join(directory, "watcher.json"),
-    JSON.stringify(options.approve === false ? config : { ...config, approvedHash }),
-  );
-  return directory;
+  const watchers = yield* WatcherService.WatcherService;
+  const { hash } = yield* proposeWatcher(threadId, name, options);
+  if (options.approve !== false) {
+    yield* watchers.approve({
+      botThreadId: threadId,
+      name,
+      hash,
+      runsOn: "local",
+      approvedBy: "owner",
+    });
+  }
+  return hash;
 });
 
-it.effect("runs a watcher only while its content matches the approved hash", () => {
-  const orchestration = makeOrchestration();
-  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
-  const plain = orchestration.addThread("thread:plain");
-  const runner = makeScriptedRunner();
-  runner.state.result = { code: ExitCode(1), stdout: "", timedOut: false };
-  return Effect.gen(function* () {
-    const watchers = yield* WatcherService.WatcherService;
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const approved = yield* installWatcher(botThread.id, "disk");
-    yield* installWatcher(botThread.id, "unapproved", { approve: false });
-    // Only a live Bot's watchers run.
-    yield* installWatcher(plain.id, "ignored");
+/** Where the Bot's files for one version live, as the Bot's own tools would see them. */
+const versionDirectory = Effect.fn("versionDirectory")(function* (
+  threadId: ThreadId,
+  name: string,
+  hash: string,
+) {
+  const path = yield* Path.Path;
+  const { baseDir } = yield* ServerConfig.ServerConfig;
+  return path.join(baseDir, "bots", BotService.memoryFolderName(threadId), "watchers", name, hash);
+});
 
-    yield* watchers.runDue;
-    assert.strictEqual(runner.state.runs, 1);
-    assert.deepStrictEqual(
-      (yield* watchers.list(botThread.id)).map(({ name, status }) => [name, status]),
-      [
+const statuses = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    return (yield* watchers.list(threadId)).map(({ name, status }) => [name, status]);
+  });
+
+it.effect(
+  "runs a watcher only as the approved version, and a change stops it until approved",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const plain = orchestration.addThread("thread:plain");
+    const runner = makeScriptedRunner();
+    runner.state.result = { code: ExitCode(1), stdout: "", timedOut: false };
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const approvedHash = yield* installWatcher(botThread.id, "disk");
+      yield* installWatcher(botThread.id, "unapproved", { approve: false });
+      // Only a live Bot proposes watchers, so a plain thread has none to run.
+      const refused = yield* proposeWatcher(plain.id, "ignored").pipe(Effect.flip);
+      assert.strictEqual(refused.reason, "not_a_bot");
+
+      yield* watchers.runDue;
+      assert.strictEqual(runner.state.runs, 1);
+      assert.deepStrictEqual(yield* statuses(botThread.id), [
         ["disk", "tripped"],
         ["unapproved", "needs_approval"],
-      ],
-    );
+      ]);
 
-    // Editing the script voids the approval; it stops running until approved again.
-    yield* fileSystem.writeFileString(path.join(approved, "run"), "#!/bin/sh\nexit 0\n");
+      // A changed proposal does not replace the approved version: both stop until the user decides.
+      const proposed = yield* proposeWatcher(botThread.id, "disk", { run: "#!/bin/sh\nexit 0\n" });
+      assert.notStrictEqual(proposed.hash, approvedHash);
+      yield* TestClock.adjust(EVERY_MS);
+      yield* watchers.runDue;
+      assert.strictEqual(runner.state.runs, 1);
+      const listed = (yield* watchers.list(botThread.id)).find(({ name }) => name === "disk");
+      assert.strictEqual(listed?.status, "needs_approval");
+      assert.strictEqual(listed?.approvedHash, approvedHash);
+      assert.strictEqual(listed?.pendingHash, proposed.hash);
+
+      // Rejecting the proposal resumes the version the user approved before.
+      yield* watchers.reject({ botThreadId: botThread.id, name: "disk" });
+      yield* TestClock.adjust(EVERY_MS);
+      yield* watchers.runDue;
+      assert.strictEqual(runner.state.runs, 2);
+      assert.strictEqual((yield* statuses(botThread.id))[0]?.[1], "tripped");
+      assert.isFalse(
+        yield* fileSystem.exists(yield* versionDirectory(botThread.id, "disk", proposed.hash)),
+      );
+
+      // Bytes on disk that no longer hash to the approved version do not run either.
+      const stored = yield* versionDirectory(botThread.id, "disk", approvedHash);
+      yield* fileSystem.writeFileString(path.join(stored, "run"), "#!/bin/sh\nexit 0\n");
+      yield* TestClock.adjust(EVERY_MS);
+      yield* watchers.runDue;
+      assert.strictEqual(runner.state.runs, 2);
+      assert.strictEqual((yield* statuses(botThread.id))[0]?.[1], "invalid");
+    }).pipe(provideWatchers(orchestration, runner.layer));
+  },
+);
+
+it.effect("keeps approvals where the Bot's own folder cannot change them", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const { baseDir, stateDir } = yield* ServerConfig.ServerConfig;
+    const hash = yield* installWatcher(botThread.id, "disk");
+    const approvals = yield* fileSystem.readFileString(
+      path.join(stateDir, "watcher-approvals.json"),
+    );
+    assert.include(approvals, hash);
+    // Nothing the Bot's folder holds names an approval: a file it writes there approves nothing.
+    const botFolder = path.join(baseDir, "bots", BotService.memoryFolderName(botThread.id));
+    const files = yield* fileSystem.readDirectory(botFolder, { recursive: true });
+    for (const file of files.filter((entry) => entry.endsWith("watcher.json"))) {
+      assert.notInclude(yield* fileSystem.readFileString(path.join(botFolder, file)), "approved");
+    }
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("runs the exact bytes that were hashed, from a private copy", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  const source = "#!/bin/sh\necho approved\n";
+  const seen: { executed?: string; before?: string; after?: string } = {};
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const path = yield* Path.Path;
+    const hash = yield* installWatcher(botThread.id, "disk", { run: source });
+    const stored = path.join(yield* versionDirectory(botThread.id, "disk", hash), "run");
+    runner.state.onRun = (input) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        seen.executed = input.args[0]!;
+        seen.before = yield* fileSystem.readFileString(input.args[0]!);
+        // Someone rewrites the stored file while the script is running.
+        yield* fileSystem.writeFileString(stored, "#!/bin/sh\necho swapped\n");
+        seen.after = yield* fileSystem.readFileString(input.args[0]!);
+      }).pipe(Effect.orDie, Effect.provide(NodeServices.layer));
+
+    yield* watchers.runDue;
+    const input = runner.state.inputs[0]!;
+    assert.strictEqual(seen.before, source);
+    assert.strictEqual(seen.after, source);
+    assert.notStrictEqual(seen.executed, stored);
+    assert.strictEqual(path.dirname(seen.executed!), input.cwd);
+    assert.strictEqual(input.command, "sh");
+    assert.isFalse(input.inheritEnv);
+    assert.strictEqual(input.stdin, "");
+    // The edit is caught on the next look, so the swapped file never runs.
     yield* TestClock.adjust(EVERY_MS);
     yield* watchers.runDue;
     assert.strictEqual(runner.state.runs, 1);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("refuses to create or remove watchers in a turn the user did not start", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* installWatcher(botThread.id, "disk");
+    const injected = [
+      { id: "bot-wake:watcher:disk:1", createdBy: "system" },
+      // A client chooses its own message ids, so an id alone proves nothing either way.
+      { id: "bot-wake:forged", createdBy: "user" },
+      { id: "message:agent", createdBy: "agent" },
+      { id: "message:cron", createdBy: "user", scheduledTaskId: "task:morning" },
+    ] as const;
+    for (const message of injected) {
+      orchestration.startRun(botThread, message);
+      const proposing = yield* proposeWatcher(botThread.id, "more").pipe(Effect.flip);
+      const removing = yield* watchers
+        .remove({ botThreadId: botThread.id, name: "disk" })
+        .pipe(Effect.flip);
+      assert.strictEqual(proposing.reason, "started_by_wake");
+      assert.strictEqual(removing.reason, "started_by_wake");
+    }
+    // A turn that cannot be traced to a message fails closed too.
+    botThread.activeRunId = null;
+    assert.strictEqual(
+      (yield* proposeWatcher(botThread.id, "more").pipe(Effect.flip)).reason,
+      "started_by_wake",
+    );
+    assert.deepStrictEqual(yield* statuses(botThread.id), [["disk", "healthy"]]);
+
+    // The same Bot, in a turn the user started, may.
+    orchestration.startRun(botThread, userMessage);
+    yield* proposeWatcher(botThread.id, "more");
+    yield* watchers.remove({ botThreadId: botThread.id, name: "disk" });
+    assert.deepStrictEqual(yield* statuses(botThread.id), [["more", "needs_approval"]]);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("approves only the version that is still pending, and shows what changed", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  runner.state.result = { code: ExitCode(1), stdout: "boom", timedOut: false };
+  const approve = (hash: string) =>
+    Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      return yield* watchers.approve({
+        botThreadId: botThread.id,
+        name: "disk",
+        hash,
+        runsOn: "local",
+        approvedBy: "owner",
+      });
+    });
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const first = yield* proposeWatcher(botThread.id, "disk", { run: "echo one\n" });
+    // Nothing runs until approval, and a dry run of what is shown does not wake the Bot.
+    const dry = yield* watchers.dryRun({
+      botThreadId: botThread.id,
+      name: "disk",
+      hash: first.hash,
+    });
     assert.deepStrictEqual(
-      (yield* watchers.list(botThread.id)).map(({ name, status }) => [name, status]),
+      [dry.exit, dry.stdout, dry.healthy, dry.hash],
+      ["1", "boom", false, first.hash],
+    );
+    assert.strictEqual(runner.state.inputs[0]?.env?.T3_WATCHER_DRY_RUN, "1");
+    assert.strictEqual(orchestration.sent.length, 0);
+    assert.strictEqual((yield* watchers.list(botThread.id))[0]?.lastDryRun?.stdout, "boom");
+
+    // The Bot revises it before the user decides: what the user saw is no longer approvable.
+    const second = yield* proposeWatcher(botThread.id, "disk", { run: "echo two\n" });
+    assert.strictEqual((yield* approve(first.hash).pipe(Effect.flip)).reason, "stale_hash");
+    const staleDry = yield* watchers
+      .dryRun({ botThreadId: botThread.id, name: "disk", hash: first.hash })
+      .pipe(Effect.flip);
+    assert.strictEqual(staleDry.reason, "stale_hash");
+    // The new version has not been dry-run: the old result is not carried over.
+    assert.isUndefined((yield* watchers.list(botThread.id))[0]?.lastDryRun);
+
+    yield* approve(second.hash);
+    assert.strictEqual((yield* approve(second.hash).pipe(Effect.flip)).reason, "no_pending");
+    const approved = (yield* watchers.list(botThread.id))[0]!;
+    assert.strictEqual(approved.approvedHash, second.hash);
+    assert.isUndefined(approved.pendingHash);
+    assert.deepStrictEqual(
+      approved.history.map(({ hash, approvedBy }) => [hash, approvedBy]),
       [
-        ["disk", "needs_approval"],
-        ["unapproved", "needs_approval"],
+        [first.hash, undefined],
+        [second.hash, "owner"],
       ],
     );
+
+    // A later proposal comes with a diff against what the user approved.
+    const third = yield* proposeWatcher(botThread.id, "disk", { run: "echo three\n" });
+    const pending = (yield* watchers.list(botThread.id))[0]!;
+    assert.strictEqual(pending.hash, third.hash);
+    assert.include(pending.diff, "-echo two");
+    assert.include(pending.diff, "+echo three");
+    assert.strictEqual(pending.source, "echo three\n");
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("turns away proposals that break the limits", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const refusal = (name: string, options: Parameters<typeof proposeWatcher>[2] = {}) =>
+      proposeWatcher(botThread.id, name, options).pipe(
+        Effect.flip,
+        Effect.map(({ reason }) => reason),
+      );
+    assert.strictEqual(yield* refusal("../escape"), "invalid");
+    assert.strictEqual(yield* refusal("x".repeat(65)), "invalid");
+    assert.strictEqual(yield* refusal("ok", { run: "" }), "invalid");
+    assert.strictEqual(yield* refusal("ok", { run: "x".repeat(64 * 1024 + 1) }), "invalid");
+    assert.strictEqual(yield* refusal("ok", { intervalSeconds: 59 }), "invalid");
+    assert.strictEqual(yield* refusal("ok", { expect: "(" }), "invalid");
+    yield* proposeWatcher(botThread.id, "ok", { run: "x".repeat(64 * 1024) });
+    // Names that are also properties of every object are still just names.
+    yield* proposeWatcher(botThread.id, "constructor");
+    for (let index = 2; index < 20; index += 1) yield* proposeWatcher(botThread.id, `w${index}`);
+    assert.strictEqual(yield* refusal("one-too-many"), "invalid");
+    assert.strictEqual((yield* statuses(botThread.id)).length, 20);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("runs a watcher only where the user approved it to run", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const { hash } = yield* proposeWatcher(botThread.id, "disk");
+    yield* watchers.approve({
+      botThreadId: botThread.id,
+      name: "disk",
+      hash,
+      runsOn: EnvironmentId.make("env:laptop"),
+      approvedBy: "owner",
+    });
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 0);
+    assert.deepStrictEqual(yield* statuses(botThread.id), [["disk", "elsewhere"]]);
+
+    yield* watchers.setRunsOn({ botThreadId: botThread.id, name: "disk", runsOn: "local" });
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 1);
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
 
 it.effect("wakes once per failure, backs off while it persists, and clears on recovery", () => {
   const orchestration = makeOrchestration();
-  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  const botThread = addBot(orchestration, "thread:bot");
   const runner = makeScriptedRunner();
   const trip = (stdout: string) => {
     runner.state.result = { code: ExitCode(1), stdout, timedOut: false };
@@ -199,7 +484,7 @@ it.effect("wakes once per failure, backs off while it persists, and clears on re
 
 it.effect("doubles the backoff from 15 minutes to a 24 hour ceiling", () => {
   const orchestration = makeOrchestration();
-  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  const botThread = addBot(orchestration, "thread:bot");
   const runner = makeScriptedRunner();
   runner.state.result = { code: ExitCode(2), stdout: "down", timedOut: false };
   return Effect.gen(function* () {
@@ -220,16 +505,17 @@ it.effect("doubles the backoff from 15 minutes to a 24 hour ceiling", () => {
 
 it.effect("resends an unconfirmed wake under the same key after a restart", () => {
   const orchestration = makeOrchestration();
-  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  const botThread = addBot(orchestration, "thread:bot");
   const runner = makeScriptedRunner();
   runner.state.result = { code: ExitCode(1), stdout: "down", timedOut: false };
   return Effect.gen(function* () {
     const watchers = yield* WatcherService.WatcherService;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const directory = yield* installWatcher(botThread.id, "api");
+    const hash = yield* installWatcher(botThread.id, "api");
     yield* watchers.runDue;
     // A crash after the send but before the save leaves the failure marked pending.
+    const directory = path.dirname(yield* versionDirectory(botThread.id, "api", hash));
     const statePath = path.join(directory, "state.json");
     const saved = JSON.parse(yield* fileSystem.readFileString(statePath));
     saved.failing.pending = true;
@@ -244,7 +530,7 @@ it.effect("resends an unconfirmed wake under the same key after a restart", () =
 
 it.effect("counts a timeout and a script that cannot start as tripped", () => {
   const orchestration = makeOrchestration();
-  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  const botThread = addBot(orchestration, "thread:bot");
   const runner = makeScriptedRunner();
   return Effect.gen(function* () {
     const watchers = yield* WatcherService.WatcherService;
@@ -266,7 +552,7 @@ it.effect("counts a timeout and a script that cannot start as tripped", () => {
 
 it.effect("keeps a wake the Bot could not receive pending, so the next run offers it again", () => {
   const orchestration = makeOrchestration();
-  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  const botThread = addBot(orchestration, "thread:bot");
   const runner = makeScriptedRunner();
   runner.state.result = { code: ExitCode(1), stdout: "down", timedOut: false };
   return Effect.gen(function* () {
@@ -292,13 +578,20 @@ const removeSecret = () => {
 
 it.effect("runs the script in its own folder with a scrubbed environment and capped output", () => {
   const orchestration = makeOrchestration();
-  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  const botThread = addBot(orchestration, "thread:bot");
   return Effect.gen(function* () {
     const watchers = yield* WatcherService.WatcherService;
-    // Healthy only if the secret is gone, PATH survives, and cwd is the watcher's folder.
+    // Healthy only if the secret is gone, PATH survives, stdin is already closed, and the script
+    // runs in a scratch folder rather than the Bot's.
     yield* installWatcher(botThread.id, "probe", {
-      run: '#!/bin/sh\necho "secret=${T3_WATCHER_TEST_SECRET:-none} path=${PATH:+set} cwd=$(basename "$(pwd)")"\n',
-      expect: "^secret=none path=set cwd=probe$",
+      run: '#!/bin/sh\nif read -r _line; then stdin=data; else stdin=eof; fi\necho "secret=${T3_WATCHER_TEST_SECRET:-none} path=${PATH:+set} stdin=$stdin cwd=$(basename "$(pwd)" | cut -c1-10)"\n',
+      expect: "^secret=none path=set stdin=eof cwd=t3-watcher$",
+    });
+    // The scratch folder and the copy of the script are private to the server's user.
+    yield* installWatcher(botThread.id, "private", {
+      runtime: "node",
+      run: 'const fs = require("node:fs");\nconst mode = (target) => (fs.statSync(target).mode & 0o777).toString(8);\nconsole.log(`cwd=${mode(process.cwd())} run=${mode(__filename)} secret=${process.env.T3_WATCHER_TEST_SECRET ?? "none"}`);\n',
+      expect: "^cwd=700 run=700 secret=none$",
     });
     yield* installWatcher(botThread.id, "loud", {
       run: "#!/bin/sh\nhead -c 6000 /dev/zero | tr '\\0' x\necho oops >&2\nexit 3\n",
@@ -306,10 +599,10 @@ it.effect("runs the script in its own folder with a scrubbed environment and cap
     yield* Effect.sync(plantSecret);
     yield* watchers.runDue.pipe(Effect.ensuring(Effect.sync(removeSecret)));
 
-    const statuses = Object.fromEntries(
+    const byName = Object.fromEntries(
       (yield* watchers.list(botThread.id)).map(({ name, status }) => [name, status]),
     );
-    assert.deepStrictEqual(statuses, { loud: "tripped", probe: "healthy" });
+    assert.deepStrictEqual(byName, { loud: "tripped", private: "healthy", probe: "healthy" });
     assert.strictEqual(orchestration.sent.length, 1);
     const text = orchestration.sent[0]!.text;
     assert.include(text, "exit: 3");
@@ -324,7 +617,7 @@ it.effect("runs the script in its own folder with a scrubbed environment and cap
 
 it.effect("runs due watchers from the Scheduler", () => {
   const orchestration = makeOrchestration();
-  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  const botThread = addBot(orchestration, "thread:bot");
   const runs = Effect.runSync(Queue.unbounded<void>());
   const layer = Layer.mock(ProcessRunner.ProcessRunner)({
     run: () =>

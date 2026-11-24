@@ -798,7 +798,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   // Watcher scripts run for free on their interval; only a trip wakes a Bot.
   Layer.effectDiscard(
     WatcherService.WatcherService.pipe(Effect.flatMap((watchers) => watchers.start())),
-  ).pipe(Layer.provide(WatcherService.layer), Layer.provide(Scheduler.layer)),
+  ),
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,
   ProviderInstallation.layer,
@@ -809,6 +809,9 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   // through the runtime.
   Layer.provideMerge(
     HomeService.layer.pipe(
+      // The watchers' own service, so WebSocket and MCP reach what the loop above runs. It sits
+      // below the Bot service it needs.
+      Layer.provideMerge(WatcherService.layer.pipe(Layer.provide(Scheduler.layer))),
       Layer.provideMerge(BotService.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
       Layer.provideMerge(layerOrchestrationApplication),
     ),

@@ -209,6 +209,16 @@ import {
   BotStartInput,
   BotStartResult,
 } from "./bots.ts";
+import {
+  BotWatcherApproveInput,
+  BotWatcherDryRunInput,
+  BotWatcherError,
+  BotWatcherListInput,
+  BotWatcherListResult,
+  BotWatcherRejectInput,
+  BotWatcherRun,
+  BotWatcherSetRunsOnInput,
+} from "./botWatchers.ts";
 import { ProviderInstanceId, ProviderInstanceMutation } from "./providerInstance.ts";
 import {
   IssueCandidates,
@@ -553,6 +563,11 @@ export const WS_METHODS = {
   botFilesRead: "bot.files.read",
   botFilesWrite: "bot.files.write",
   botStart: "bot.start",
+  botWatcherList: "botWatcher.list",
+  botWatcherDryRun: "botWatcher.dryRun",
+  botWatcherApprove: "botWatcher.approve",
+  botWatcherReject: "botWatcher.reject",
+  botWatcherSetRunsOn: "botWatcher.setRunsOn",
 
   providerUploadFeedback: "provider.uploadFeedback",
   providerMcpSignInStart: "provider.mcpSignIn.start",
@@ -1911,6 +1926,35 @@ const WsBotStartRpc = Rpc.make(WS_METHODS.botStart, {
   error: Schema.Union([BotError, EnvironmentAuthorizationError]),
 });
 
+const botWatcherFailure = Schema.Union([BotWatcherError, EnvironmentAuthorizationError]);
+
+const WsBotWatcherListRpc = Rpc.make(WS_METHODS.botWatcherList, {
+  payload: BotWatcherListInput,
+  success: BotWatcherListResult,
+  error: botWatcherFailure,
+});
+
+const WsBotWatcherDryRunRpc = Rpc.make(WS_METHODS.botWatcherDryRun, {
+  payload: BotWatcherDryRunInput,
+  success: BotWatcherRun,
+  error: botWatcherFailure,
+});
+
+const WsBotWatcherApproveRpc = Rpc.make(WS_METHODS.botWatcherApprove, {
+  payload: BotWatcherApproveInput,
+  error: botWatcherFailure,
+});
+
+const WsBotWatcherRejectRpc = Rpc.make(WS_METHODS.botWatcherReject, {
+  payload: BotWatcherRejectInput,
+  error: botWatcherFailure,
+});
+
+const WsBotWatcherSetRunsOnRpc = Rpc.make(WS_METHODS.botWatcherSetRunsOn, {
+  payload: BotWatcherSetRunsOnInput,
+  error: botWatcherFailure,
+});
+
 const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
   payload: ProviderUploadFeedbackInput,
   success: ProviderUploadFeedbackResult,
@@ -2816,6 +2860,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotFilesReadRpc,
   WsBotFilesWriteRpc,
   WsBotStartRpc,
+  WsBotWatcherListRpc,
+  WsBotWatcherDryRunRpc,
+  WsBotWatcherApproveRpc,
+  WsBotWatcherRejectRpc,
+  WsBotWatcherSetRunsOnRpc,
   WsProviderUploadFeedbackRpc,
   WsProviderMcpSignInStartRpc,
   WsProviderMcpSignInCompleteRpc,

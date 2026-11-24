@@ -149,6 +149,22 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("lets readers list a Bot's watchers, but running or approving one takes terminal access", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.botWatcherList)).toBe(AuthOrchestrationReadScope);
+    // A watcher is a script this server runs: approving, dry-running, or moving it is running code.
+    for (const method of [
+      WS_METHODS.botWatcherDryRun,
+      WS_METHODS.botWatcherApprove,
+      WS_METHODS.botWatcherSetRunsOn,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthTerminalOperateScope);
+    }
+    // Discarding a proposal runs nothing new.
+    expect(requiredScopeForRpcMethod(WS_METHODS.botWatcherReject)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("still lets readers load settings the way installed Swift clients ask", () => {
     expect(requiredScopeForRpcMethod("server.getSettings")).toBe(AuthOrchestrationReadScope);
   });

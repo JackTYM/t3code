@@ -1,5 +1,6 @@
 import {
   type BotError,
+  type BotWatcherError,
   type BotWatchTarget,
   OrchestratorMcpFailure,
   type ThreadId,
@@ -7,6 +8,7 @@ import {
 import * as Effect from "effect/Effect";
 
 import * as BotService from "../../../bots/BotService.ts";
+import * as WatcherService from "../../../bots/WatcherService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { BotToolkit } from "./tools.ts";
@@ -14,6 +16,15 @@ import { BotToolkit } from "./tools.ts";
 const botFailure = (error: BotError) =>
   new OrchestratorMcpFailure({
     code: error.reason === "not_a_bot" ? "capability_denied" : "invalid_request",
+    message: error.message,
+  });
+
+const watcherFailure = (error: BotWatcherError) =>
+  new OrchestratorMcpFailure({
+    code:
+      error.reason === "not_a_bot" || error.reason === "started_by_wake"
+        ? "capability_denied"
+        : "invalid_request",
     message: error.message,
   });
 
@@ -90,6 +101,43 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
       const target = yield* targetOf(input);
       const watches = yield* bots.removeWatch(threadId, target).pipe(Effect.mapError(botFailure));
       return { watches };
+    }),
+  ),
+  t3_bot_watcher_propose: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const { threadId } = yield* callerBot;
+      const watchers = yield* WatcherService.WatcherService;
+      return yield* watchers
+        .propose({ botThreadId: threadId, ...input })
+        .pipe(Effect.mapError(watcherFailure));
+    }),
+  ),
+  t3_bot_watcher_remove: McpToolAccess.actsAsCaller(({ name }) =>
+    Effect.gen(function* () {
+      const { threadId } = yield* callerBot;
+      const watchers = yield* WatcherService.WatcherService;
+      yield* watchers.remove({ botThreadId: threadId, name }).pipe(Effect.mapError(watcherFailure));
+      return { removed: true };
+    }),
+  ),
+  t3_bot_watcher_list: McpToolAccess.readsAsCaller(() =>
+    Effect.gen(function* () {
+      const { threadId } = yield* callerBot;
+      const watchers = yield* WatcherService.WatcherService;
+      // Not the source: the user reads that. This is where each watcher stands.
+      return {
+        watchers: (yield* watchers.list(threadId)).map(
+          ({ name, status, hash, runtime, intervalSeconds, expect, runsOn }) => ({
+            name,
+            status,
+            hash,
+            runsOn,
+            ...(runtime === undefined ? {} : { runtime }),
+            ...(intervalSeconds === undefined ? {} : { intervalSeconds }),
+            ...(expect === undefined ? {} : { expect }),
+          }),
+        ),
+      };
     }),
   ),
 });

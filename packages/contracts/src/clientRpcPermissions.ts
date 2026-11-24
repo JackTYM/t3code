@@ -57,6 +57,13 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // A Bot's notes steer its later turns, as a message to it does.
   [WS_METHODS.botFilesWrite]: AuthOrchestrationOperateScope,
   [WS_METHODS.botStart]: AuthOrchestrationOperateScope,
+  // The server runs an approved watcher on a schedule, and a dry run runs it now: this is running
+  // code there, as saving a workflow file is, so operating threads does not cover it.
+  [WS_METHODS.botWatcherDryRun]: AuthTerminalOperateScope,
+  [WS_METHODS.botWatcherApprove]: AuthTerminalOperateScope,
+  [WS_METHODS.botWatcherSetRunsOn]: AuthTerminalOperateScope,
+  // Discarding a proposal runs nothing new; the approved version it resumes was approved already.
+  [WS_METHODS.botWatcherReject]: AuthOrchestrationOperateScope,
   [WS_METHODS.sourceControlCloneRepository]: AuthSourceControlWriteScope,
   [WS_METHODS.sourceControlPublishRepository]: AuthSourceControlWriteScope,
   [WS_METHODS.sourceControlStar]: AuthSourceControlWriteScope,

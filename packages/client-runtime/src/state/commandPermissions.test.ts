@@ -255,6 +255,7 @@ describe("command permissions", () => {
     WS_METHODS.homeDisable,
     WS_METHODS.homeReset,
     WS_METHODS.homeSetModel,
+    WS_METHODS.botWatcherReject,
   ])("uses the target grant for both availability and execution of %s", (method) =>
     Effect.gen(function* () {
       const registry = yield* setup;
@@ -285,6 +286,30 @@ describe("command permissions", () => {
         }),
       );
       expect(registry.get(saving.permissionAtom(env))).toBe(true);
+    }),
+  );
+  it.effect.each([
+    WS_METHODS.botWatcherDryRun,
+    WS_METHODS.botWatcherApprove,
+    WS_METHODS.botWatcherSetRunsOn,
+  ])("running a Bot's watcher script (%s) takes more than operating threads", (method) =>
+    Effect.gen(function* () {
+      const registry = yield* setup;
+      const permissions = createCommandPermissions(runtime, method);
+      registry.set(sessions(env), AsyncResult.success(grant(true)));
+      expect(registry.get(permissions.permissionAtom(env))).toBe(false);
+      const denied = yield* permissions.authorize(registry, env).pipe(Effect.flip);
+      expect(denied._tag).toBe("EnvironmentAuthorizationError");
+      registry.set(
+        sessions(env),
+        AsyncResult.success({
+          ...grant(true),
+          scopes: [AuthTerminalOperateScope],
+          permissions: [AuthTerminalOperateScope],
+        }),
+      );
+      expect(registry.get(permissions.permissionAtom(env))).toBe(true);
+      yield* permissions.authorize(registry, env);
     }),
   );
   it.effect("waits for an initial grant", () =>

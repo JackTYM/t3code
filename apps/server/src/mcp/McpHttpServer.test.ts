@@ -60,6 +60,7 @@ import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as BotService from "../bots/BotService.ts";
+import * as WatcherService from "../bots/WatcherService.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import { FEEDBACK_CLI_CLIENT_LABEL } from "../feedback/FeedbackReport.ts";
@@ -2276,6 +2277,22 @@ it.effect("lists and runs Bot tools only for a Bot thread, deferred or not", () 
             watches: () => Effect.succeed([]),
           }),
         ),
+        Layer.provide(
+          Layer.mock(WatcherService.WatcherService)({
+            list: () =>
+              Effect.succeed([
+                {
+                  name: "disk",
+                  status: "needs_approval",
+                  hash: "abc",
+                  runtime: "sh",
+                  source: "df",
+                  runsOn: "local",
+                  history: [],
+                },
+              ]),
+          }),
+        ),
         Layer.provide(ServerSettings.layerTest()),
         Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
         Layer.provide(
@@ -2349,6 +2366,9 @@ it.effect("lists and runs Bot tools only for a Bot thread, deferred or not", () 
         "t3_bot_preferences_append",
         "t3_bot_watch_add",
         "t3_bot_watch_remove",
+        "t3_bot_watcher_list",
+        "t3_bot_watcher_propose",
+        "t3_bot_watcher_remove",
       ];
       const bot = yield* session("bot");
       const botDeferred = yield* session("botDeferred");
@@ -2370,6 +2390,13 @@ it.effect("lists and runs Bot tools only for a Bot thread, deferred or not", () 
       });
       const refused = yield* plain.call("t3_bot_memory_read", {});
       expect(refused.result?.structuredContent).toBeUndefined();
+
+      // A listing says where each watcher stands, not what its script says.
+      expect((yield* bot.call("t3_bot_watcher_list", {})).result?.structuredContent).toEqual({
+        watchers: [
+          { name: "disk", status: "needs_approval", hash: "abc", runsOn: "local", runtime: "sh" },
+        ],
+      });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

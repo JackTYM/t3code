@@ -58,15 +58,38 @@ this environment's threads and runs only.
 ## Watchers
 
 A watcher is a script that polls for free and wakes the Bot, a model call, only when it trips.
-[`WatcherService`](../../apps/server/src/bots/WatcherService.ts) registers one pass with the
-`Scheduler`; each watcher is a folder `<base>/bots/<folder>/watchers/<name>/` with a `run`
-executable and a `watcher.json`. The Bot writes both, so a watcher runs only while the sha256 of
-`run` and `watcher.json` (minus `approvedHash`) equals `approvedHash`. An edit, by anyone, voids
-the approval until it is renewed. Healthy is exit 0 with stdout matching `expect`, if set.
+The Bot proposes them, and a Bot reads untrusted email and chat, so a proposal is never trusted:
+a watcher runs only as the exact version the user approved after reading its source and a dry run.
+[`WatcherService`](../../apps/server/src/bots/WatcherService.ts) owns this and registers one pass
+with the `Scheduler`.
 
-A wake is deduplicated per failure: a trip, or new output, wakes at once, and the same output
-wakes again after 15 minutes, doubling up to 24 hours. Recovery clears the state silently.
-`state.json` is saved with the wake `pending` before `BotService.wakeWith` queues it, and its key
-carries the failure's start, wake count and output fingerprint, so a restart resends the same key
-instead of waking twice. The output reaches the Bot framed as untrusted data, with a random tag.
-The script runs with a minimal environment and a cap on its output.
+- **Versions.** A proposal is stored as `<base>/bots/<folder>/watchers/<name>/<sha256>/` holding
+  `run` (node or sh source) and `watcher.json`; the hash covers both. Which hash is approved, who
+  approved it and where it runs live in `<stateDir>/watcher-approvals.json`, which only the service
+  writes. A directory the Bot writes under `bots/` approves nothing, and the loop runs what that
+  file lists, not what it finds on disk.
+- **Any change stops it.** A different version becomes the pending one and the approved version
+  stops until the user approves the new one or rejects it, which resumes the old. The user's
+  actions are protected RPCs (`botWatcher.*`) that need terminal access, as saving a workflow
+  file does, because each runs code here. Approval must name the current pending hash.
+- **No Bot path to approval.** There is no Bot-callable approve and no Bot-callable dry run: a Bot
+  that could dry-run its own proposal would execute it before anyone read it. The propose and
+  remove tools are also refused to a turn that did not begin with the user typing, which
+  `BotService.startedByWake` decides from the run's first message: a `bot-wake:` message, another
+  agent's, a scheduled task's, or one that cannot be found all count as not typed. A user who
+  steers a wake turn does not change that: the turn stays refused.
+- **Running.** The verified bytes are read once, hashed, written to a fresh 0700 scratch directory
+  and executed from that copy, never from the stored path, so a rewrite after the check changes
+  nothing. Watchers are trusted code, not sandboxed: the scratch directory is the cwd and
+  `TMPDIR`, stdin is closed, output and time are capped, one script runs at a time, and the
+  environment is an allowlist (`inheritEnv: false`). A dry run uses the same path with
+  `T3_WATCHER_DRY_RUN=1`.
+- **Where.** A watcher records `runsOn`, `local` or a linked environment. Only `local` runs here
+  today; another value shows as `elsewhere` and waits.
+
+A run is healthy on exit 0 with stdout matching `expect`, if set. A wake is deduplicated per
+failure: a trip, or new output, wakes at once, and the same output wakes again after 15 minutes,
+doubling up to 24 hours. Recovery clears the state silently. `state.json` is saved with the wake
+`pending` before `BotService.wakeWith` queues it, and its key carries the failure's start, wake
+count and output fingerprint, so a restart resends the same key instead of waking twice. The
+output reaches the Bot framed as untrusted data, with a random tag.

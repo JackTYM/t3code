@@ -94,6 +94,13 @@ export class BotService extends Context.Service<
       readonly key: string;
       readonly text: string;
     }) => Effect.Effect<boolean>;
+    /**
+     * Whether the thread's active run began with anything but a message the user typed: a wake
+     * (`bot-wake:`), another agent's message, or a scheduled task's prompt. Those carry content
+     * the user did not write, so what such a turn reads may be hostile. True also when the run
+     * cannot be established, so the question fails closed.
+     */
+    readonly startedByWake: (threadId: ThreadId) => Effect.Effect<boolean>;
     /** Wakes the Bots that `event` is news for: the leader of its crew thread, and its watchers. */
     readonly handleMilestone: (event: MilestoneEvent) => Effect.Effect<void>;
     /**
@@ -130,6 +137,8 @@ export const memoryFolderThreadId = (folder: string): ThreadId | undefined => {
   // Escaping is not injective for code points above 0xff, so only an exact round trip names a folder.
   return escapeId(id) === escaped ? id : undefined;
 };
+
+const WAKE_MESSAGE_PREFIX = "bot-wake:";
 
 const WatchesFile = Schema.fromJsonString(
   Schema.Record(Schema.String, Schema.Array(BotWatchSchema)),
@@ -429,9 +438,9 @@ const make = Effect.gen(function* () {
     return yield* threads
       .sendToThread({
         projectId: shell.projectId,
-        commandId: CommandId.make(`bot-wake:${key}`),
+        commandId: CommandId.make(`${WAKE_MESSAGE_PREFIX}${key}`),
         threadId: botThreadId,
-        messageId: MessageId.make(`bot-wake:${key}`),
+        messageId: MessageId.make(`${WAKE_MESSAGE_PREFIX}${key}`),
         text,
         attachments: [],
         mode: "queue",
@@ -463,6 +472,28 @@ const make = Effect.gen(function* () {
   }) {
     if (!(yield* wakeable(botThreadId))) return false;
     return yield* queueWake(botThreadId, key, text);
+  });
+
+  const startedByWake: BotService["Service"]["startedByWake"] = Effect.fn(
+    "BotService.startedByWake",
+  )(function* (threadId) {
+    return yield* Effect.gen(function* () {
+      const shell = yield* threads.getThreadShell(threadId);
+      const runId = shell?.activeRunId ?? null;
+      if (runId === null) return true;
+      const { runs } = yield* threads.getThreadRecords(threadId, ["runs"], { runIds: [runId] });
+      const run = runs.find((candidate) => candidate.id === runId);
+      if (run === undefined) return true;
+      const messages = yield* threads.getMessagesById(threadId, [run.userMessageId]);
+      const message = messages.get(run.userMessageId);
+      return (
+        message === undefined ||
+        message.createdBy !== "user" ||
+        message.scheduledTaskId !== undefined ||
+        // A client picks its own message ids, so the id alone never proves who wrote it.
+        run.userMessageId.startsWith(WAKE_MESSAGE_PREFIX)
+      );
+    }).pipe(Effect.orElseSucceed(() => true));
   });
 
   // Untraced: runs for every milestone, and most return before doing anything.
@@ -579,6 +610,7 @@ const make = Effect.gen(function* () {
     clearWatches,
     moveCrew,
     wakeWith,
+    startedByWake,
     handleMilestone,
     start,
   });

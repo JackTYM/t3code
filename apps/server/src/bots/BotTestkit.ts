@@ -7,7 +7,7 @@ import {
   type OrchestrationV2ServerCommand,
   ProjectId,
   ProviderInstanceId,
-  type RunId,
+  RunId,
   type ThreadBotConfig,
   ThreadId,
 } from "@t3tools/contracts";
@@ -63,6 +63,26 @@ export const makeOrchestration = () => {
   const dispatched: Array<OrchestrationV2ServerCommand & { readonly threadId?: ThreadId }> = [];
   const sent: Array<SentMessage> = [];
   const launched: Array<LaunchedThread> = [];
+  const runs = new Map<RunId, { readonly id: RunId; readonly userMessageId: string }>();
+  const messages = new Map<
+    string,
+    { readonly createdBy: "user" | "agent" | "system"; readonly scheduledTaskId?: string }
+  >();
+
+  /** Makes `message` the one that began the thread's active run. */
+  const startRun = (
+    thread: FakeThread,
+    message: {
+      readonly id: string;
+      readonly createdBy: "user" | "agent" | "system";
+      readonly scheduledTaskId?: string;
+    },
+  ) => {
+    const id = RunId.make(`run:${runs.size + 1}`);
+    runs.set(id, { id, userMessageId: message.id });
+    messages.set(message.id, message);
+    thread.activeRunId = id;
+  };
 
   const addThread = (id: string, fields: Partial<Omit<FakeThread, "id">> = {}): FakeThread => {
     const thread: FakeThread = {
@@ -102,6 +122,14 @@ export const makeOrchestration = () => {
     }),
     Layer.mock(ThreadManagementService.ThreadManagementService)({
       getThreadShell: (threadId) => Effect.succeed((threads.get(threadId) ?? null) as never),
+      getThreadRecords: (_threadId, _fields, filter) =>
+        Effect.succeed({
+          runs: [...runs.values()].filter((run) => filter?.runIds?.includes(run.id) === true),
+        } as never),
+      getMessagesById: (_threadId, ids) =>
+        Effect.succeed(
+          new Map(ids.flatMap((id) => (messages.has(id) ? [[id, messages.get(id)]] : []))) as never,
+        ),
       getThreadProjection: (threadId) => {
         const thread = threads.get(threadId);
         return thread === undefined
@@ -140,7 +168,7 @@ export const makeOrchestration = () => {
       getEnvironmentId: Effect.succeed(EnvironmentId.make("env:here")),
     }),
   );
-  return { threads, dispatched, sent, launched, addThread, layer };
+  return { threads, dispatched, sent, launched, addThread, startRun, layer };
 };
 
 /** Home and the Bot service over one fake orchestration and a fresh base directory. */

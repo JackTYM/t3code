@@ -19,6 +19,8 @@ type ChildProcessCommand = {
   readonly args: ReadonlyArray<string>;
   readonly options: {
     readonly shell?: boolean | string;
+    readonly env?: Record<string, string | undefined>;
+    readonly extendEnv?: boolean;
   };
 };
 
@@ -284,6 +286,30 @@ describe("runProcess", () => {
 
       expect(result.stdout).toBe("stdin payload");
       expect(result.code).toBe(0);
+    }),
+  );
+
+  it.effect("hands the child exactly the given environment when inheritEnv is false", () =>
+    Effect.gen(function* () {
+      const seen: Array<ChildProcessCommand["options"]> = [];
+      const spawner = makeSpawner((command) =>
+        Effect.sync(() => {
+          seen.push(command.options);
+          return makeHandle({});
+        }),
+      );
+      const run = runWith(spawner);
+
+      yield* run({ command: "fake", args: [], env: { PATH: "/bin" }, inheritEnv: false });
+      yield* run({ command: "fake", args: [], inheritEnv: false });
+      yield* run({ command: "fake", args: [], env: { PATH: "/bin" } });
+      yield* run({ command: "fake", args: [] });
+
+      expect(seen[0]).toMatchObject({ env: { PATH: "/bin" }, extendEnv: false });
+      // Nothing to add and nothing to inherit is an empty environment, not the server's.
+      expect(seen[1]).toMatchObject({ env: {}, extendEnv: false });
+      expect(seen[2]).toMatchObject({ env: { PATH: "/bin" }, extendEnv: true });
+      expect(seen[3]).not.toHaveProperty("env");
     }),
   );
 });

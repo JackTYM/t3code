@@ -131,6 +131,7 @@ import * as SessionMcpServers from "./mcpServers/SessionMcpServers.ts";
 import * as UiBundleService from "./uiBundles/UiBundleService.ts";
 import * as McpSignIn from "./mcpApps/McpSignIn.ts";
 import * as BotService from "./bots/BotService.ts";
+import * as WatcherService from "./bots/WatcherService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
@@ -1494,6 +1495,7 @@ export const layerWsRpc = (
       const uiBundles = yield* UiBundleService.UiBundleService;
       const mcpSignIn = yield* McpSignIn.McpSignIn;
       const bots = yield* BotService.BotService;
+      const botWatchers = yield* WatcherService.WatcherService;
       const analytics = yield* AnalyticsService.AnalyticsService;
       const originProps = clientAnalyticsProps;
       const recordClientCommandAnalytics = (command: OrchestrationV2Command) => {
@@ -2677,6 +2679,26 @@ export const layerWsRpc = (
         [WS_METHODS.botFilesRead]: (input) => bots.readFiles(input),
         [WS_METHODS.botFilesWrite]: (input) => bots.writeFile(input),
         [WS_METHODS.botStart]: (input) => bots.start(input),
+        [WS_METHODS.botWatcherList]: ({ threadId }) =>
+          botWatchers.list(threadId).pipe(Effect.map((watchers) => ({ watchers }))),
+        [WS_METHODS.botWatcherDryRun]: (input) =>
+          botWatchers.dryRun({ botThreadId: input.threadId, name: input.name, hash: input.hash }),
+        [WS_METHODS.botWatcherApprove]: (input) =>
+          botWatchers.approve({
+            botThreadId: input.threadId,
+            name: input.name,
+            hash: input.hash,
+            runsOn: input.runsOn,
+            approvedBy: currentSession.subject,
+          }),
+        [WS_METHODS.botWatcherReject]: (input) =>
+          botWatchers.reject({ botThreadId: input.threadId, name: input.name }),
+        [WS_METHODS.botWatcherSetRunsOn]: (input) =>
+          botWatchers.setRunsOn({
+            botThreadId: input.threadId,
+            name: input.name,
+            runsOn: input.runsOn,
+          }),
         [WS_METHODS.providerMcpSignInStart]: (input) => mcpSignIn.start(input),
         [WS_METHODS.providerMcpSignInComplete]: (input) => mcpSignIn.complete(input),
         [WS_METHODS.providerUploadFeedback]:

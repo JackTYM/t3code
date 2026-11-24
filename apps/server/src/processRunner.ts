@@ -23,6 +23,11 @@ export interface ProcessRunInput {
   readonly spawnCwd?: string | undefined;
   readonly timeout?: Duration.Input | undefined;
   readonly env?: NodeJS.ProcessEnv | undefined;
+  /**
+   * False runs the child with exactly `env` (nothing when absent) instead of the server's
+   * environment plus `env`. Blanking inherited keys one by one misses any key it did not list.
+   */
+  readonly inheritEnv?: boolean | undefined;
   readonly stdin?: string | undefined;
   /** Receives every stdout chunk, including bytes beyond the buffered output limit. */
   readonly onStdoutChunk?: ((chunk: Uint8Array) => void) | undefined;
@@ -273,11 +278,12 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
   const maxOutputBytes = input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const outputMode = input.outputMode ?? "error";
   const truncatedMarker = input.truncatedMarker ?? "";
-  const extendEnv = input.env !== undefined;
+  const extendEnv = input.inheritEnv !== false;
+  const env = input.env ?? (extendEnv ? undefined : {});
   const spawnCommand = yield* resolveSpawnCommand(
     input.command,
     input.args,
-    input.env === undefined ? {} : { env: input.env, extendEnv },
+    env === undefined ? {} : { env, extendEnv },
   );
 
   const toSpawnError = (cause: unknown) =>
@@ -296,9 +302,9 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
     .spawn(
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         ...((input.spawnCwd ?? input.cwd) ? { cwd: input.spawnCwd ?? input.cwd } : {}),
-        ...(input.env !== undefined
+        ...(env !== undefined
           ? {
-              env: input.env,
+              env,
               extendEnv,
             }
           : {}),

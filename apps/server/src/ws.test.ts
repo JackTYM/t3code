@@ -100,6 +100,7 @@ import * as ScratchThreadPromotion from "./project/ScratchThreadPromotion.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as McpSignIn from "./mcpApps/McpSignIn.ts";
 import * as BotService from "./bots/BotService.ts";
+import * as WatcherService from "./bots/WatcherService.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as OtlpEndpointCheck from "./observability/OtlpEndpointCheck.ts";
@@ -885,6 +886,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(McpAppRequests.McpAppRequests)({}),
   Layer.mock(McpSignIn.McpSignIn)({}),
   Layer.mock(BotService.BotService)({}),
+  Layer.mock(WatcherService.WatcherService)({}),
   Layer.mock(ModelManifest.ModelManifest)({}),
   Layer.mock(OrchestrationEventStore.OrchestrationEventStore)({}),
   Layer.mock(Orchestrator.OrchestratorV2)({}),
