@@ -297,6 +297,50 @@ it.effect("keeps the expiry the peer answers with, so a used link outlives its f
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect("a touch renews the link there even when nothing else uses it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const handlers = McpToolAccess.toLayer(toolkit, {
+        probe: McpToolAccess.reads(() => Effect.succeed({ modes: "" })),
+        hold: McpToolAccess.reads(() => Effect.succeed({ modes: "" })),
+        refuse: McpToolAccess.reads(() => Effect.fail(refusal)),
+      });
+      const box = descriptorOf("environment-box", "Box");
+      const b = yield* servePeer(box, McpHttpServer.toolkitRegistration(toolkit, handlers));
+      const context = yield* Layer.build(
+        layerLinkingEnvironment(descriptorOf("environment-a", "A")),
+      );
+      const links = Context.get(context, PeerLinks.PeerLinks);
+      const client = Context.get(context, PeerMcpClient.PeerMcpClient);
+      const linked = yield* linkTo(links, b);
+      const day = 24 * 60 * 60 * 1000;
+      const linkedAt = linked.linkedAt.epochMilliseconds;
+      const expiryThere = b.linkedSessions.pipe(
+        Effect.map((sessions) => sessions[0]?.expiresAt.epochMilliseconds),
+      );
+
+      // Listing asks the peer whether it is up, which is not a use of the link.
+      yield* TestClock.adjust("20 days");
+      yield* links.list;
+      expect(yield* expiryThere).toBe(linkedAt + 30 * day);
+
+      yield* client.touch(box.environmentId);
+      expect(yield* expiryThere).toBe(linkedAt + 50 * day);
+      const stored = yield* links.get(box.environmentId);
+      expect(Option.isSome(stored) && stored.value.expiresAt.epochMilliseconds).toBe(
+        linkedAt + 50 * day,
+      );
+
+      // Touched every few weeks, the link is still there a quarter later.
+      yield* TestClock.adjust("20 days");
+      yield* client.touch(box.environmentId);
+      yield* TestClock.adjust("20 days");
+      yield* client.touch(box.environmentId);
+      expect((yield* links.list)[0]?.status).toBe("reachable");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("renews a missing peer session once and reuses its replacement", () =>
   Effect.gen(function* () {
     const sessionHeaders: Array<string | undefined> = [];

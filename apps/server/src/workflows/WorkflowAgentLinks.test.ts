@@ -38,6 +38,7 @@ const peer = (answers: Record<string, ReadonlyArray<unknown>>, enabled = true) =
             const answer = left.get(input.tool)?.shift();
             return isFailure(answer) ? Effect.fail(answer) : Effect.succeed(answer as never);
           }),
+        touch: () => Effect.void,
       }),
     ),
     Layer.mock(PeerLinks.PeerLinks)({ enabled: Effect.succeed(enabled) }),

@@ -51,6 +51,11 @@ export class PeerMcpClient extends Context.Service<
       readonly sender?: OrchestrationV2LinkedSender;
       readonly success: S;
     }) => Effect.Effect<S["Type"], OrchestratorMcpFailure>;
+    /**
+     * Makes the one authenticated request that renews the link's session there. Only a call the
+     * peer authenticates does: asking its public descriptor whether it is up does not.
+     */
+    readonly touch: (environmentId: EnvironmentId) => Effect.Effect<void, OrchestratorMcpFailure>;
   }
 >()("t3/peer/PeerMcpClient") {}
 
@@ -323,7 +328,19 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  return PeerMcpClient.of({ call });
+  const touch: PeerMcpClient["Service"]["touch"] = Effect.fn("PeerMcpClient.touch")(
+    function* (environmentId) {
+      const resolved = yield* links.resolve(environmentId).pipe(Effect.mapError(fromLinkError));
+      yield* openSession(resolved, {});
+    },
+    // Not recorded as the link's last outcome: a laptop asleep overnight is not a failing link.
+    Effect.catchTags({
+      HttpClientError: () => Effect.fail(stoppedAnswering),
+      TimeoutError: () => Effect.fail(stoppedAnswering),
+    }),
+  );
+
+  return PeerMcpClient.of({ call, touch });
 });
 
 export const layer = Layer.effect(PeerMcpClient, make);
