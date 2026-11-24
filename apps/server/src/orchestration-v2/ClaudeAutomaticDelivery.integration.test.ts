@@ -350,6 +350,7 @@ it.effect.each(deliveries)(
                 Layer.provide(
                   Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
                     namedProjectsRoot: Effect.succeed("/projects"),
+                    homeRoot: "/unused-home",
                     isScratchProject: () => Effect.succeed(false),
                   }),
                 ),

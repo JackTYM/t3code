@@ -57,6 +57,7 @@ import {
   SourceControlProviderKind,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   resolveEnvironmentMachineKind,
+  isHomeThreadId,
 } from "@t3tools/contracts";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
@@ -70,6 +71,7 @@ import {
   FolderGit2Icon,
   FolderIcon,
   FolderPlusIcon,
+  HouseIcon,
   MessageSquareDashedIcon,
   LinkIcon,
   MessageSquareIcon,
@@ -85,7 +87,9 @@ import {
   TextSearchIcon,
   UserPlusIcon,
   WorkflowIcon,
+  BotIcon,
 } from "lucide-react";
+import { useThreadGroupingActions } from "../hooks/useThreadGroupingActions";
 import { openThreadFind } from "./chat/threadFindStore";
 import { dispatchPreviewAction } from "./preview/previewActionBus";
 import { previewBridge } from "./preview/previewBridge";
@@ -436,6 +440,7 @@ function OpenCommandPaletteDialog(props: {
   readonly initialContext: CommandPaletteReturnContext | undefined;
 }) {
   const gt = useGT();
+  const groupingActions = useThreadGroupingActions();
   const messages = useMessages();
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
@@ -1509,6 +1514,21 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
+  // The server refuses a thread a Bot cannot start from, such as a subagent.
+  if (activeThread != null && activeThread.botConfig == null && !isHomeThreadId(activeThread.id)) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    actionItems.push({
+      kind: "action",
+      value: "action:start-bot",
+      searchTerms: ["bot", "coordinator", "crew", "delegate", "start a bot"],
+      title: gt("Start a Bot from this thread"),
+      icon: <BotIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await groupingActions.startBot(threadRef);
+      },
+    });
+  }
+
   if (
     activeThread !== null &&
     threadPullRequestLinkMode(activeThreadServerConfig?.environment.capabilities) !== "unsupported"
@@ -1788,6 +1808,18 @@ function OpenCommandPaletteDialog(props: {
       },
     });
   }
+
+  actionItems.push({
+    kind: "action",
+    value: "action:home",
+    searchTerms: ["home", "coordinator", "agent", "across projects"],
+    title: gt("Open Home"),
+    icon: <HouseIcon className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "home.open",
+    run: async () => {
+      await navigate({ to: "/home" });
+    },
+  });
 
   actionItems.push({
     kind: "action",

@@ -3,7 +3,9 @@ import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
+  isHomeThreadId,
   CommandId,
+  type ThreadBotConfig,
   type ChatAttachment,
   type MessageId,
   type ModelSelection,
@@ -127,6 +129,10 @@ export interface ThreadLaunchInput {
   readonly delegatedFrom?: OrchestrationV2DelegatedFrom;
   /** The workflow run this thread is an agent step of. */
   readonly workflowRun?: OrchestrationV2WorkflowOrigin;
+  /** The thread that launched this one, whose group it joins as crew. */
+  readonly groupedUnderThreadId?: ThreadId;
+  /** Starts the thread as a Bot. */
+  readonly botConfig?: ThreadBotConfig;
 }
 
 type PreparationInput = Pick<
@@ -1379,6 +1385,16 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+      // Home's folder holds its instructions; any other thread there would act as Home.
+      if (
+        project.workspaceRoot === managedFolders.homeRoot &&
+        !isHomeThreadId(input.threadId ?? "")
+      ) {
+        return yield* mapError(
+          input,
+          "resolve-project",
+        )("Home's folder takes no other threads. Name a project or start a scratch thread.");
+      }
       if (input.reuseExistingThread === true && input.threadId === undefined) {
         return yield* mapError(
           input,
@@ -1500,6 +1516,10 @@ const make = Effect.gen(function* () {
                   ? {}
                   : { delegatedFrom: input.delegatedFrom }),
                 ...(input.workflowRun === undefined ? {} : { workflowRun: input.workflowRun }),
+                ...(input.groupedUnderThreadId === undefined
+                  ? {}
+                  : { groupedUnderThreadId: input.groupedUnderThreadId }),
+                ...(input.botConfig === undefined ? {} : { botConfig: input.botConfig }),
                 createdBy: input.createdBy,
                 creationSource: input.creationSource,
                 ...(initialMessage === undefined

@@ -307,6 +307,15 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                   }),
                 ),
               );
+        if (
+          project !== undefined &&
+          project.workspaceRoot === (yield* ManagedProjectFolders.ManagedProjectFolders).homeRoot
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "Home's folder takes no other threads. Pass a `projectId` (see `t3_project_list`) or `scratch: true`.",
+          });
         if (project !== undefined && input.workspaceStrategy?.type === "existing_worktree")
           yield* assertProjectWorktree(project.workspaceRoot, input.workspaceStrategy.worktreePath);
         if (!replaying && input.modelSelection !== undefined) {
@@ -456,6 +465,10 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               }),
           createdBy: "agent",
           creationSource: "mcp",
+          // A thread an agent launches here joins the launcher's group as crew.
+          ...(caller === undefined || linkOrigin !== undefined
+            ? {}
+            : { groupedUnderThreadId: caller.id }),
           ...(linkOrigin === undefined ? {} : { linkOrigin }),
           // Kept only alongside linkOrigin: thread.create drops it otherwise.
           ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),

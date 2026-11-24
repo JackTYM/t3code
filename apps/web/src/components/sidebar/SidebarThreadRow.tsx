@@ -40,6 +40,7 @@ import {
 
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import {
+  BotIcon,
   AlarmClockIcon,
   AlarmClockOffIcon,
   ArrowRightLeftIcon,
@@ -1124,6 +1125,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       )}
       dir={textDirection(thread.title)}
     >
+      {thread.botConfig?.enabled ? (
+        <BotIcon
+          role="img"
+          aria-label={gt("Bot")}
+          className="mr-1 inline size-3 align-[-1px] text-primary"
+        />
+      ) : null}
       {thread.title}
       {isRegeneratingTitle ? (
         <ActivityShimmerOverlay className="truncate">{thread.title}</ActivityShimmerOverlay>

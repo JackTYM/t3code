@@ -9,6 +9,9 @@ import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
+import * as BotService from "./bots/BotService.ts";
+import * as BotWakeReactor from "./bots/BotWakeReactor.ts";
+import * as HomeService from "./home/HomeService.ts";
 import * as MilestoneHub from "./milestones/MilestoneHub.ts";
 import * as OrchestrationMilestones from "./milestones/OrchestrationMilestones.ts";
 // Effect wraps this raw Node HTTP server after its startup and write-error guards attach.
@@ -786,13 +789,23 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       yield* (yield* OrchestrationMilestones.OrchestrationMilestones).start();
     }),
   ).pipe(Layer.provide(OrchestrationMilestones.layer), Layer.provide(ProjectionStoreV2.layer)),
+  Layer.effectDiscard(
+    BotWakeReactor.BotWakeReactor.pipe(Effect.flatMap((reactor) => reactor.start())),
+  ).pipe(Layer.provide(BotWakeReactor.layer)),
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,
   ProviderInstallation.layer,
   ReplayMarkers.layer,
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
-  Layer.provideMerge(layerOrchestrationApplication),
+  // Bots (Home among them) are read by WebSocket, MCP and the wake reactor above; they launch
+  // through the runtime.
+  Layer.provideMerge(
+    HomeService.layer.pipe(
+      Layer.provideMerge(BotService.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+      Layer.provideMerge(layerOrchestrationApplication),
+    ),
+  ),
   // One hub, which the feeders above and the workflow store inside the runtime publish to.
   Layer.provideMerge(MilestoneHub.layer),
   Layer.provideMerge(layerTaskFolders),

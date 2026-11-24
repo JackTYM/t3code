@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
+import * as BotService from "../../../bots/BotService.ts";
 import * as Workflows from "../../../workflows/Workflows.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -27,6 +28,7 @@ const handlersWith = (workflows: Partial<Workflows.Workflows["Service"]>) =>
           issuedAt: 0,
         }),
         Layer.mock(Workflows.Workflows)(workflows),
+        Layer.mock(BotService.BotService)({}),
       ),
     ),
   );

@@ -130,12 +130,14 @@ import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as SessionMcpServers from "./mcpServers/SessionMcpServers.ts";
 import * as UiBundleService from "./uiBundles/UiBundleService.ts";
 import * as McpSignIn from "./mcpApps/McpSignIn.ts";
+import * as BotService from "./bots/BotService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as Workflows from "./workflows/Workflows.ts";
+import * as HomeService from "./home/HomeService.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as FeedbackStore from "./feedback/FeedbackStore.ts";
@@ -1491,6 +1493,7 @@ export const layerWsRpc = (
       const sessionMcpServers = yield* SessionMcpServers.SessionMcpServers;
       const uiBundles = yield* UiBundleService.UiBundleService;
       const mcpSignIn = yield* McpSignIn.McpSignIn;
+      const bots = yield* BotService.BotService;
       const analytics = yield* AnalyticsService.AnalyticsService;
       const originProps = clientAnalyticsProps;
       const recordClientCommandAnalytics = (command: OrchestrationV2Command) => {
@@ -1516,6 +1519,7 @@ export const layerWsRpc = (
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const workflows = yield* Workflows.Workflows;
+      const home = yield* HomeService.HomeService;
       const workflowDefinitions = yield* WorkflowRuntime.WorkflowDefinitions;
       // The service's messages are built from its own attributes, so they are safe to send.
       const toWorkflowRequestError = (error: Workflows.WorkflowError) =>
@@ -2393,6 +2397,10 @@ export const layerWsRpc = (
           ),
         [ORCHESTRATION_V2_WS_METHODS.subscribePromptSuggestion]: (input) =>
           providerSessionManager.subscribePromptSuggestion(input.threadId),
+        [WS_METHODS.homeEnable]: (input) => home.enable(input),
+        [WS_METHODS.homeDisable]: (_input) => home.disable,
+        [WS_METHODS.homeReset]: (_input) => home.reset,
+        [WS_METHODS.homeSetModel]: (input) => home.setModel(input.modelSelection),
         [WS_METHODS.workflowsSubscribe]: (_input) => workflows.watch,
         [WS_METHODS.workflowsCounts]: (_input) => workflows.counts,
         [WS_METHODS.workflowsGet]: (input) =>
@@ -2666,6 +2674,9 @@ export const layerWsRpc = (
         [WS_METHODS.uiBundlesApply]: () => uiBundles.apply,
         [WS_METHODS.uiBundlesRevert]: () => uiBundles.revert,
         [WS_METHODS.uiBundlesConfirmBoot]: (input) => uiBundles.confirmBoot(input),
+        [WS_METHODS.botFilesRead]: (input) => bots.readFiles(input),
+        [WS_METHODS.botFilesWrite]: (input) => bots.writeFile(input),
+        [WS_METHODS.botStart]: (input) => bots.start(input),
         [WS_METHODS.providerMcpSignInStart]: (input) => mcpSignIn.start(input),
         [WS_METHODS.providerMcpSignInComplete]: (input) => mcpSignIn.complete(input),
         [WS_METHODS.providerUploadFeedback]:

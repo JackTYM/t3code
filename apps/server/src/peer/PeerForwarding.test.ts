@@ -253,6 +253,7 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
       Layer.provide(
         Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
           namedProjectsRoot: Effect.succeed("/projects"),
+          homeRoot: "/unused-home",
         }),
       ),
       Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
@@ -314,6 +315,7 @@ const makeLaptop = Effect.gen(function* () {
     Layer.provide(
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: Effect.succeed("/projects"),
+        homeRoot: "/unused-home",
       }),
     ),
     Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),

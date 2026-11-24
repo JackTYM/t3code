@@ -1,4 +1,5 @@
 import {
+  isHomeThreadId,
   CommandId,
   type RunId,
   idleCompactionOf,
@@ -3238,6 +3239,12 @@ const make = Effect.gen(function* () {
     createThreads: Effect.fn("OrchestratorMcpService.createThreads")(
       function* (callerScope, input) {
         const { scope, parent } = yield* loadThreadCaller(callerScope, "create_threads");
+        if (isHomeThreadId(parent.thread.id)) {
+          return yield* failure(
+            "invalid_request",
+            "Home's folder takes no other threads. Use `t3_thread_launch` with a `projectId` or `scratch: true`.",
+          );
+        }
         const parentRun = ThreadManagementService.latestActiveRun(parent);
         if (
           parentRun === undefined ||
@@ -3332,7 +3339,7 @@ const make = Effect.gen(function* () {
                   branch: parent.thread.branch,
                   worktreePath: parent.thread.worktreePath,
                   ...(parent.thread.linkOrigin === undefined
-                    ? {}
+                    ? { groupedUnderThreadId: parent.thread.id }
                     : { linkOrigin: parent.thread.linkOrigin }),
                   ...(initialMessage === undefined ? {} : { initialMessage }),
                 })

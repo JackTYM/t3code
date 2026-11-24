@@ -34,6 +34,7 @@ import { PeerLinks } from "../peer/PeerLinks.ts";
 import { RemoteDelegation } from "../peer/RemoteDelegation.ts";
 import { PreviewManager } from "../preview/Manager.ts";
 import { Workflows } from "../workflows/Workflows.ts";
+import { BotService } from "../bots/BotService.ts";
 import { PreviewBrowser } from "../preview/PreviewBrowser.ts";
 import { SessionMcpServers } from "../mcpServers/SessionMcpServers.ts";
 import { ManagedProjectFolders } from "../project/ManagedProjectFolders.ts";
@@ -68,7 +69,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(GitWorkflowService)({}),
   Layer.mock(TaskFolders)({}),
   Layer.mock(IssueService)({}),
-  Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: Effect.succeed("") }),
+  Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: Effect.succeed(""), homeRoot: "" }),
   Layer.mock(McpProviderSessions)({}),
   Layer.mock(OrchestratorV2)({}),
   Layer.mock(PeerForwarding)({}),
@@ -78,6 +79,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(PreviewBrowser)({}),
   Layer.mock(PreviewManager)({}),
   Layer.mock(Workflows)({}),
+  Layer.mock(BotService)({}),
   Layer.mock(ProjectCloneTracker)({}),
   Layer.mock(ProjectService)({}),
   Layer.mock(ProjectSetupScriptRunner)({}),

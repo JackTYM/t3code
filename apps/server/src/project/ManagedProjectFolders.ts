@@ -26,6 +26,7 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { resolveWorktreesDirectory } from "../worktreesDirectory.ts";
+import { homeFolderRoot } from "../home/homeFolder.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProjectService from "./ProjectService.ts";
@@ -124,6 +125,8 @@ export class ManagedProjectFolders extends Context.Service<
     }) => Effect.Effect<Option.Option<string>, ScratchFolderError>;
     /** The `newProjectsDirectory` setting when it is a usable folder, else `<T3 home>/projects`. */
     readonly namedProjectsRoot: Effect.Effect<string>;
+    /** Home's own folder. Only Home's thread may start there. */
+    readonly homeRoot: string;
     /** Removes failed/cancelled creations' folders only while no project owns them. */
     readonly createNamedProject: (input: { readonly name: string }) => Effect.Effect<
       {
@@ -527,6 +530,7 @@ const make = Effect.gen(function* () {
     isScratchProject,
     folderForThread,
     namedProjectsRoot,
+    homeRoot: homeFolderRoot(config.baseDir, path),
     createNamedProject,
   });
 });

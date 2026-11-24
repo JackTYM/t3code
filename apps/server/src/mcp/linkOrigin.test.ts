@@ -189,6 +189,7 @@ const layerTools = Layer.mergeAll(
   Layer.provide(
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
       namedProjectsRoot: Effect.succeed("/p"),
+      homeRoot: "/unused-home",
     }),
   ),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
