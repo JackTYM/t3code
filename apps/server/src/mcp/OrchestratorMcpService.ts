@@ -3740,9 +3740,16 @@ const make = Effect.gen(function* () {
           ),
           ...(input.untilDelegatedWorkSettled === true ? { untilDelegatedWorkSettled: true } : {}),
           ...(input.untilOutput === true ? { untilOutput: true } : {}),
+          ...(input.untilBlocked === true
+            ? { untilBlocked: true, ignoreRequestIds: input.ignoreRequestIds ?? [] }
+            : {}),
         })
         .pipe(Effect.mapError(threadManagementFailure));
       const status = result.run === null ? "idle" : runOutcome(result.run);
+      const blockedKind =
+        result.blocked === undefined
+          ? undefined
+          : ThreadManagementService.blockingRequestKind(result.blocked);
       // A task's first run carries no task id; the child's untagged runs continue that task
       // until it has a result.
       const taskId =
@@ -3785,6 +3792,9 @@ const make = Effect.gen(function* () {
               resultRun: { runId: result.resultRun.id, status: runOutcome(result.resultRun) },
             }),
         ...(result.run?.output === undefined ? {} : { output: result.run.output.value }),
+        ...(result.blocked === undefined || blockedKind === undefined
+          ? {}
+          : { blocked: { requestId: result.blocked.id, kind: blockedKind } }),
       } satisfies OrchestratorMcpThreadWaitResult;
     }),
     interruptThread: Effect.fn("OrchestratorMcpService.interruptThread")(function* (scope, input) {

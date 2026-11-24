@@ -30,6 +30,7 @@ import {
   type OrchestrationV2CreationSource,
   type OrchestrationV2LinkedSender,
   type OrchestrationV2Run,
+  type OrchestrationV2RuntimeRequest,
   type OrchestrationV2ThreadShellSnapshot,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadTranscript,
@@ -37,9 +38,11 @@ import {
   ProjectId,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   ProviderInstanceId,
+  ProviderRequestKind,
   type ProviderSessionId,
   resolveProjectProviderInstanceEnabled,
   RunId,
+  type RuntimeRequestId,
   type ScheduledTaskId,
   ThreadId,
   type TurnItemId,
@@ -199,6 +202,12 @@ export interface ThreadManagementWaitInput {
    * its agent waits to be woken, and submit it from a later turn.
    */
   readonly untilOutput?: boolean;
+  /**
+   * Also wait until a question or approval is pending, which the run cannot go on without.
+   * `ignoreRequestIds` are ones the caller has already seen.
+   */
+  readonly untilBlocked?: boolean;
+  readonly ignoreRequestIds?: ReadonlyArray<RuntimeRequestId>;
 }
 
 export interface ThreadManagementWaitResult {
@@ -207,7 +216,32 @@ export interface ThreadManagementWaitResult {
   readonly timedOut: boolean;
   /** With `untilDelegatedWorkSettled`, once settled: the run with the thread's final answer. */
   readonly resultRun?: OrchestrationV2Run;
+  /** With `untilBlocked`: the oldest request that ended the wait. */
+  readonly blocked?: OrchestrationV2RuntimeRequest;
 }
+
+const isApprovalRequestKind = Schema.is(ProviderRequestKind);
+
+/** The kind of a request an agent or the user must answer before the run goes on. */
+export const blockingRequestKind = (request: OrchestrationV2RuntimeRequest) =>
+  request.status !== "pending" || request.responseCapability.type !== "live"
+    ? undefined
+    : request.kind === "user_input"
+      ? ("question" as const)
+      : isApprovalRequestKind(request.kind)
+        ? ("approval" as const)
+        : undefined;
+
+const oldestBlockingRequest = (
+  requests: ReadonlyArray<OrchestrationV2RuntimeRequest>,
+  ignored: ReadonlySet<RuntimeRequestId>,
+) =>
+  requests
+    .filter((request) => blockingRequestKind(request) !== undefined && !ignored.has(request.id))
+    .toSorted(
+      (left, right) =>
+        DateTime.toEpochMillis(left.createdAt) - DateTime.toEpochMillis(right.createdAt),
+    )[0];
 
 export interface ThreadManagementInterruptInput {
   readonly projectId: ProjectId;
@@ -1201,7 +1235,9 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(loadError));
       return pending ? undefined : progress.resultRun;
     });
-    const evaluate = Effect.fn("orchestrationV2.threadManagement.evaluate")(function* (
+    const untilBlocked = input.untilBlocked === true;
+    const ignored = new Set(input.ignoreRequestIds ?? []);
+    const evaluateRuns = Effect.fn("orchestrationV2.threadManagement.evaluateRuns")(function* (
       runs: ReadonlyArray<OrchestrationV2Run>,
     ) {
       const current = yield* outcome(runs);
@@ -1211,11 +1247,21 @@ const make = Effect.gen(function* () {
       const resultRun = yield* delegatedWorkResult;
       return { ...current, settled: resultRun !== undefined, resultRun };
     });
+    const evaluate = Effect.fn("orchestrationV2.threadManagement.evaluate")(function* (
+      runs: ReadonlyArray<OrchestrationV2Run>,
+    ) {
+      const current = yield* evaluateRuns(runs);
+      if (current.settled || !untilBlocked) return { ...current, blocked: undefined };
+      const { runtimeRequests } = yield* getProjectThreadRecords(input, ["runtimeRequests"]);
+      const blocked = oldestBlockingRequest(runtimeRequests, ignored);
+      return { ...current, settled: blocked !== undefined, blocked };
+    });
     const settledResult = (current: Effect.Success<ReturnType<typeof evaluate>>) => ({
       threadId: input.threadId,
       run: current.run,
       timedOut: !current.settled,
       ...(current.resultRun === undefined ? {} : { resultRun: current.resultRun }),
+      ...(current.blocked === undefined ? {} : { blocked: current.blocked }),
     });
     const initial = yield* evaluate(target.runs);
     if (initial.settled) return settledResult(initial);
@@ -1229,6 +1275,7 @@ const make = Effect.gen(function* () {
             "run.updated",
             "thread.deleted",
             ...(input.untilOutput === true ? (["run.output-submitted"] as const) : []),
+            ...(untilBlocked ? (["runtime-request.updated"] as const) : []),
             // What delegated work reads besides runs: tasks and their
             // deliveries, and a provider thread's background tasks.
             ...(untilDelegatedWorkSettled

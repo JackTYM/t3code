@@ -1,6 +1,7 @@
 import {
   CommandId,
   type EnvironmentId,
+  MessageId,
   NodeId,
   OrchestratorMcpCapabilitiesInput,
   OrchestratorMcpCapabilitiesResult,
@@ -17,6 +18,7 @@ import {
   type ProviderInstanceId,
   ProviderDriverKind,
   type RunId,
+  type RuntimeRequestId,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -31,6 +33,7 @@ import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Tool from "effect/ai/Tool";
+import { reportLabel } from "@t3tools/provider-core/server/notification";
 import { withExecutedModelNote } from "@t3tools/provider-core/server/subagentProjection";
 
 import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
@@ -151,6 +154,26 @@ const isFinal = (error: OrchestratorMcpFailure) =>
   error.code === "capability_denied" ||
   error.code === "thread_not_found" ||
   error.code === "run_not_found";
+
+/**
+ * What the parent is told when the thread there is stuck on a request. A question can be
+ * answered through the link; an approval never can, so the parent hands it to the user.
+ */
+export const blockedWake = (
+  task: Pick<OrchestrationV2Subagent, "id" | "title" | "prompt">,
+  remote: Pick<OrchestrationV2RemoteTaskChild, "environmentId" | "threadId" | "label">,
+  blocked: { readonly requestId: RuntimeRequestId; readonly kind: "question" | "approval" },
+) => {
+  const label = reportLabel(task.title?.trim() || task.prompt);
+  const where = `${remote.label} (environmentId ${remote.environmentId}, threadId ${remote.threadId})`;
+  return {
+    text:
+      blocked.kind === "question"
+        ? `Delegated task ${task.id} in ${where} is blocked on a question and cannot continue until it is answered. Read it with t3_pending_request action read, that environmentId and threadId, and requestId ${blocked.requestId}. Answer it with action respond, with the same environmentId and threadId, when the answer follows from the task or the user's instructions; otherwise ask the user, then answer it. If it is no longer pending, it was answered or dismissed.`
+        : `Delegated task ${task.id} in ${where} is waiting for an approval (requestId ${blocked.requestId}) and cannot continue until it is decided. You cannot approve it; only the user can, in ${remote.label}. Tell the user which task is waiting and where. If it is no longer pending, it was decided.`,
+    summary: `Delegated task${label === undefined ? "" : ` "${label}"`} is waiting for ${blocked.kind === "question" ? "an answer" : "an approval"}`,
+  };
+};
 
 const make = Effect.gen(function* () {
   const followRetry = yield* FollowRetrySchedule;
@@ -726,7 +749,10 @@ const make = Effect.gen(function* () {
       const noDefect = Effect.sync(() => {
         defects = 0;
       });
-      return followOnce(parentThreadId, taskId).pipe(
+      // Requests the parent here was already told about: a restart tells it once more, which
+      // its fixed message id absorbs.
+      const reported = new Set<RuntimeRequestId>();
+      return followOnce(parentThreadId, taskId, reported).pipe(
         Effect.tap(noDefect),
         // `false` means it is still running there: follow again straight away.
         Effect.repeat({ while: (done) => !done }),
@@ -766,6 +792,44 @@ const make = Effect.gen(function* () {
       );
     });
 
+  const wakeParentBlocked = Effect.fn("RemoteDelegation.wakeParentBlocked")(function* (
+    parentThreadId: ThreadId,
+    task: OrchestrationV2Subagent,
+    blocked: { readonly requestId: RuntimeRequestId; readonly kind: "question" | "approval" },
+  ) {
+    const remote = task.remoteChild;
+    if (remote === undefined) return;
+    const key = `${task.id}:${blocked.requestId}`;
+    const { text, summary } = blockedWake(task, remote, blocked);
+    yield* threads
+      .dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`server:remote-task-blocked:${key}`),
+        threadId: parentThreadId,
+        messageId: MessageId.make(`message:remote-task-blocked:${key}`),
+        text,
+        notification: {
+          source: { kind: "delegated_task", taskIds: [task.id] },
+          outcome: "updated",
+          summary,
+        },
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "agent",
+        creationSource: "server",
+      })
+      .pipe(
+        // The parent may be archived or gone; the task still follows its thread to the end.
+        Effect.catchCause((cause) =>
+          Effect.logWarning("waking a parent about a blocked remote task failed", {
+            taskId: task.id,
+            requestId: blocked.requestId,
+            cause,
+          }),
+        ),
+      );
+  });
+
   /**
    * One wait on the task's thread there; true once the task here is done.
    * A task completed here first (cancelled, or its parent stopped) is
@@ -774,6 +838,7 @@ const make = Effect.gen(function* () {
   const followOnce = Effect.fn("RemoteDelegation.followOnce")(function* (
     parentThreadId: ThreadId,
     taskId: NodeId,
+    reported: Set<RuntimeRequestId>,
   ) {
     const sequence = yield* threads.getThreadEventSequence(parentThreadId);
     const { thread, task } = yield* readTask(parentThreadId, taskId);
@@ -844,10 +909,18 @@ const make = Effect.gen(function* () {
         // tasks to wake it for the answer, which a task here waits for too.
         // An older peer ignores this and reports the run alone.
         untilDelegatedWorkSettled: true,
+        // A thread there that needs an answer or a decision would otherwise look like a long wait.
+        untilBlocked: true,
+        ignoreRequestIds: [...reported],
       })
       .pipe(Effect.raceFirst(endedHere));
     // The next look reads the result and stops it there.
     if ("endedHere" in waited) return false;
+    if (waited.blocked !== undefined) {
+      yield* wakeParentBlocked(parentThreadId, task, waited.blocked);
+      reported.add(waited.blocked.requestId);
+      return false;
+    }
     if (waited.timedOut) return false;
     // A task recorded without its run waits on the thread's latest; a
     // thread there with none has nothing left to wait for.

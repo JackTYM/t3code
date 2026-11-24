@@ -9,6 +9,7 @@ import {
   type ModelSelection,
   NodeId,
   type OrchestrationV2Run,
+  type OrchestrationV2RuntimeRequest,
   type OrchestratorMcpThreadReadInput,
   ProjectId,
   ProviderDriverKind,
@@ -17,6 +18,7 @@ import {
   type Project,
   type RepositoryIdentity,
   RunId,
+  RuntimeRequestId,
   type ServerProvider,
   ThreadId,
   TurnItemId,
@@ -70,6 +72,7 @@ import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
+import { blockedWake } from "./RemoteDelegation.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 
 // The laptop's agent delegates a task to the box through a link. The box is
@@ -125,6 +128,13 @@ interface BoxThread {
   readonly executedModel: Ref.Ref<string | null>;
   /** The run each wait asked for, in order. */
   readonly waitedFor: Ref.Ref<ReadonlyArray<RunId | undefined>>;
+  /** A request the thread there cannot go on without; a wait that asks reports it once. */
+  readonly blocked: Ref.Ref<{
+    readonly id: RuntimeRequestId;
+    readonly kind: "user_input" | "command";
+  } | null>;
+  /** The requests each wait said it had already seen, in order. */
+  readonly ignoredRequests: Ref.Ref<ReadonlyArray<ReadonlyArray<RuntimeRequestId>>>;
   /** The thread's run ends with a task of its own still running, whose result wakes it again. */
   readonly nested: Ref.Ref<boolean>;
   /** Completed once a wait there blocks on that task. */
@@ -178,6 +188,11 @@ const makeBoxThread = Effect.gen(function* () {
     restart: yield* Ref.make<{ readonly of: RunId; readonly reply: string } | null>(null),
     executedModel: yield* Ref.make<string | null>(null),
     waitedFor: yield* Ref.make<ReadonlyArray<RunId | undefined>>([]),
+    blocked: yield* Ref.make<{
+      readonly id: RuntimeRequestId;
+      readonly kind: "user_input" | "command";
+    } | null>(null),
+    ignoredRequests: yield* Ref.make<ReadonlyArray<ReadonlyArray<RuntimeRequestId>>>([]),
     nested: yield* Ref.make(false),
     nestedWaiting: yield* Deferred.make<void>(),
     nestedSettled: yield* Deferred.make<void>(),
@@ -311,6 +326,22 @@ const boxToolkitLayer = (thread: BoxThread) => {
             projectId: boxProject,
             threadId: input.threadId,
           });
+        }
+        const ignored = input.ignoreRequestIds ?? [];
+        yield* Ref.update(thread.ignoredRequests, (seen) => [...seen, ignored]);
+        const blocked = yield* Ref.get(thread.blocked);
+        if (input.untilBlocked === true && blocked !== null && !ignored.includes(blocked.id)) {
+          return {
+            threadId: input.threadId,
+            run: { id: runId, status: "waiting" } as OrchestrationV2Run,
+            timedOut: false,
+            blocked: {
+              id: blocked.id,
+              kind: blocked.kind,
+              status: "pending",
+              responseCapability: { type: "live", providerSessionId: "session:box" },
+            } as unknown as OrchestrationV2RuntimeRequest,
+          };
         }
         // The queued run's own task stays open while the follow-up ahead of it settles.
         if (input.runId === boxQueuedRunId) return yield* Effect.never;
@@ -1547,6 +1578,78 @@ it.effect("a task whose thread there waits on its own task ends with the answer 
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
+
+/** Waits until the parent here has been told about the request, and counts the tellings. */
+const toldAbout = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>, taskId: NodeId) =>
+  laptopEnv.orchestrator
+    .streamStoredEventsFrom({
+      threadId: parentThreadId,
+      afterSequence: 0,
+      eventType: "thread.metadata-updated",
+    })
+    .pipe(
+      Stream.filter(
+        (stored) => stored.commandId?.startsWith(`server:remote-task-blocked:${taskId}:`) === true,
+      ),
+    );
+
+it.effect("a thread there stuck on a question wakes the parent once, and the task goes on", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const question = RuntimeRequestId.make("request:question");
+      yield* Ref.set(thread.blocked, { id: question, kind: "user_input" as const });
+      const delegated = yield* delegateToBox(a);
+
+      const told = yield* toldAbout(a, delegated.taskId).pipe(Stream.runHead);
+      expect(Option.isSome(told) && told.value.commandId).toContain(question);
+
+      // Following goes on without hearing of the same request again, then ends with the reply.
+      yield* Ref.set(thread.reply, "Answered, and done.");
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+        status: "completed",
+        result: "Answered, and done.",
+      });
+      const waits = yield* Ref.get(thread.ignoredRequests);
+      expect(waits[0]).toEqual([]);
+      expect(waits.slice(1).every((seen) => seen.includes(question))).toBe(true);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it("a question's wake names how to answer it there, and an approval's leaves it to the user", () => {
+  const task = { id: NodeId.make("node:task"), title: "Suite", prompt: "Run the suite." };
+  const remote = {
+    environmentId: box.environmentId,
+    threadId: ThreadId.make("thread:there"),
+    label: "Box",
+  };
+  const question = blockedWake(task, remote, {
+    requestId: RuntimeRequestId.make("request:q"),
+    kind: "question",
+  });
+  expect(question.text).toContain("t3_pending_request");
+  expect(question.text).toContain(`environmentId ${box.environmentId}`);
+  expect(question.text).toContain("threadId thread:there");
+  expect(question.text).toContain("requestId request:q");
+  const approval = blockedWake(task, remote, {
+    requestId: RuntimeRequestId.make("request:a"),
+    kind: "approval",
+  });
+  expect(approval.text).toContain("only the user can");
+  expect(approval.text).toContain("requestId request:a");
+  expect(approval.text).not.toContain("t3_pending_request");
+});
 
 it.effect("the same key from another provider session is another task", () =>
   Effect.scoped(

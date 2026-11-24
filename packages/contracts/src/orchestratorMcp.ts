@@ -599,6 +599,17 @@ export const OrchestratorMcpThreadWaitInput = Schema.Struct({
         "Also wait for the `output` the run was asked for, which a later turn may submit.",
     }),
   ),
+  untilBlocked: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Also end the wait when the thread has a pending question or approval, named by `blocked`.",
+    }),
+  ),
+  ignoreRequestIds: Schema.optional(
+    Schema.Array(RuntimeRequestId).annotate({
+      description: "With untilBlocked: requests already seen, which do not end the wait again.",
+    }),
+  ),
 });
 export type OrchestratorMcpThreadWaitInput = typeof OrchestratorMcpThreadWaitInput.Type;
 
@@ -612,6 +623,13 @@ export const OrchestratorMcpThreadWaitResult = Schema.Struct({
   resultRun: Schema.optional(Schema.Struct({ runId: RunId, status: OrchestrationV2RunStatus })),
   /** What the run returned against the `outputSchema` it was sent with. Absent until submitted. */
   output: Schema.optional(Schema.Json),
+  /** With untilBlocked: the oldest pending request the thread cannot go on without. */
+  blocked: Schema.optional(
+    Schema.Struct({
+      requestId: RuntimeRequestId,
+      kind: Schema.Literals(["question", "approval"]),
+    }),
+  ),
 });
 export type OrchestratorMcpThreadWaitResult = typeof OrchestratorMcpThreadWaitResult.Type;
 
