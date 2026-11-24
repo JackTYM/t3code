@@ -84,6 +84,16 @@ export class BotService extends Context.Service<
     readonly clearWatches: (botThreadId: ThreadId) => Effect.Effect<void>;
     /** Regroups a leader's crew under another Bot. */
     readonly moveCrew: (from: ThreadId, to: ThreadId) => Effect.Effect<void, BotError>;
+    /**
+     * Queues a wake with caller-framed text, such as a watcher's output. `key` is stable per
+     * wake, so a repeat replays the first send. False when the Bot is not woken (settled, gone)
+     * or the message could not be queued, so the caller can try again.
+     */
+    readonly wakeWith: (input: {
+      readonly botThreadId: ThreadId;
+      readonly key: string;
+      readonly text: string;
+    }) => Effect.Effect<boolean>;
     /** Wakes the Bots that `event` is news for: the leader of its crew thread, and its watchers. */
     readonly handleMilestone: (event: MilestoneEvent) => Effect.Effect<void>;
     /**
@@ -104,8 +114,22 @@ const escapeId = (threadId: ThreadId) =>
   );
 
 /** Every Home shares one memory, so notes survive Start fresh. Other Bots own theirs. */
-const memoryFolderName = (threadId: ThreadId) =>
-  isHomeThreadId(threadId) ? "home" : `thread-${escapeId(threadId)}`;
+export const HOME_MEMORY_FOLDER = "home";
+export const memoryFolderName = (threadId: ThreadId) =>
+  isHomeThreadId(threadId) ? HOME_MEMORY_FOLDER : `thread-${escapeId(threadId)}`;
+
+/** The thread a non-Home memory folder belongs to, or undefined for any other folder name. */
+export const memoryFolderThreadId = (folder: string): ThreadId | undefined => {
+  if (!folder.startsWith("thread-")) return undefined;
+  const escaped = folder.slice("thread-".length);
+  const id = ThreadId.make(
+    escaped.replace(/~([0-9a-f]{2})/gu, (_match, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    ),
+  );
+  // Escaping is not injective for code points above 0xff, so only an exact round trip names a folder.
+  return escapeId(id) === escaped ? id : undefined;
+};
 
 const WatchesFile = Schema.fromJsonString(
   Schema.Record(Schema.String, Schema.Array(BotWatchSchema)),
@@ -395,32 +419,51 @@ const make = Effect.gen(function* () {
     return thread?.settledOverride !== "settled";
   });
 
+  const queueWake = Effect.fn("BotService.queueWake")(function* (
+    botThreadId: ThreadId,
+    key: string,
+    text: string,
+  ) {
+    const shell = yield* threads.getThreadShell(botThreadId).pipe(Effect.orElseSucceed(() => null));
+    if (shell === null || shell.deletedAt !== null) return false;
+    return yield* threads
+      .sendToThread({
+        projectId: shell.projectId,
+        commandId: CommandId.make(`bot-wake:${key}`),
+        threadId: botThreadId,
+        messageId: MessageId.make(`bot-wake:${key}`),
+        text,
+        attachments: [],
+        mode: "queue",
+        createdBy: "system",
+        creationSource: "server",
+      })
+      .pipe(
+        Effect.as(true),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Bot wake could not be queued.", { cause }).pipe(Effect.as(false)),
+        ),
+      );
+  });
+
   // Under the lock, so ending watches cannot race a Bot adding or removing one.
   const wake = Effect.fn("BotService.wake")(function* (input: BotWake) {
-    const shell = yield* threads
-      .getThreadShell(input.botThreadId)
-      .pipe(Effect.orElseSucceed(() => null));
-    if (shell !== null && shell.deletedAt === null) {
-      yield* threads
-        .sendToThread({
-          projectId: shell.projectId,
-          commandId: CommandId.make(`bot-wake:${input.key}`),
-          threadId: input.botThreadId,
-          messageId: MessageId.make(`bot-wake:${input.key}`),
-          text: input.text,
-          attachments: [],
-          mode: "queue",
-          createdBy: "system",
-          creationSource: "server",
-        })
-        .pipe(Effect.ignoreCause({ log: true }));
-    }
+    yield* queueWake(input.botThreadId, input.key, input.text);
     if (input.ends.length === 0) return;
     // Delivered already, so a failed save must not fail the wake and invite a second one.
     yield* updateWatches(input.botThreadId, withoutTargets(input.ends)).pipe(
       Effect.ignoreCause({ log: true }),
     );
   }, locked);
+
+  const wakeWith: BotService["Service"]["wakeWith"] = Effect.fn("BotService.wakeWith")(function* ({
+    botThreadId,
+    key,
+    text,
+  }) {
+    if (!(yield* wakeable(botThreadId))) return false;
+    return yield* queueWake(botThreadId, key, text);
+  });
 
   // Untraced: runs for every milestone, and most return before doing anything.
   const handleMilestone: BotService["Service"]["handleMilestone"] = Effect.fnUntraced(
@@ -535,6 +578,7 @@ const make = Effect.gen(function* () {
     removeWatch,
     clearWatches,
     moveCrew,
+    wakeWith,
     handleMilestone,
     start,
   });

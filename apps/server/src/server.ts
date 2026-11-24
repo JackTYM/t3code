@@ -11,6 +11,7 @@ import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchRea
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
 import * as BotService from "./bots/BotService.ts";
 import * as BotWakeReactor from "./bots/BotWakeReactor.ts";
+import * as WatcherService from "./bots/WatcherService.ts";
 import * as HomeService from "./home/HomeService.ts";
 import * as MilestoneHub from "./milestones/MilestoneHub.ts";
 import * as OrchestrationMilestones from "./milestones/OrchestrationMilestones.ts";
@@ -180,6 +181,7 @@ import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as CodexManagedTokenBroker from "./provider/CodexManagedTokenBroker.ts";
 import * as WebhookRoute from "./scheduledTasks/webhookRoute.ts";
 import * as RelayDeliveryProof from "./scheduledTasks/RelayDeliveryProof.ts";
+import * as Scheduler from "./scheduling/Scheduler.ts";
 import * as HeldHooksWaker from "./relay/HeldHooksWaker.ts";
 import * as McpOAuth from "./auth/McpOAuth.ts";
 import * as McpOAuthHttp from "./auth/mcpOAuthHttp.ts";
@@ -793,6 +795,10 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.effectDiscard(
     BotWakeReactor.BotWakeReactor.pipe(Effect.flatMap((reactor) => reactor.start())),
   ).pipe(Layer.provide(BotWakeReactor.layer)),
+  // Watcher scripts run for free on their interval; only a trip wakes a Bot.
+  Layer.effectDiscard(
+    WatcherService.WatcherService.pipe(Effect.flatMap((watchers) => watchers.start())),
+  ).pipe(Layer.provide(WatcherService.layer), Layer.provide(Scheduler.layer)),
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,
   ProviderInstallation.layer,

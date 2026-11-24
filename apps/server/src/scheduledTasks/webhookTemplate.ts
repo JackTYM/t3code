@@ -49,7 +49,13 @@ const PLACEHOLDER = /\{\{([^{}]*)\}\}/g;
 
 // Break mentions before provider CLI parsing, including currency signs, embedded @, commands, context links and frame tags.
 // Checked with Claude Code 2.1.296, Codex 0.162.1, Pi 1.2.0 and dsh 0.2.0-rc.2; others may parse more.
-const MENTION = /[\p{Sc}@]|(?<=^|\s)\/(?=[^\s/]+(?:\s|$))|t3-context(?=:)|webhook(?=-data)/giu;
+const MENTION =
+  /[\p{Sc}@]|(?<=^|\s)\/(?=[^\s/]+(?:\s|$))|t3-context(?=:)|(?:webhook|watcher)(?=-data)/giu;
+
+/** Wraps untrusted text in `<tag>` with its mentions broken. The caller picks an unpredictable tag. */
+export function frameUntrustedText(tag: string, text: string): string {
+  return `<${tag}>${text.replace(MENTION, "$&\u2060")}</${tag}>`;
+}
 
 function parseBody(request: WebhookRequest): unknown {
   const contentType = (request.headers["content-type"] ?? "").toLowerCase();
@@ -167,7 +173,7 @@ export function renderWebhookPrompt(
     if (text === "") return "";
     if (raw) return text;
     framed = true;
-    return `<${tag}>${text.replace(MENTION, "$&\u2060")}</${tag}>`;
+    return frameUntrustedText(tag, text);
   });
   if (!framed) return { prompt, missing };
   return {

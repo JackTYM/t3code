@@ -54,3 +54,19 @@ matches its agent-step threads' milestones (they carry `workflowRunId`) except t
 which `workflow.run_ended` reports for the run. A thread watch ends when the thread's turn settles
 and a run watch when the run ends; crew are never unwatched. Milestones are local, so wakes cover
 this environment's threads and runs only.
+
+## Watchers
+
+A watcher is a script that polls for free and wakes the Bot, a model call, only when it trips.
+[`WatcherService`](../../apps/server/src/bots/WatcherService.ts) registers one pass with the
+`Scheduler`; each watcher is a folder `<base>/bots/<folder>/watchers/<name>/` with a `run`
+executable and a `watcher.json`. The Bot writes both, so a watcher runs only while the sha256 of
+`run` and `watcher.json` (minus `approvedHash`) equals `approvedHash`. An edit, by anyone, voids
+the approval until it is renewed. Healthy is exit 0 with stdout matching `expect`, if set.
+
+A wake is deduplicated per failure: a trip, or new output, wakes at once, and the same output
+wakes again after 15 minutes, doubling up to 24 hours. Recovery clears the state silently.
+`state.json` is saved with the wake `pending` before `BotService.wakeWith` queues it, and its key
+carries the failure's start, wake count and output fingerprint, so a restart resends the same key
+instead of waking twice. The output reaches the Bot framed as untrusted data, with a random tag.
+The script runs with a minimal environment and a cap on its output.
