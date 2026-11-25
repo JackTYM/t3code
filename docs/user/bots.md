@@ -36,3 +36,12 @@ in the same project with a summary of the thread, and that thread becomes its fi
   window, close the popover or the Bot finishes a turn.
 - Settle or archive a Bot when you are done: its crew go back to the top of the sidebar and it stops
   being woken. Reopen it to take them back.
+
+## Importing mail from your Mac
+
+A Bot that keeps your mail can import the last 30 to 90 days from the Mail app on a Mac linked to its
+environment. The link must be paired with full access. macOS keeps Mail's folder private, so on that
+Mac open **System Settings → Privacy & Security → Full Disk Access**, turn it on for the app that
+runs the T3 Code server (the T3 Code app, or the terminal app if you started it with `npx t3`), then
+quit and reopen that app. Until you do, the import stops with a message naming this step. Only
+inbound mail is read: Sent, Drafts, Junk and Trash are skipped.

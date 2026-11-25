@@ -64,6 +64,31 @@ which `workflow.run_ended` reports for the run. A thread watch ends when the thr
 and a run watch when the run ends; crew are never unwatched. Milestones are local, so wakes cover
 this environment's threads and runs only.
 
+## Mail backfill from the Mac Mail app
+
+The box asks a linked Mac for history through the peer-only tool `t3_mail_backfill`, which only a
+full-access, un-narrowed link session may list or call, as with `t3_watcher_run`. It is read-only and
+runs no code. [`MailAppReader`](../../apps/server/src/mail/MailAppReader.ts) walks
+`~/Library/Mail/V<n>/<account uuid>/**/*.mbox/**/Messages/*.emlx` instead of querying Mail's
+Envelope Index: public descriptions of that database disagree on its date epoch and on how a row
+maps to a file, while the files and their headers do not.
+
+- **Window.** A file is written when Mail downloads the message, never before it was received, so
+  an old file mtime rules a message out without opening it. The `Date` header then decides, and a
+  missing or future one falls back to the mtime. Cursors name a date and a hash of the path, so
+  paging is stable while mail arrives; the file index is kept for two minutes between pages.
+- **Which mail.** Folders are skipped by name (Sent, Drafts, Junk, Trash, Outbox, Notes, Gmail's
+  Important and Starred). Gmail's All Mail is read, because archived mail lives only there, so
+  anything from the account's own address and any Mail draft (`X-Uniform-Type-Identifier`) is
+  dropped by header, which also covers folders with names the list lacks.
+- **Which account.** The directory is the account; its address is the majority `From` of its sent
+  mail and `Delivered-To` of its received mail. The box dedupes per mailbox, so an account with no
+  readable address gets a `<uuid>@mail-app.invalid` mailbox rather than none.
+- **Authentication.** `auth` is read only from the topmost `Authentication-Results` header, and only
+  when its authserv-id is the receiving provider's: `mx.google.com` for an account with a
+  `[Gmail]` folder. Receivers prepend their headers, so anything a sender forged sits below. iCloud
+  returns `none` until its authserv-id is confirmed from a real header: no public source states it.
+
 ## Watchers
 
 A watcher is a script that polls for free and wakes the Bot, a model call, only when it trips.

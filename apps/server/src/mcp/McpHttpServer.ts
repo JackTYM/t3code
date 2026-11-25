@@ -99,6 +99,8 @@ import { BOT_TOOL_PREFIX, BotToolkit } from "./toolkits/bot/tools.ts";
 import * as BotHandlers from "./toolkits/bot/handlers.ts";
 import { WatcherPeerToolkit } from "./toolkits/watcher/tools.ts";
 import * as WatcherPeerHandlers from "./toolkits/watcher/handlers.ts";
+import { MailPeerToolkit } from "./toolkits/mail/tools.ts";
+import * as MailPeerHandlers from "./toolkits/mail/handlers.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import * as IssuesHandlers from "./toolkits/issues/handlers.ts";
 import { IssuesToolkit } from "./toolkits/issues/tools.ts";
@@ -1588,6 +1590,9 @@ export const layerWatcherPeerTools = toolkitRegistration(
   WatcherPeerHandlers.layer,
 );
 
+/** Outside layerTools: only a linked environment's session lists it, to read this Mac's Mail app. */
+export const layerMailPeerTools = toolkitRegistration(MailPeerToolkit, MailPeerHandlers.layer);
+
 /**
  * A webhook subscription belongs to the outside client's session. Its id is the same for the
  * session's whole life, and a client signs in again rather than refreshing a token, so a new
@@ -1655,6 +1660,7 @@ export const layer = layerMcpTransport(
     layerToolSearch,
     layerBotTools,
     layerWatcherPeerTools,
+    layerMailPeerTools,
     layerMilestoneEvents,
   ),
 );
