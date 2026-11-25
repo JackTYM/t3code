@@ -86,7 +86,14 @@ export type BotWatcher = typeof BotWatcher.Type;
 export const BotWatcherListInput = Schema.Struct({ threadId: ThreadId });
 export type BotWatcherListInput = typeof BotWatcherListInput.Type;
 
-export const BotWatcherListResult = Schema.Struct({ watchers: Schema.Array(BotWatcher) });
+export const BotWatcherListResult = Schema.Struct({
+  watchers: Schema.Array(BotWatcher),
+  /**
+   * `unverified`: the saved approvals failed their signature check when the server started, so
+   * every watcher was reset to unapproved and nothing runs until the user approves again.
+   */
+  approvals: Schema.Literals(["ok", "unverified"]),
+});
 export type BotWatcherListResult = typeof BotWatcherListResult.Type;
 
 /** Runs the pending version once. `hash` is the version the user saw, so a newer one is refused. */

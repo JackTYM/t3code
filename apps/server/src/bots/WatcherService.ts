@@ -23,11 +23,13 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 
+import * as PayloadSigner from "../auth/PayloadSigner.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -89,13 +91,20 @@ const WatcherRecord = Schema.Struct({
 });
 type WatcherRecord = typeof WatcherRecord.Type;
 /** Bot memory folder, then watcher name. */
-const ApprovalsFile = Schema.fromJsonString(
-  Schema.Record(Schema.String, Schema.Record(Schema.String, WatcherRecord)),
+const ApprovalsData = Schema.Record(Schema.String, Schema.Record(Schema.String, WatcherRecord));
+type Approvals = typeof ApprovalsData.Type;
+/**
+ * The approvals file: the data and an HMAC of it. `approvals` stays unparsed here so the
+ * signature is checked over what was read, before anything of it is believed.
+ */
+const SignedApprovalsFile = Schema.fromJsonString(
+  Schema.Struct({ approvals: Schema.Unknown, signature: Schema.String }),
 );
-type Approvals = typeof ApprovalsFile.Type;
 const isWatcherName = Schema.is(BotWatcherName);
-const decodeApprovals = Schema.decodeEffect(ApprovalsFile);
-const encodeApprovals = Schema.encodeEffect(ApprovalsFile);
+const decodeSignedApprovals = Schema.decodeEffect(SignedApprovalsFile);
+const encodeSignedApprovals = Schema.encodeEffect(SignedApprovalsFile);
+const decodeApprovalsData = Schema.decodeUnknownEffect(ApprovalsData);
+const encodeApprovalsData = Schema.encodeEffect(ApprovalsData);
 
 const WatcherState = Schema.fromJsonString(
   Schema.Struct({
@@ -196,6 +205,12 @@ const advance = (
   };
 };
 
+/** What the approvals file held at start, and whether it could be vouched for. */
+interface Loaded {
+  readonly approved: Approvals;
+  readonly trust: "ok" | "unverified";
+}
+
 /** A version whose files still hash to its name: the exact bytes that were approved. */
 interface Version {
   readonly hash: string;
@@ -207,8 +222,14 @@ interface Version {
 export class WatcherService extends Context.Service<
   WatcherService,
   {
-    /** The Bot's watchers: each one's versions, state, and the diff the user decides on. */
-    readonly list: (botThreadId: ThreadId) => Effect.Effect<ReadonlyArray<BotWatcher>>;
+    /**
+     * The Bot's watchers: each one's versions, state, and the diff the user decides on, and
+     * whether the saved approvals passed their signature check when the server started.
+     */
+    readonly list: (botThreadId: ThreadId) => Effect.Effect<{
+      readonly watchers: ReadonlyArray<BotWatcher>;
+      readonly approvals: "ok" | "unverified";
+    }>;
     /**
      * A Bot proposes a version. It waits for the user, and the approved version stops running
      * until the user decides. Refused to a turn the user did not start: such a turn may be
@@ -288,6 +309,9 @@ const make = Effect.gen(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
   const scheduler = yield* Scheduler.Scheduler;
   const random = yield* SecureRandom.SecureRandom;
+  // A key in the server's secret store, which a Bot cannot read: the HMAC is what makes the
+  // approvals file something only this server wrote.
+  const signer = yield* PayloadSigner.make("watcher-approvals-key");
   const botsDir = path.resolve(config.baseDir, "bots");
   const approvalsPath = path.join(config.stateDir, "watcher-approvals.json");
   // Changes to approvals are read-modify-write, so they take turns.
@@ -302,21 +326,31 @@ const make = Effect.gen(function* () {
 
   // Read once at start, like the Bot's watches: runs match against memory, and every change is
   // saved before it is applied.
-  const approvals = yield* fileSystem.readFileString(approvalsPath).pipe(
-    // No file yet is the usual first run, not a failure.
-    Effect.catchTags({
-      PlatformError: (error) =>
-        error.reason._tag === "NotFound" ? Effect.succeed("{}") : Effect.fail(error),
-    }),
-    Effect.flatMap(decodeApprovals),
-    // Unreadable approvals approve nothing: every watcher waits for the user again.
-    Effect.catchCause((cause) =>
-      Effect.logWarning("Watcher approvals could not be read; none are approved.", { cause }).pipe(
-        Effect.as<Approvals>({}),
+  const loaded = yield* fileSystem.readFileString(approvalsPath).pipe(
+    Effect.flatMap(decodeSignedApprovals),
+    Effect.flatMap(({ approvals: raw, signature }) =>
+      signer.verify(canonicalJson(raw), signature).pipe(
+        Effect.filterOrFail(
+          (valid) => valid,
+          () => "signature" as const,
+        ),
+        Effect.andThen(decodeApprovalsData(raw)),
       ),
     ),
-    Effect.flatMap((initial) => Ref.make(initial)),
+    Effect.map((approved): Loaded => ({ approved, trust: "ok" })),
+    // No file yet is the usual first run, not a failure.
+    Effect.catch((cause): Effect.Effect<Loaded> =>
+      Predicate.isTagged(cause, "PlatformError") && cause.reason._tag === "NotFound"
+        ? Effect.succeed({ approved: {}, trust: "ok" })
+        : // Approvals that cannot be vouched for approve nothing: every watcher waits for the
+          // user again, and the list says why.
+          Effect.logWarning(
+            "Watcher approvals failed verification or could not be read; none are approved.",
+            { cause },
+          ).pipe(Effect.as<Loaded>({ approved: {}, trust: "unverified" })),
+    ),
   );
+  const approvals = yield* Ref.make(loaded.approved);
 
   const failure = (
     threadId: ThreadId,
@@ -362,7 +396,9 @@ const make = Effect.gen(function* () {
         ([, entries]) => Object.keys(entries).length > 0,
       ),
     );
-    const text = yield* encodeApprovals(next);
+    const encoded = yield* encodeApprovalsData(next);
+    const signature = yield* signer.sign(canonicalJson(encoded));
+    const text = yield* encodeSignedApprovals({ approvals: encoded, signature });
     // Renamed into place, so a crash cannot leave a half-written file that approves nothing.
     const temporary = `${approvalsPath}.tmp`;
     yield* fileSystem.makeDirectory(config.stateDir, { recursive: true });
@@ -695,10 +731,13 @@ const make = Effect.gen(function* () {
     function* (botThreadId) {
       const folder = BotService.memoryFolderName(botThreadId);
       const records = (yield* Ref.get(approvals))[folder] ?? {};
-      return yield* Effect.forEach(
-        Object.entries(records).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-        ([name, record]) => describe(folder, name, record),
-      );
+      return {
+        watchers: yield* Effect.forEach(
+          Object.entries(records).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+          ([name, record]) => describe(folder, name, record),
+        ),
+        approvals: loaded.trust,
+      };
     },
   );
 

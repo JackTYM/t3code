@@ -2709,8 +2709,7 @@ export const layerWsRpc = (
         [WS_METHODS.botFilesRead]: (input) => bots.readFiles(input),
         [WS_METHODS.botFilesWrite]: (input) => bots.writeFile(input),
         [WS_METHODS.botStart]: (input) => bots.start(input),
-        [WS_METHODS.botWatcherList]: ({ threadId }) =>
-          botWatchers.list(threadId).pipe(Effect.map((watchers) => ({ watchers }))),
+        [WS_METHODS.botWatcherList]: ({ threadId }) => botWatchers.list(threadId),
         [WS_METHODS.botWatcherDryRun]: (input) =>
           botWatchers.dryRun({ botThreadId: input.threadId, name: input.name, hash: input.hash }),
         [WS_METHODS.botWatcherApprove]: (input) =>

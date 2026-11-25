@@ -127,7 +127,7 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
       // The source is the Bot's own text, so it may re-read it to revise; the user's review state
       // (diff, dry run, history) stays in the client.
       return {
-        watchers: (yield* watchers.list(threadId)).map(
+        watchers: (yield* watchers.list(threadId)).watchers.map(
           ({ name, status, hash, runtime, source, intervalSeconds, expect, runsOn }) => ({
             name,
             status,

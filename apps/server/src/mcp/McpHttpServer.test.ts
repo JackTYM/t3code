@@ -2280,18 +2280,21 @@ it.effect("lists and runs Bot tools only for a Bot thread, deferred or not", () 
         Layer.provide(
           Layer.mock(WatcherService.WatcherService)({
             list: () =>
-              Effect.succeed([
-                {
-                  name: "disk",
-                  status: "needs_approval",
-                  hash: "abc",
-                  runtime: "sh",
-                  source: "df",
-                  runsOn: "local",
-                  paused: false,
-                  history: [],
-                },
-              ]),
+              Effect.succeed({
+                approvals: "ok" as const,
+                watchers: [
+                  {
+                    name: "disk",
+                    status: "needs_approval" as const,
+                    hash: "abc",
+                    runtime: "sh" as const,
+                    source: "df",
+                    runsOn: "local" as const,
+                    paused: false,
+                    history: [],
+                  },
+                ],
+              }),
           }),
         ),
         Layer.provide(ServerSettings.layerTest()),

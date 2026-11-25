@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { EnvironmentId, type ThreadId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -11,6 +12,7 @@ import { ExitCode } from "effect/process/ChildProcessSpawner";
 import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -73,20 +75,28 @@ const makeScriptedRunner = () => {
   return { state, layer };
 };
 
-const provideWatchers = (
+/** What survives a restart: the server's config and secrets. */
+const layerBase = () =>
+  ServerSecretStore.layer.pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-watchers-test-" })),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  );
+
+const layerWatchers = (
   orchestration: ReturnType<typeof makeOrchestration>,
   runner: Layer.Layer<ProcessRunner.ProcessRunner>,
 ) =>
-  Effect.provide(
-    WatcherService.layer.pipe(
-      Layer.provideMerge(Layer.mergeAll(runner, Scheduler.layer)),
-      Layer.provideMerge(BotService.layer),
-      Layer.provideMerge(orchestration.layer),
-      Layer.provideMerge(ServerSettings.ServerSettingsService.layerTest()),
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-watchers-test-" })),
-      Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
-    ),
+  WatcherService.layer.pipe(
+    Layer.provideMerge(Layer.mergeAll(runner, Scheduler.layer)),
+    Layer.provideMerge(BotService.layer),
+    Layer.provideMerge(orchestration.layer),
+    Layer.provideMerge(ServerSettings.ServerSettingsService.layerTest()),
   );
+
+const provideWatchers = (
+  orchestration: ReturnType<typeof makeOrchestration>,
+  runner: Layer.Layer<ProcessRunner.ProcessRunner>,
+) => Effect.provide(layerWatchers(orchestration, runner).pipe(Layer.provideMerge(layerBase())));
 
 /** A Bot whose active turn began with the user typing, the only kind that may change watchers. */
 const addBot = (orchestration: ReturnType<typeof makeOrchestration>, id: string) => {
@@ -159,7 +169,7 @@ const versionDirectory = Effect.fn("versionDirectory")(function* (
 const statuses = (threadId: ThreadId) =>
   Effect.gen(function* () {
     const watchers = yield* WatcherService.WatcherService;
-    return (yield* watchers.list(threadId)).map(({ name, status }) => [name, status]);
+    return (yield* watchers.list(threadId)).watchers.map(({ name, status }) => [name, status]);
   });
 
 it.effect(
@@ -193,7 +203,9 @@ it.effect(
       yield* TestClock.adjust(EVERY_MS);
       yield* watchers.runDue;
       assert.strictEqual(runner.state.runs, 1);
-      const listed = (yield* watchers.list(botThread.id)).find(({ name }) => name === "disk");
+      const listed = (yield* watchers.list(botThread.id)).watchers.find(
+        ({ name }) => name === "disk",
+      );
       assert.strictEqual(listed?.status, "needs_approval");
       assert.strictEqual(listed?.approvedHash, approvedHash);
       assert.strictEqual(listed?.pendingHash, proposed.hash);
@@ -349,7 +361,10 @@ it.effect("approves only the version that is still pending, and shows what chang
     assert.strictEqual(runner.state.dryInputs[0]?.env?.T3_WATCHER_DRY_RUN, "1");
     assert.strictEqual(runner.state.runs, 0);
     assert.strictEqual(orchestration.sent.length, 0);
-    assert.strictEqual((yield* watchers.list(botThread.id))[0]?.lastDryRun?.stdout, "boom");
+    assert.strictEqual(
+      (yield* watchers.list(botThread.id)).watchers[0]?.lastDryRun?.stdout,
+      "boom",
+    );
 
     // The Bot revises it before the user decides: what the user saw is no longer approvable.
     const second = yield* proposeWatcher(botThread.id, "disk", { run: "echo two\n" });
@@ -359,14 +374,14 @@ it.effect("approves only the version that is still pending, and shows what chang
       .pipe(Effect.flip);
     assert.strictEqual(staleDry.reason, "stale_hash");
     // The new version has not been dry-run: the old result is not carried over.
-    assert.isUndefined((yield* watchers.list(botThread.id))[0]?.lastDryRun);
+    assert.isUndefined((yield* watchers.list(botThread.id)).watchers[0]?.lastDryRun);
 
     // A dry run of the version the user saw says nothing about this one: the server wants its own.
     assert.strictEqual((yield* approve(second.hash).pipe(Effect.flip)).reason, "dry_run_required");
     yield* watchers.dryRun({ botThreadId: botThread.id, name: "disk", hash: second.hash });
     yield* approve(second.hash);
     assert.strictEqual((yield* approve(second.hash).pipe(Effect.flip)).reason, "no_pending");
-    const approved = (yield* watchers.list(botThread.id))[0]!;
+    const approved = (yield* watchers.list(botThread.id)).watchers[0]!;
     assert.strictEqual(approved.approvedHash, second.hash);
     assert.isUndefined(approved.pendingHash);
     assert.deepStrictEqual(
@@ -379,7 +394,7 @@ it.effect("approves only the version that is still pending, and shows what chang
 
     // A later proposal comes with a diff against what the user approved.
     const third = yield* proposeWatcher(botThread.id, "disk", { run: "echo three\n" });
-    const pending = (yield* watchers.list(botThread.id))[0]!;
+    const pending = (yield* watchers.list(botThread.id)).watchers[0]!;
     assert.strictEqual(pending.hash, third.hash);
     assert.include(pending.diff, "-echo two");
     assert.include(pending.diff, "+echo three");
@@ -487,7 +502,7 @@ it.effect("wakes once per failure, backs off while it persists, and clears on re
     runner.state.result = { code: ExitCode(0), stdout: "", timedOut: false };
     yield* poll(EVERY_MS);
     assert.strictEqual(wakes(), 4);
-    assert.strictEqual((yield* watchers.list(botThread.id))[0]?.status, "healthy");
+    assert.strictEqual((yield* watchers.list(botThread.id)).watchers[0]?.status, "healthy");
     trip("disk 95%");
     yield* poll(EVERY_MS);
     assert.strictEqual(wakes(), 5);
@@ -509,7 +524,7 @@ it.effect("doubles the backoff from 15 minutes to a 24 hour ceiling", () => {
     for (let wake = 0; wake < 10; wake += 1) {
       yield* watchers.runDue;
       const now = yield* Clock.currentTimeMillis;
-      const nextWakeAt = (yield* watchers.list(botThread.id))[0]!.nextWakeAt!;
+      const nextWakeAt = (yield* watchers.list(botThread.id)).watchers[0]!.nextWakeAt!;
       gaps.push((nextWakeAt - now) / MINUTE);
       yield* TestClock.adjust(nextWakeAt - now);
     }
@@ -615,7 +630,7 @@ it.effect("runs the script in its own folder with a scrubbed environment and cap
     yield* watchers.runDue.pipe(Effect.ensuring(Effect.sync(removeSecret)));
 
     const byName = Object.fromEntries(
-      (yield* watchers.list(botThread.id)).map(({ name, status }) => [name, status]),
+      (yield* watchers.list(botThread.id)).watchers.map(({ name, status }) => [name, status]),
     );
     assert.deepStrictEqual(byName, { loud: "tripped", private: "healthy", probe: "healthy" });
     assert.strictEqual(orchestration.sent.length, 1);
@@ -696,7 +711,7 @@ it.effect("lets the user pause, resume and remove a watcher whatever woke the Bo
     orchestration.startRun(botThread, { id: "bot-wake:watcher:api:1", createdBy: "system" });
 
     yield* watchers.pause(target);
-    const paused = (yield* watchers.list(botThread.id))[0]!;
+    const paused = (yield* watchers.list(botThread.id)).watchers[0]!;
     assert.deepStrictEqual(
       [paused.status, paused.paused, paused.approvedHash],
       ["paused", true, hash],
@@ -721,12 +736,12 @@ it.effect("lets the user pause, resume and remove a watcher whatever woke the Bo
     });
     yield* watchers.runDue;
     assert.strictEqual(runner.state.runs, 0);
-    assert.strictEqual((yield* watchers.list(botThread.id))[0]?.paused, true);
+    assert.strictEqual((yield* watchers.list(botThread.id)).watchers[0]?.paused, true);
 
     yield* watchers.resume(target);
     yield* watchers.runDue;
     assert.strictEqual(runner.state.runs, 1);
-    assert.strictEqual((yield* watchers.list(botThread.id))[0]?.paused, false);
+    assert.strictEqual((yield* watchers.list(botThread.id)).watchers[0]?.paused, false);
 
     // The Bot itself cannot remove it in such a turn, but the user can.
     orchestration.startRun(botThread, { id: "bot-wake:watcher:api:2", createdBy: "system" });
@@ -742,4 +757,109 @@ it.effect("lets the user pause, resume and remove a watcher whatever woke the Bo
       "not_found",
     );
   }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+/** Starts the service again over the same config and secrets, as a server restart does. */
+const makeRestarts = (
+  orchestration: ReturnType<typeof makeOrchestration>,
+  runner: ReturnType<typeof makeScriptedRunner>,
+) =>
+  Effect.gen(function* () {
+    const base = yield* Layer.build(layerBase());
+    const { stateDir } = Context.get(base, ServerConfig.ServerConfig);
+    const approvalsFile = (yield* Path.Path).join(stateDir, "watcher-approvals.json");
+    return {
+      approvalsFile,
+      boot: Layer.build(
+        layerWatchers(orchestration, runner.layer).pipe(
+          Layer.provideMerge(Layer.succeedContext(base)),
+        ),
+      ).pipe(Effect.map((context) => Effect.provideContext(context))),
+    };
+  });
+
+it.effect("keeps approvals across a restart while their signature holds", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const { boot } = yield* makeRestarts(orchestration, runner);
+    const first = yield* boot;
+    yield* installWatcher(botThread.id, "disk").pipe(first);
+
+    const second = yield* boot;
+    yield* Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const listed = yield* watchers.list(botThread.id);
+      assert.strictEqual(listed.approvals, "ok");
+      assert.deepStrictEqual(
+        listed.watchers.map(({ status }) => status),
+        ["healthy"],
+      );
+      yield* watchers.runDue;
+      assert.strictEqual(runner.state.runs, 1);
+    }).pipe(second);
+  }).pipe(Effect.provide(NodeServices.layer));
+});
+
+it.effect.each([
+  [
+    "a field edited by hand",
+    (saved: { approvals: Record<string, Record<string, Record<string, unknown>>> }) => {
+      // Approves a version nobody approved, keeping the signature of the real file.
+      for (const records of Object.values(saved.approvals)) {
+        for (const record of Object.values(records)) {
+          record.approvedHash = record.pendingHash;
+          delete record.pendingHash;
+        }
+      }
+      return saved;
+    },
+  ],
+  [
+    "a file with no signature",
+    (saved: { approvals: Record<string, Record<string, Record<string, unknown>>> }) =>
+      saved.approvals,
+  ],
+] as const)("runs nothing after a restart when the approvals file is %s", ([, tamper]) => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const { boot, approvalsFile } = yield* makeRestarts(orchestration, runner);
+    const fileSystem = yield* FileSystem.FileSystem;
+    const first = yield* boot;
+    // One approved watcher and one the user has not decided on.
+    yield* Effect.gen(function* () {
+      yield* installWatcher(botThread.id, "disk");
+      yield* installWatcher(botThread.id, "waiting", {
+        approve: false,
+        run: "#!/bin/sh\nexit 4\n",
+      });
+    }).pipe(first);
+    const saved = JSON.parse(yield* fileSystem.readFileString(approvalsFile));
+    yield* fileSystem.writeFileString(approvalsFile, JSON.stringify(tamper(saved)));
+
+    const second = yield* boot;
+    yield* Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const listed = yield* watchers.list(botThread.id);
+      assert.strictEqual(listed.approvals, "unverified");
+      assert.deepStrictEqual(listed.watchers, []);
+      yield* watchers.runDue;
+      assert.strictEqual(runner.state.runs, 0);
+
+      // The user starts over, and what is saved from then on is signed again.
+      yield* installWatcher(botThread.id, "disk");
+    }).pipe(second);
+    const third = yield* boot;
+    yield* Effect.gen(function* () {
+      const listed = yield* (yield* WatcherService.WatcherService).list(botThread.id);
+      assert.strictEqual(listed.approvals, "ok");
+      assert.deepStrictEqual(
+        listed.watchers.map(({ name }) => name),
+        ["disk"],
+      );
+    }).pipe(third);
+  }).pipe(Effect.provide(NodeServices.layer));
 });
