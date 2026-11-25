@@ -2263,8 +2263,8 @@ const signedMail = (
   });
 
 it.effect("hands a signed delivery to the task's sink instead of starting a run", () =>
-  Effect.scoped(
-    withService(({ service, launches, sql }) =>
+  withService(({ service, launches, sql }) =>
+    Effect.scoped(
       Effect.gen(function* () {
         const received = yield* Queue.unbounded<{ taskThread: string | null; bodyText: string }>();
         yield* service.registerWebhookSink("bot-mail", ({ task, bodyText }) =>

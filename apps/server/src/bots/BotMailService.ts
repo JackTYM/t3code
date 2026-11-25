@@ -116,6 +116,8 @@ export class BotMailService extends Context.Service<
       readonly id: number;
       readonly by: "user";
     }) => Effect.Effect<void, BotMailError>;
+    /** A tag nobody can guess in advance, for framing what a sender wrote as untrusted data. */
+    readonly frameTag: Effect.Effect<string>;
     readonly status: (input: {
       readonly botThreadId: ThreadId;
     }) => Effect.Effect<BotMailStatus, BotMailError>;
@@ -790,6 +792,10 @@ const make = Effect.gen(function* () {
   return BotMailService.of({
     ingest,
     ingestDelivery,
+    frameTag: random.uuidV4().pipe(
+      Effect.orDie,
+      Effect.map((id) => `mail-data-${id}`),
+    ),
     search,
     read,
     forget,
