@@ -90,7 +90,7 @@ import {
   resolveTimelineMinimapCurrentIndex,
   isTimelineMinimapTurnVisible,
   resolveTimelineMinimapVisibleRange,
-  resolveTimelineMinimapHitStripWidth,
+  resolveTimelineMinimapHitStrip,
   TIMELINE_MINIMAP_TARGET_OFFSET,
   timelineTurnFoldRunIdsByEntryId,
   liveAnswerPreview,
@@ -169,6 +169,15 @@ const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FADE_HEADER = (
   <div className="h-[var(--workspace-titlebar-scroll-fade-height)]" />
 );
+// A floating preview over the lower half of a narrow chat covers the timeline's last rows,
+// so the end must scroll them above it as it does for the composer.
+function resolveTimelineEndInset(composerInset: number, canvas: ReturnType<typeof useChatCanvas>) {
+  const frame = canvas?.layout.overlapsChat ? canvas.layout.frame : null;
+  const height = canvas?.container.height ?? 0;
+  if (!frame || frame.y + frame.height / 2 < height / 2) return composerInset;
+  return Math.max(composerInset, Math.ceil(height - frame.y));
+}
+
 function TimelineListFooter({
   composerInset,
   onGrow,
@@ -427,7 +436,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   anchorMessageId,
   onAnchorReady,
   onAnchorSizeChanged,
-  contentInsetEndAdjustment,
+  contentInsetEndAdjustment: composerInsetEnd,
   onIsAtEndChange,
   liveFollowEnabled,
   onViewportAttach,
@@ -438,6 +447,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
   historyControls,
 }: MessagesTimelineProps) {
   const gt = useGT();
+  const canvas = useChatCanvas();
+  const contentInsetEndAdjustment = resolveTimelineEndInset(composerInsetEnd, canvas);
   const listIdentityKey = displayThreadKey ?? routeThreadKey;
   // Snapshot restore positions on identity changes; ongoing scroll writes must not move them.
   // Find open at the opening is part of the snapshot: opening find later
@@ -906,7 +917,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
           ...(alwaysRenderIndices.length === 0 ? {} : { indices: alwaysRenderIndices }),
           ...(alwaysRenderKeys.length === 0 ? {} : { keys: alwaysRenderKeys }),
         };
-  const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
+  const [minimapHitStrip, setMinimapHitStrip] = useState({ left: 0, width: 0 });
   const [minimapCurrentIndex, setMinimapCurrentIndex] = useState<number | null>(null);
   const [minimapAtEnd, setMinimapAtEnd] = useState(false);
   const handleAnchorReady = (info: { anchorIndex: number | undefined }) => {
@@ -1075,7 +1086,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
     setMinimapHasPersistentGutter((current) =>
       current === nextHasPersistentGutter ? current : nextHasPersistentGutter,
     );
-    setMinimapHitStripWidth(resolveTimelineMinimapHitStripWidth(viewportWidth, contentWidth));
+    const nextHitStrip = resolveTimelineMinimapHitStrip(viewportWidth, contentWidth);
+    setMinimapHitStrip((current) =>
+      current.left === nextHitStrip.left && current.width === nextHitStrip.width
+        ? current
+        : nextHitStrip,
+    );
   };
   // Rows added, removed or rewrapped (chat width) change the content size,
   // which moves the scroll position, the overflow, and the content lane width.
@@ -1271,7 +1287,6 @@ const ConversationTimeline = memo(function ConversationTimeline({
     </>
   );
 
-  const canvas = useChatCanvas();
   const registerTimeline = canvas?.registerTimeline;
   const shouldPreserveReadingPosition = useStableCallback(
     () =>
@@ -1540,7 +1555,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
             <TimelineMinimap
               items={minimapItems}
               hasPersistentGutter={minimapHasPersistentGutter}
-              hitStripWidth={minimapHitStripWidth}
+              hitStrip={minimapHitStrip}
               currentIndex={minimapCurrentIndex}
               atEnd={minimapAtEnd}
               stripMap={minimapStripMap}
