@@ -25,13 +25,14 @@ export type BotWatcherRunsOn = typeof BotWatcherRunsOn.Type;
 /**
  * `needs_approval`: the newest version is not approved, so nothing of the watcher runs.
  * `paused`: the user stopped its runs; the approval is kept.
- * `elsewhere`: approved to run on another environment, which this server does not do yet.
+ * `waiting`: it runs on another environment that did not answer. That is not a failure: it
+ * runs again when the environment does, and nothing is counted against it meanwhile.
  */
 export const BotWatcherStatus = Schema.Literals([
   "needs_approval",
   "invalid",
   "paused",
-  "elsewhere",
+  "waiting",
   "healthy",
   "tripped",
 ]);
@@ -40,6 +41,8 @@ export type BotWatcherStatus = typeof BotWatcherStatus.Type;
 export const BotWatcherRun = Schema.Struct({
   /** The version that ran. */
   hash: Schema.String,
+  /** Where it ran. Absent means `local`. Approval wants a dry run where the watcher will run. */
+  runsOn: Schema.optional(BotWatcherRunsOn),
   ranAt: IsoDateTime,
   exit: Schema.String,
   stdout: Schema.String,
@@ -77,6 +80,8 @@ export const BotWatcher = Schema.Struct({
   diff: Schema.optional(Schema.String),
   lastDryRun: Schema.optional(BotWatcherRun),
   lastRunAt: Schema.optional(Schema.Number),
+  /** While `status` is `waiting`: since when, and why the environment was not reached. */
+  waiting: Schema.optional(Schema.Struct({ since: Schema.Number, reason: Schema.String })),
   failingSince: Schema.optional(Schema.Number),
   nextWakeAt: Schema.optional(Schema.Number),
   history: Schema.Array(BotWatcherHistoryEntry),
@@ -101,6 +106,8 @@ export const BotWatcherDryRunInput = Schema.Struct({
   threadId: ThreadId,
   name: BotWatcherName,
   hash: Schema.String,
+  /** Where to run it; `local` when absent. A linked environment runs it there, as a scheduled run would. */
+  runsOn: Schema.optional(BotWatcherRunsOn),
 });
 export type BotWatcherDryRunInput = typeof BotWatcherDryRunInput.Type;
 
@@ -140,6 +147,7 @@ export class BotWatcherError extends Schema.TaggedError<BotWatcherError>()("BotW
     "no_pending",
     "stale_hash",
     "dry_run_required",
+    "unreachable",
     "io",
   ]),
   /** Why a proposal is invalid; safe to show. */
@@ -161,9 +169,35 @@ export class BotWatcherError extends Schema.TaggedError<BotWatcherError>()("BotW
       case "stale_hash":
         return `Watcher ${this.watcher ?? ""} changed since that version was shown. Review the new version first.`;
       case "dry_run_required":
-        return `Run watcher ${this.watcher ?? ""} once before approving it: the server approves only a version whose dry run has completed.`;
+        return `Run watcher ${this.watcher ?? ""} once, where it will run, before approving it: the server approves only a version whose dry run has completed there.`;
+      case "unreachable":
+        return this.detail ?? "The environment did not answer.";
       case "io":
         return `Failed to read or save the watchers for thread ${this.threadId}.`;
     }
+  }
+}
+
+/** What a linked environment reports back for one run of a watcher's script. */
+export const BotWatcherRemoteRun = Schema.Struct({
+  /** The exit code, or `timeout` or `spawn-error`: the same words a local run records. */
+  exit: Schema.String,
+  stdout: Schema.String,
+  stderr: Schema.String,
+});
+export type BotWatcherRemoteRun = typeof BotWatcherRemoteRun.Type;
+
+/** Why this environment would not run a script for a linked environment. */
+export class BotWatcherPeerRunError extends Schema.TaggedError<BotWatcherPeerRunError>()(
+  "BotWatcherPeerRunError",
+  {
+    reason: Schema.Literals(["hash_mismatch", "invalid"]),
+    detail: Schema.optional(Schema.String),
+  },
+) {
+  override get message(): string {
+    return this.reason === "hash_mismatch"
+      ? "The script does not match the hash it was sent with, so it was not run."
+      : (this.detail ?? "That script is not valid.");
   }
 }

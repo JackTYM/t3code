@@ -1024,5 +1024,10 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "target_required",
     ]),
     message: Schema.String,
+    /**
+     * Set by this environment's peer client when a linked environment could not be reached at
+     * all, as opposed to answering with a refusal. Never sent over the wire.
+     */
+    unreachable: Schema.optional(Schema.Boolean),
   },
 ) {}

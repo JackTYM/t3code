@@ -2711,7 +2711,12 @@ export const layerWsRpc = (
         [WS_METHODS.botStart]: (input) => bots.start(input),
         [WS_METHODS.botWatcherList]: ({ threadId }) => botWatchers.list(threadId),
         [WS_METHODS.botWatcherDryRun]: (input) =>
-          botWatchers.dryRun({ botThreadId: input.threadId, name: input.name, hash: input.hash }),
+          botWatchers.dryRun({
+            botThreadId: input.threadId,
+            name: input.name,
+            hash: input.hash,
+            runsOn: input.runsOn,
+          }),
         [WS_METHODS.botWatcherApprove]: (input) =>
           botWatchers.approve({
             botThreadId: input.threadId,

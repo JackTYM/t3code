@@ -88,6 +88,8 @@ const fromLinkError = (error: PeerLinkError) =>
           ? "capability_denied"
           : "orchestration_error",
     message: error.message,
+    // A machine that is off or asleep: callers that can wait tell this apart from a refusal.
+    ...(error.reason === "unreachable" ? { unreachable: true } : {}),
   });
 
 /** Not final, so a task already running there resumes once the beta is on there again. */
@@ -100,6 +102,7 @@ const linkedEnvironmentsOffThere = new OrchestratorMcpFailure({
 const stoppedAnswering = new OrchestratorMcpFailure({
   code: "orchestration_error",
   message: "The linked environment stopped answering.",
+  unreachable: true,
 });
 
 /** The body of an MCP response: JSON, or a single server-sent event carrying JSON. */

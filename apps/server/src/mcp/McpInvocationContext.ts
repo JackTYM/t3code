@@ -240,6 +240,16 @@ export const hiddenFromNonBots = (): boolean => {
   return isBotCaller(scope?.thread);
 };
 
+/**
+ * `McpSchema.EnabledWhen` for tools only another T3 Code environment's peer link calls. Discovery
+ * only; `McpToolAccess.runsForLinkedPeer` checks every call.
+ */
+export const hiddenFromUnlinked = (): boolean => {
+  const fiber = Fiber.getCurrent();
+  const scope = fiber && Context.getOrUndefined(fiber.context, McpInvocationContext);
+  return scope?.client?.linked === true;
+};
+
 /** `McpSchema.EnabledWhen` for tools only a client outside a thread drives, such as the CLI. */
 export const hiddenFromThreads = (): boolean => {
   const fiber = Fiber.getCurrent();

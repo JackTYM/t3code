@@ -7,9 +7,12 @@ import {
   BotWatcherError,
   BotWatcherHistoryEntry,
   BotWatcherName,
+  BotWatcherPeerRunError,
+  BotWatcherRemoteRun,
   BotWatcherRun,
   BotWatcherRunsOn,
   BotWatcherRuntime,
+  EnvironmentId,
   type ThreadId,
 } from "@t3tools/contracts";
 import { createTwoFilesPatch } from "diff";
@@ -31,6 +34,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as PayloadSigner from "../auth/PayloadSigner.ts";
 import * as ServerConfig from "../config.ts";
+import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { frameUntrustedText } from "../scheduledTasks/webhookTemplate.ts";
@@ -41,6 +45,11 @@ import * as BotService from "./BotService.ts";
 // approved is kept in `<stateDir>/watcher-approvals.json`, written only by this service: a Bot
 // that could write its own approval would not need the user.
 
+/** The peer-only MCP tool a linked environment runs a watcher's script through. */
+const PEER_RUN_TOOL = "t3_watcher_run";
+// How soon a watcher that could not reach its environment tries again: the shortest interval,
+// so a laptop that wakes is not waited on for a whole long one.
+const PEER_RETRY_MS = BOT_WATCHER_MIN_INTERVAL_SECONDS * 1000;
 const STDOUT_MAX_BYTES = 4096;
 const STDERR_MAX_CHARS = 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -109,6 +118,11 @@ const encodeApprovalsData = Schema.encodeEffect(ApprovalsData);
 const WatcherState = Schema.fromJsonString(
   Schema.Struct({
     lastRunAt: Schema.Number,
+    /**
+     * Present while a watcher that runs on another environment could not reach it. Not a failure:
+     * `failing` and its backoff are left as they were, and the next answered run clears this.
+     */
+    waiting: Schema.optional(Schema.Struct({ since: Schema.Number, reason: Schema.String })),
     /** Present while the watcher is tripped; recovery removes it. */
     failing: Schema.optional(
       Schema.Struct({
@@ -154,14 +168,24 @@ const computeHash = (input: {
     .update(`\nconfig ${canonicalJson(input.config)}`)
     .digest("hex");
 
-const sha256 = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
+const sha256 = (data: string | Uint8Array) =>
+  NodeCrypto.createHash("sha256").update(data).digest("hex");
 
-interface RunOutcome {
-  readonly exit: string;
-  readonly stdout: string;
-  readonly stderr: string;
+/** What one run of a script produced, before anyone judges it. */
+type RawRun = BotWatcherRemoteRun;
+
+interface RunOutcome extends RawRun {
   readonly healthy: boolean;
 }
+
+/**
+ * A scheduled or dry run, wherever it happened: it ran and said something, or the environment it
+ * runs on did not answer (waiting, not failing), or answered that it would not run it.
+ */
+type Placed =
+  | { readonly _tag: "Ran"; readonly outcome: RunOutcome }
+  | { readonly _tag: "Unreachable"; readonly reason: string }
+  | { readonly _tag: "Refused"; readonly reason: string };
 
 /**
  * Decides what a run changes. `wake` is set when the Bot should hear about it, and `failing` is
@@ -274,6 +298,8 @@ export class WatcherService extends Context.Service<
       readonly botThreadId: ThreadId;
       readonly name: string;
       readonly hash: string;
+      /** Where to run it; here when absent. Approval wants a dry run where the watcher will run. */
+      readonly runsOn?: BotWatcherRunsOn | undefined;
     }) => Effect.Effect<BotWatcherRun, BotWatcherError>;
     /** Approves exactly `hash`, which must still be the pending version. */
     readonly approve: (input: {
@@ -293,6 +319,18 @@ export class WatcherService extends Context.Service<
       readonly name: string;
       readonly runsOn: BotWatcherRunsOn;
     }) => Effect.Effect<void, BotWatcherError>;
+    /**
+     * Runs a script for a linked environment that attests the user approved it: the bytes must
+     * hash to `hash`, and they run from a private copy exactly as a local watcher does. That
+     * environment keeps the approval; this one keeps no list of its own.
+     */
+    readonly runForPeer: (input: {
+      readonly source: string;
+      readonly hash: string;
+      readonly runtime: BotWatcherRuntime;
+      readonly timeoutMs: number;
+      readonly dryRun: boolean;
+    }) => Effect.Effect<BotWatcherRemoteRun, BotWatcherPeerRunError>;
     /** One pass over every live Bot's watchers: runs those that are due and approved. */
     readonly runDue: Effect.Effect<void>;
     /** Registers `runDue` with the Scheduler. */
@@ -308,6 +346,7 @@ const make = Effect.gen(function* () {
   const bots = yield* BotService.BotService;
   const settings = yield* ServerSettings.ServerSettingsService;
   const scheduler = yield* Scheduler.Scheduler;
+  const peers = yield* PeerMcpClient.PeerMcpClient;
   const random = yield* SecureRandom.SecureRandom;
   // A key in the server's secret store, which a Bot cannot read: the HMAC is what makes the
   // approvals file something only this server wrote.
@@ -493,58 +532,112 @@ const make = Effect.gen(function* () {
     ...(dryRun ? { T3_WATCHER_DRY_RUN: "1" } : {}),
   });
 
-  // Runs the bytes that were verified, from a private copy: the stored path is never executed,
-  // so a change to it between the hash check and the spawn cannot change what runs.
-  const execute = Effect.fn("WatcherService.execute")(function* (
-    version: Version,
-    dryRun: boolean,
-  ) {
-    const runtime = RUNTIMES[version.config.runtime];
+  // Runs the bytes it is given, from a private copy: the stored path is never executed, so a
+  // change to it between the hash check and the spawn cannot change what runs. A local watcher
+  // and a script run for a linked environment both come through here.
+  const runScript = Effect.fn("WatcherService.runScript")(function* (input: {
+    readonly source: Uint8Array;
+    readonly runtime: BotWatcherRuntime;
+    readonly timeoutMs: number;
+    readonly dryRun: boolean;
+  }) {
+    const runtime = RUNTIMES[input.runtime];
     return yield* Effect.gen(function* () {
       const scratch = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-watcher-" });
       yield* fileSystem.chmod(scratch, 0o700);
       const file = path.join(scratch, runtime.file);
-      yield* fileSystem.writeFile(file, version.source, { mode: 0o700 });
+      yield* fileSystem.writeFile(file, input.source, { mode: 0o700 });
       yield* fileSystem.chmod(file, 0o700);
       return yield* runner.run({
         command: runtime.command,
         args: [file],
         cwd: scratch,
-        env: scrubbedEnv(scratch, dryRun),
+        env: scrubbedEnv(scratch, input.dryRun),
         inheritEnv: false,
         // Closed at once, so a script that reads stdin sees the end instead of waiting.
         stdin: "",
-        timeout: Duration.millis(version.config.timeoutMs),
+        timeout: Duration.millis(input.timeoutMs),
         timeoutBehavior: "timedOutResult",
         maxOutputBytes: STDOUT_MAX_BYTES,
         outputMode: "truncate",
       });
     }).pipe(
       Effect.scoped,
-      Effect.map((output): RunOutcome => {
+      Effect.map((output): RawRun => {
         const stderr = output.stderr.slice(0, STDERR_MAX_CHARS);
-        if (output.timedOut) return { exit: "timeout", stdout: "", stderr, healthy: false };
-        return {
-          exit: String(output.code),
-          stdout: output.stdout,
-          stderr,
-          healthy:
-            output.code === 0 &&
-            (version.expect === undefined || version.expect.test(output.stdout.trimEnd())),
-        };
+        if (output.timedOut) return { exit: "timeout", stdout: "", stderr };
+        return { exit: String(output.code), stdout: output.stdout, stderr };
       }),
       // A script that cannot start is as tripped as one that fails.
       Effect.catch((error) =>
-        Effect.succeed<RunOutcome>({
+        Effect.succeed<RawRun>({
           exit: "spawn-error",
           stdout: "",
           stderr: error.message.slice(0, STDERR_MAX_CHARS),
-          healthy: false,
         }),
       ),
       oneRunAtATime,
     );
   });
+
+  /** Whether a run is healthy is judged here, from what the environment it ran on reported. */
+  const judge = (expect: RegExp | undefined, raw: RawRun): RunOutcome => ({
+    ...raw,
+    healthy: raw.exit === "0" && (expect === undefined || expect.test(raw.stdout.trimEnd())),
+  });
+
+  // Beyond the script's own timeout, for the round trip over the link.
+  const REMOTE_GRACE_MS = 30_000;
+
+  // The box attests the approval: the laptop checks the bytes against the hash it is sent and
+  // keeps no approvals of its own. A link that does not answer is waiting, not failing.
+  const runRemote = Effect.fn("WatcherService.runRemote")(function* (
+    version: Version,
+    environmentId: EnvironmentId,
+    dryRun: boolean,
+  ) {
+    return yield* peers
+      .call({
+        environmentId,
+        tool: PEER_RUN_TOOL,
+        arguments: {
+          source: new TextDecoder().decode(version.source),
+          hash: sha256(version.source),
+          runtime: version.config.runtime,
+          timeoutMs: version.config.timeoutMs,
+          dryRun,
+        },
+        limits: { runtimeMode: "full-access", interactionMode: "default" },
+        success: BotWatcherRemoteRun,
+      })
+      .pipe(
+        Effect.timeout(Duration.millis(version.config.timeoutMs + REMOTE_GRACE_MS)),
+        Effect.map((raw): Placed => ({ _tag: "Ran", outcome: judge(version.expect, raw) })),
+        Effect.catchTags({
+          TimeoutError: () =>
+            Effect.succeed<Placed>({
+              _tag: "Unreachable",
+              reason: "The linked environment did not answer in time.",
+            }),
+          OrchestratorMcpFailure: (failure) =>
+            Effect.succeed<Placed>(
+              failure.unreachable === true
+                ? { _tag: "Unreachable", reason: failure.message }
+                : { _tag: "Refused", reason: failure.message },
+            ),
+        }),
+      );
+  });
+
+  const runPlaced = (version: Version, runsOn: BotWatcherRunsOn, dryRun: boolean) =>
+    runsOn === "local"
+      ? runScript({
+          source: version.source,
+          runtime: version.config.runtime,
+          timeoutMs: version.config.timeoutMs,
+          dryRun,
+        }).pipe(Effect.map((raw): Placed => ({ _tag: "Ran", outcome: judge(version.expect, raw) })))
+      : runRemote(version, EnvironmentId.make(runsOn), dryRun);
 
   const wakeText = Effect.fn("WatcherService.wakeText")(function* (
     name: string,
@@ -570,6 +663,7 @@ const make = Effect.gen(function* () {
     folder: string,
     name: string,
     approvedHash: string,
+    runsOn: BotWatcherRunsOn,
   ) {
     const version = yield* readVersion(folder, name, approvedHash);
     // Files that no longer hash to the approved version are not judged further: nothing runs.
@@ -577,10 +671,28 @@ const make = Effect.gen(function* () {
     const directory = watcherDir(folder, name);
     const previous = yield* readState(directory);
     const startedAt = yield* Clock.currentTimeMillis;
-    if (previous !== undefined && startedAt < previous.lastRunAt + version.config.everyMs) {
+    const spacing =
+      previous?.waiting === undefined
+        ? version.config.everyMs
+        : Math.min(PEER_RETRY_MS, version.config.everyMs);
+    if (previous !== undefined && startedAt < previous.lastRunAt + spacing) {
       return;
     }
-    const outcome = yield* execute(version, false);
+    const placed = yield* runPlaced(version, runsOn, false);
+    if (placed._tag === "Unreachable") {
+      // Nothing about the watcher itself is known, so its failure and backoff stay as they were.
+      return yield* writeState(directory, {
+        lastRunAt: startedAt,
+        waiting: { since: previous?.waiting?.since ?? startedAt, reason: placed.reason },
+        ...(previous?.failing === undefined ? {} : { failing: previous.failing }),
+      });
+    }
+    // An environment that answers that it will not run the script is a failure the Bot can
+    // report, through the same dedupe and backoff as any other.
+    const outcome: RunOutcome =
+      placed._tag === "Ran"
+        ? placed.outcome
+        : { exit: "refused", stdout: "", stderr: placed.reason, healthy: false };
     const finishedAt = yield* Clock.currentTimeMillis;
     const fingerprint = outcome.healthy ? undefined : sha256(`${outcome.exit}\n${outcome.stdout}`);
     const { failing, wake } = advance(previous?.failing, fingerprint, finishedAt);
@@ -609,12 +721,9 @@ const make = Effect.gen(function* () {
     Effect.orElseSucceed(() => undefined),
   );
 
-  /** Whether the record's approved version is the one that runs: nothing pending, not paused, and here. */
-  const runsHere = (record: WatcherRecord) =>
-    record.approvedHash !== undefined &&
-    record.pendingHash === undefined &&
-    record.paused !== true &&
-    record.runsOn === "local"
+  /** The record's approved version, when it is the one that runs: nothing pending, not paused. */
+  const runnable = (record: WatcherRecord) =>
+    record.approvedHash !== undefined && record.pendingHash === undefined && record.paused !== true
       ? record.approvedHash
       : undefined;
 
@@ -623,8 +732,8 @@ const make = Effect.gen(function* () {
     records: Readonly<Record<string, WatcherRecord>>,
   ) {
     const due = Object.entries(records).flatMap(([name, record]) => {
-      const approvedHash = runsHere(record);
-      return approvedHash === undefined ? [] : [{ name, approvedHash }];
+      const approvedHash = runnable(record);
+      return approvedHash === undefined ? [] : [{ name, approvedHash, runsOn: record.runsOn }];
     });
     // Before asking whether it is a Bot: most folders have nothing to run.
     if (due.length === 0) return;
@@ -635,8 +744,8 @@ const make = Effect.gen(function* () {
     if (botThreadId === undefined || !(yield* bots.isBot(botThreadId))) return;
     yield* Effect.forEach(
       due,
-      ({ name, approvedHash }) =>
-        runWatcher(botThreadId, folder, name, approvedHash).pipe(
+      ({ name, approvedHash, runsOn }) =>
+        runWatcher(botThreadId, folder, name, approvedHash, runsOn).pipe(
           // One broken watcher never holds up the others.
           Effect.catchCause((cause) =>
             Effect.logWarning("Watcher failed.", { folder, name, cause }),
@@ -678,8 +787,8 @@ const make = Effect.gen(function* () {
           ? "needs_approval"
           : record.paused === true
             ? "paused"
-            : record.runsOn !== "local"
-              ? "elsewhere"
+            : state?.waiting !== undefined
+              ? "waiting"
               : state?.failing === undefined
                 ? "healthy"
                 : "tripped";
@@ -711,11 +820,12 @@ const make = Effect.gen(function* () {
             ),
           }),
       ...(record.lastDryRun === undefined ? {} : { lastDryRun: record.lastDryRun }),
-      // Only an approved version that runs here has run state worth showing.
-      ...(status !== "healthy" && status !== "tripped"
+      // Only an approved version that runs has run state worth showing.
+      ...(status !== "healthy" && status !== "tripped" && status !== "waiting"
         ? {}
         : {
             ...(state === undefined ? {} : { lastRunAt: state.lastRunAt }),
+            ...(state?.waiting === undefined ? {} : { waiting: state.waiting }),
             ...(state?.failing === undefined
               ? {}
               : {
@@ -766,6 +876,23 @@ const make = Effect.gen(function* () {
     if (found.record.pendingHash !== hash) return yield* failure(botThreadId, name, "stale_hash");
     return { ...found, pendingHash: found.record.pendingHash };
   });
+
+  /** The version a dry run may run: the pending one, or the approved one while nothing is pending. */
+  const requireRunnableVersion = Effect.fn("WatcherService.requireRunnableVersion")(function* (
+    botThreadId: ThreadId,
+    name: string,
+    hash: string,
+  ) {
+    const found = yield* requireRecord(botThreadId, name);
+    const current = found.record.pendingHash ?? found.record.approvedHash;
+    if (current === undefined) return yield* failure(botThreadId, name, "no_pending");
+    if (current !== hash) return yield* failure(botThreadId, name, "stale_hash");
+    return found;
+  });
+
+  /** Whether the record's last dry run is of exactly `hash`, run in the place it is to run. */
+  const dryRunHolds = (record: WatcherRecord, hash: string, runsOn: BotWatcherRunsOn) =>
+    record.lastDryRun?.hash === hash && (record.lastDryRun.runsOn ?? "local") === runsOn;
 
   /** A Bot's change to its watchers: from a live Bot, in a turn the user started. */
   const requireUserStartedBot = Effect.fn("WatcherService.requireUserStartedBot")(function* (
@@ -908,15 +1035,15 @@ const make = Effect.gen(function* () {
   ) {
     const folder = BotService.memoryFolderName(botThreadId);
     const record = yield* recordOf(folder, name);
-    if (record?.pendingHash !== run.hash) return;
+    if (record === undefined || (record.pendingHash ?? record.approvedHash) !== run.hash) return;
     yield* commit(folder, name, { ...record, lastDryRun: run }).pipe(
       Effect.mapError(ioError(botThreadId, name)),
     );
   }, lock);
 
   const dryRun: WatcherService["Service"]["dryRun"] = Effect.fn("WatcherService.dryRun")(
-    function* ({ botThreadId, name, hash }) {
-      const { folder } = yield* requirePending(botThreadId, name, hash);
+    function* ({ botThreadId, name, hash, runsOn }) {
+      const { folder } = yield* requireRunnableVersion(botThreadId, name, hash);
       const version = yield* readVersion(folder, name, hash);
       if (version === undefined) {
         return yield* failure(
@@ -926,8 +1053,15 @@ const make = Effect.gen(function* () {
           "The stored files for this version were changed or are missing.",
         );
       }
-      const outcome = yield* execute(version, true);
-      const run: BotWatcherRun = { hash, ranAt: yield* isoNow, ...outcome };
+      const where = runsOn ?? "local";
+      const placed = yield* runPlaced(version, where, true);
+      // Not a completed dry run, so nothing is recorded and approval stays closed.
+      if (placed._tag === "Unreachable") {
+        return yield* failure(botThreadId, name, "unreachable", placed.reason);
+      }
+      if (placed._tag === "Refused")
+        return yield* failure(botThreadId, name, "invalid", placed.reason);
+      const run: BotWatcherRun = { hash, runsOn: where, ranAt: yield* isoNow, ...placed.outcome };
       // A newer proposal may have replaced this one while it ran; its dry run is then unknown.
       yield* recordDryRun(botThreadId, name, run);
       return run;
@@ -938,8 +1072,9 @@ const make = Effect.gen(function* () {
     function* ({ botThreadId, name, hash, runsOn, approvedBy }) {
       const { folder, record } = yield* requirePending(botThreadId, name, hash);
       // The user is asked to read the source and see it run; the server insists on the second,
-      // because a client that skips it would approve a script nobody has seen behave.
-      if (record.lastDryRun?.hash !== hash) {
+      // because a client that skips it would approve a script nobody has seen behave. It must
+      // have run where the watcher will: the first run on a laptop is never a scheduled one.
+      if (!dryRunHolds(record, hash, runsOn)) {
         return yield* failure(botThreadId, name, "dry_run_required");
       }
       // The files must still be the ones the user was shown; approving bytes that changed since
@@ -992,12 +1127,43 @@ const make = Effect.gen(function* () {
   const setRunsOn: WatcherService["Service"]["setRunsOn"] = Effect.fn("WatcherService.setRunsOn")(
     function* ({ botThreadId, name, runsOn }) {
       const { folder, record } = yield* requireRecord(botThreadId, name);
+      // Moving an approved watcher is a first run in a new place, so it needs a dry run there.
+      if (
+        record.approvedHash !== undefined &&
+        runsOn !== record.runsOn &&
+        !dryRunHolds(record, record.approvedHash, runsOn)
+      ) {
+        return yield* failure(botThreadId, name, "dry_run_required");
+      }
       yield* commit(folder, name, { ...record, runsOn }).pipe(
         Effect.mapError(ioError(botThreadId, name)),
       );
+      // What it did where it ran before says nothing about the new place.
+      yield* removeQuietly(path.join(watcherDir(folder, name), "state.json"));
     },
     lock,
   );
+
+  const runForPeer: WatcherService["Service"]["runForPeer"] = Effect.fn(
+    "WatcherService.runForPeer",
+  )(function* (input) {
+    const source = new TextEncoder().encode(input.source);
+    if (source.byteLength === 0 || source.byteLength > BOT_WATCHER_SOURCE_MAX_BYTES) {
+      return yield* new BotWatcherPeerRunError({
+        reason: "invalid",
+        detail: `A watcher's source is 1 to ${BOT_WATCHER_SOURCE_MAX_BYTES} bytes.`,
+      });
+    }
+    if (sha256(source) !== input.hash) {
+      return yield* new BotWatcherPeerRunError({ reason: "hash_mismatch" });
+    }
+    return yield* runScript({
+      source,
+      runtime: input.runtime,
+      timeoutMs: Math.min(Math.max(input.timeoutMs, 1), MAX_TIMEOUT_MS),
+      dryRun: input.dryRun,
+    });
+  });
 
   const start: WatcherService["Service"]["start"] = Effect.fn("WatcherService.start")(function* () {
     yield* scheduler.register("bot-watchers", runDue);
@@ -1014,6 +1180,7 @@ const make = Effect.gen(function* () {
     approve,
     reject,
     setRunsOn,
+    runForPeer,
     runDue,
     start,
   });

@@ -166,6 +166,35 @@ export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A,
     undefined,
   );
 
+const refusedToPeers = (message: string) =>
+  new OrchestratorMcpFailure({ code: "capability_denied", message });
+
+/** A linked environment's session, paired with full access and not narrowed below it. */
+const requireFullAccessPeer = McpInvocationContext.McpInvocationContext.pipe(
+  Effect.flatMap((scope) =>
+    scope.thread !== undefined || scope.client?.linked !== true
+      ? Effect.fail(refusedToPeers("Only a linked environment's session can call this tool."))
+      : McpInvocationContext.clientModeCeiling(scope.client).runtimeMode !== "full-access"
+        ? Effect.fail(
+            refusedToPeers(
+              "This tool runs code here, so the link must have been paired with full access.",
+            ),
+          )
+        : Effect.void,
+  ),
+);
+
+/**
+ * Runs code another environment's user approved over there, such as a watcher script. Only that
+ * environment's full-access peer link may call it: no thread, and no outside client, which could
+ * not be trusted to have the approval the caller attests.
+ */
+export const runsForLinkedPeer = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
+  declare(
+    (params: P) => requireFullAccessPeer.pipe(Effect.flatMap(() => handle(params))),
+    () => requireFullAccessPeer,
+  );
+
 /**
  * Changes something that belongs to no thread, such as a pending upload or a
  * scheduled task. Work a linked environment started may not: none of it

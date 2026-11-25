@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   OrchestrationV2LinkedSender,
   OrchestratorMcpFailure,
+  PeerLinkError,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -238,6 +239,8 @@ it.effect("keeps a link healthy when the peer refuses a call", () =>
         .pipe(Effect.flip);
       // The agent hears the peer's own refusal; the link answered, so it is not failing.
       expect(refused).toMatchObject({ code: refusal.code, message: refusal.message });
+      // An answer, even a refusal, is never "unreachable": a watcher must not wait on it.
+      expect(refused.unreachable).toBeUndefined();
       const link = yield* links.get(box.environmentId);
       expect(link._tag === "Some" ? link.value.lastError : "missing").toBeNull();
     }),
@@ -481,6 +484,7 @@ it.effect("bounds the session handshake, not a tool call that waits longer", () 
       expect(yield* Fiber.join(stalled)).toMatchObject({
         code: "orchestration_error",
         message: "The linked environment stopped answering.",
+        unreachable: true,
       });
     }
 
@@ -489,5 +493,41 @@ it.effect("bounds the session handshake, not a tool call that waits longer", () 
     yield* TestClock.adjust(Duration.minutes(1));
     yield* Deferred.succeed(answer, undefined);
     expect(yield* Fiber.join(waiting)).toEqual({ modes: "approval-required/plan" });
+  }),
+);
+
+it.effect.each([
+  ["unreachable", true],
+  ["expired", undefined],
+  ["unknown_link", undefined],
+] as const)("a link that fails to resolve as %s is unreachable: %s", ([reason, unreachable]) =>
+  Effect.gen(function* () {
+    const context = yield* Layer.build(
+      PeerMcpClient.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(
+              HttpClient.HttpClient,
+              HttpClient.make(() => Effect.die("no request is made without a link")),
+            ),
+            Layer.mock(PeerLinks.PeerLinks)({
+              resolve: () => Effect.fail(new PeerLinkError({ reason, message: "Laptop is off." })),
+              recordOutcome: () => Effect.void,
+            }),
+          ),
+        ),
+      ),
+    );
+    const failure = yield* Context.get(context, PeerMcpClient.PeerMcpClient)
+      .call({
+        environmentId: EnvironmentId.make("environment-box"),
+        tool: "probe",
+        arguments: {},
+        limits: { runtimeMode: "full-access", interactionMode: "default" },
+        success: Result,
+      })
+      .pipe(Effect.flip);
+    // Only a machine that does not answer may be waited for; a dead link needs the user.
+    expect(failure.unreachable).toBe(unreachable);
   }),
 );

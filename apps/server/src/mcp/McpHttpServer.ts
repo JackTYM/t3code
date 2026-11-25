@@ -97,6 +97,8 @@ import * as ToolSearchHandlers from "./toolkits/toolSearch/handlers.ts";
 import { ToolSearchToolkit } from "./toolkits/toolSearch/tools.ts";
 import { BOT_TOOL_PREFIX, BotToolkit } from "./toolkits/bot/tools.ts";
 import * as BotHandlers from "./toolkits/bot/handlers.ts";
+import { WatcherPeerToolkit } from "./toolkits/watcher/tools.ts";
+import * as WatcherPeerHandlers from "./toolkits/watcher/handlers.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import * as IssuesHandlers from "./toolkits/issues/handlers.ts";
 import { IssuesToolkit } from "./toolkits/issues/tools.ts";
@@ -1580,6 +1582,9 @@ export const layerToolSearch = Layer.mergeAll(
 /** Outside layerTools: only Bot threads list these, so ordinary threads pay nothing for them. */
 export const layerBotTools = toolkitRegistration(BotToolkit, BotHandlers.layer);
 
+/** Outside layerTools: only a linked environment's session lists it, to run an approved watcher. */
+const layerWatcherPeerTools = toolkitRegistration(WatcherPeerToolkit, WatcherPeerHandlers.layer);
+
 /**
  * A webhook subscription belongs to the outside client's session. Its id is the same for the
  * session's whole life, and a client signs in again rather than refreshing a token, so a new
@@ -1642,5 +1647,11 @@ export const layerMilestoneEvents = Layer.effectDiscard(
 );
 
 export const layer = layerMcpTransport(
-  Layer.mergeAll(layerTools, layerToolSearch, layerBotTools, layerMilestoneEvents),
+  Layer.mergeAll(
+    layerTools,
+    layerToolSearch,
+    layerBotTools,
+    layerWatcherPeerTools,
+    layerMilestoneEvents,
+  ),
 );

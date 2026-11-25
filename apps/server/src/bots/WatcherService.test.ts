@@ -1,9 +1,12 @@
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+// @effect-diagnostics nodeBuiltinImport:off
+import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeCrypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { EnvironmentId, type ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, OrchestratorMcpFailure, type ThreadId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -14,6 +17,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
+import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -79,15 +83,53 @@ const makeScriptedRunner = () => {
 const layerBase = () =>
   ServerSecretStore.layer.pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-watchers-test-" })),
-    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer)),
   );
+
+type RemoteCall = Parameters<PeerMcpClient.PeerMcpClient["Service"]["call"]>[0];
+
+/** A linked environment that answers with whatever the test last set, or does not answer. */
+const makeFakePeer = () => {
+  const state: {
+    reachable: boolean;
+    refusal: string | undefined;
+    calls: Array<RemoteCall>;
+    answer: { exit: string; stdout: string; stderr: string };
+  } = {
+    reachable: true,
+    refusal: undefined,
+    calls: [],
+    answer: { exit: "0", stdout: "", stderr: "" },
+  };
+  const layer = Layer.mock(PeerMcpClient.PeerMcpClient)({
+    call: (input: RemoteCall) => {
+      state.calls.push(input);
+      return state.reachable
+        ? state.refusal === undefined
+          ? Effect.succeed(state.answer as never)
+          : Effect.fail(
+              new OrchestratorMcpFailure({ code: "capability_denied", message: state.refusal }),
+            )
+        : Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "Laptop did not answer.",
+              unreachable: true,
+            }),
+          );
+    },
+  });
+  return { state, layer };
+};
+const noPeer = Layer.mock(PeerMcpClient.PeerMcpClient)({});
 
 const layerWatchers = (
   orchestration: ReturnType<typeof makeOrchestration>,
   runner: Layer.Layer<ProcessRunner.ProcessRunner>,
+  peer: Layer.Layer<PeerMcpClient.PeerMcpClient> = noPeer,
 ) =>
   WatcherService.layer.pipe(
-    Layer.provideMerge(Layer.mergeAll(runner, Scheduler.layer)),
+    Layer.provideMerge(Layer.mergeAll(runner, peer, Scheduler.layer)),
     Layer.provideMerge(BotService.layer),
     Layer.provideMerge(orchestration.layer),
     Layer.provideMerge(ServerSettings.ServerSettingsService.layerTest()),
@@ -96,7 +138,9 @@ const layerWatchers = (
 const provideWatchers = (
   orchestration: ReturnType<typeof makeOrchestration>,
   runner: Layer.Layer<ProcessRunner.ProcessRunner>,
-) => Effect.provide(layerWatchers(orchestration, runner).pipe(Layer.provideMerge(layerBase())));
+  peer?: Layer.Layer<PeerMcpClient.PeerMcpClient>,
+) =>
+  Effect.provide(layerWatchers(orchestration, runner, peer).pipe(Layer.provideMerge(layerBase())));
 
 /** A Bot whose active turn began with the user typing, the only kind that may change watchers. */
 const addBot = (orchestration: ReturnType<typeof makeOrchestration>, id: string) => {
@@ -427,28 +471,273 @@ it.effect("turns away proposals that break the limits", () => {
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
 
-it.effect("runs a watcher only where the user approved it to run", () => {
+const LAPTOP = EnvironmentId.make("env:laptop");
+const HOUR = 60 * MINUTE;
+const sha256Hex = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
+
+/** A Bot with a watcher the user dry-ran and approved to run on the laptop. */
+const installRemoteWatcher = Effect.fn("installRemoteWatcher")(function* (
+  threadId: ThreadId,
+  name: string,
+  options: Parameters<typeof proposeWatcher>[2] = {},
+) {
+  const watchers = yield* WatcherService.WatcherService;
+  const { hash } = yield* proposeWatcher(threadId, name, options);
+  yield* watchers.dryRun({ botThreadId: threadId, name, hash, runsOn: LAPTOP });
+  yield* watchers.approve({
+    botThreadId: threadId,
+    name,
+    hash,
+    runsOn: LAPTOP,
+    approvedBy: "owner",
+  });
+  return hash;
+});
+
+it.effect(
+  "runs a watcher on the laptop only after a dry run there, and judges it like a local one",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const runner = makeScriptedRunner();
+    const peer = makeFakePeer();
+    peer.state.answer = { exit: "1", stdout: "disk 91%", stderr: "" };
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const target = { botThreadId: botThread.id, name: "disk" };
+      const { hash } = yield* proposeWatcher(botThread.id, "disk", {
+        run: "#!/bin/sh\ndf\n",
+        expect: "^ok$",
+      });
+      const approve = watchers.approve({ ...target, hash, runsOn: LAPTOP, approvedBy: "owner" });
+      // A dry run here says nothing about how it behaves on the laptop.
+      yield* watchers.dryRun({ ...target, hash });
+      assert.strictEqual((yield* approve.pipe(Effect.flip)).reason, "dry_run_required");
+      const dry = yield* watchers.dryRun({ ...target, hash, runsOn: LAPTOP });
+      assert.deepStrictEqual([dry.runsOn, dry.stdout, dry.healthy], [LAPTOP, "disk 91%", false]);
+      yield* approve;
+      assert.strictEqual(runner.state.runs + runner.state.dryInputs.length, 1);
+      const [dryCall] = peer.state.calls;
+      assert.strictEqual(dryCall?.environmentId, LAPTOP);
+      assert.strictEqual(dryCall?.tool, "t3_watcher_run");
+      assert.deepStrictEqual(dryCall?.arguments, {
+        source: "#!/bin/sh\ndf\n",
+        hash: sha256Hex("#!/bin/sh\ndf\n"),
+        runtime: "sh",
+        timeoutMs: 30_000,
+        dryRun: true,
+      });
+      // The laptop is asked as a full-access peer, which is what its link must have been paired as.
+      assert.strictEqual(dryCall?.limits.runtimeMode, "full-access");
+
+      // A scheduled run goes there, not here, and its output takes the same road as a local one.
+      yield* watchers.runDue;
+      assert.strictEqual(runner.state.runs, 0);
+      assert.strictEqual(peer.state.calls.at(-1)?.arguments.dryRun, false);
+      assert.strictEqual(orchestration.sent.length, 1);
+      assert.include(orchestration.sent[0]?.text, "disk 91%");
+      assert.match(
+        orchestration.sent[0]!.text,
+        /<watcher-data-[0-9a-f-]+>[\s\S]*<\/watcher-data-/u,
+      );
+      assert.strictEqual((yield* watchers.list(botThread.id)).watchers[0]?.status, "tripped");
+
+      // The same output is deduplicated, then repeated on the usual backoff.
+      yield* TestClock.adjust(EVERY_MS);
+      yield* watchers.runDue;
+      assert.strictEqual(orchestration.sent.length, 1);
+      yield* TestClock.adjust(15 * MINUTE);
+      yield* watchers.runDue;
+      assert.strictEqual(orchestration.sent.length, 2);
+
+      // `expect` is applied here, to what the laptop said: exit 0 with other output still trips.
+      peer.state.answer = { exit: "0", stdout: "ok", stderr: "" };
+      yield* TestClock.adjust(EVERY_MS);
+      yield* watchers.runDue;
+      assert.strictEqual((yield* watchers.list(botThread.id)).watchers[0]?.status, "healthy");
+    }).pipe(provideWatchers(orchestration, runner.layer, peer.layer));
+  },
+);
+
+it.effect("waits for an unreachable laptop without failing, backing off or waking the Bot", () => {
   const orchestration = makeOrchestration();
   const botThread = addBot(orchestration, "thread:bot");
   const runner = makeScriptedRunner();
+  const peer = makeFakePeer();
+  peer.state.answer = { exit: "1", stdout: "down", stderr: "" };
   return Effect.gen(function* () {
     const watchers = yield* WatcherService.WatcherService;
-    const { hash } = yield* proposeWatcher(botThread.id, "disk");
-    yield* watchers.dryRun({ botThreadId: botThread.id, name: "disk", hash });
-    yield* watchers.approve({
-      botThreadId: botThread.id,
-      name: "disk",
-      hash,
-      runsOn: EnvironmentId.make("env:laptop"),
-      approvedBy: "owner",
-    });
+    yield* installRemoteWatcher(botThread.id, "api", { intervalSeconds: 3600 });
+    const listed = () =>
+      watchers.list(botThread.id).pipe(Effect.map(({ watchers }) => watchers[0]!));
+    const dryCalls = peer.state.calls.length;
+
+    // It trips once while the laptop is up: one wake, the backoff clock started.
+    yield* watchers.runDue;
+    assert.strictEqual(orchestration.sent.length, 1);
+    const tripped = yield* listed();
+
+    // The laptop goes to sleep. However long it stays that way, nothing is counted against it.
+    peer.state.reachable = false;
+    yield* TestClock.adjust(HOUR);
+    yield* watchers.runDue;
+    const waiting = yield* listed();
+    assert.strictEqual(waiting.status, "waiting");
+    assert.strictEqual(waiting.waiting?.reason, "Laptop did not answer.");
+    assert.strictEqual(waiting.nextWakeAt, tripped.nextWakeAt);
+    assert.strictEqual(waiting.failingSince, tripped.failingSince);
+    assert.strictEqual(orchestration.sent.length, 1);
+
+    // It is asked again after a minute, not after the hour its interval says.
+    const attempts = () => peer.state.calls.length - dryCalls;
+    const before = attempts();
+    yield* TestClock.adjust(30_000);
+    yield* watchers.runDue;
+    assert.strictEqual(attempts(), before);
+    yield* TestClock.adjust(30_000);
+    yield* watchers.runDue;
+    assert.strictEqual(attempts(), before + 1);
+    for (let pass = 0; pass < 5; pass += 1) {
+      yield* TestClock.adjust(MINUTE);
+      yield* watchers.runDue;
+    }
+    assert.strictEqual(orchestration.sent.length, 1);
+
+    // It answers again: the same failure continues its episode, one more wake, nothing doubled.
+    peer.state.reachable = true;
+    yield* TestClock.adjust(MINUTE);
+    yield* watchers.runDue;
+    const recovered = yield* listed();
+    assert.strictEqual(recovered.status, "tripped");
+    assert.isUndefined(recovered.waiting);
+    assert.strictEqual(recovered.failingSince, tripped.failingSince);
+    assert.strictEqual(orchestration.sent.length, 2);
+    assert.include(orchestration.sent[1]?.text, "wake 2");
+
+    // And a watcher that was healthy simply returns to healthy.
+    peer.state.answer = { exit: "0", stdout: "", stderr: "" };
+    peer.state.reachable = false;
+    yield* TestClock.adjust(HOUR);
+    yield* watchers.runDue;
+    assert.strictEqual((yield* listed()).status, "waiting");
+    peer.state.reachable = true;
+    yield* TestClock.adjust(MINUTE);
+    yield* watchers.runDue;
+    assert.strictEqual((yield* listed()).status, "healthy");
+    assert.strictEqual(orchestration.sent.length, 2);
+  }).pipe(provideWatchers(orchestration, runner.layer, peer.layer));
+});
+
+it.effect(
+  "does not record a dry run the laptop never completed, and reports a refusal as a trip",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const runner = makeScriptedRunner();
+    const peer = makeFakePeer();
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const { hash } = yield* proposeWatcher(botThread.id, "disk");
+      const target = { botThreadId: botThread.id, name: "disk", hash, runsOn: LAPTOP };
+      peer.state.reachable = false;
+      assert.strictEqual((yield* watchers.dryRun(target).pipe(Effect.flip)).reason, "unreachable");
+      assert.isUndefined((yield* watchers.list(botThread.id)).watchers[0]?.lastDryRun);
+      assert.strictEqual(
+        (yield* watchers.approve({ ...target, approvedBy: "owner" }).pipe(Effect.flip)).reason,
+        "dry_run_required",
+      );
+
+      peer.state.reachable = true;
+      peer.state.refusal =
+        "This tool runs code here, so the link must have been paired with full access.";
+      assert.strictEqual((yield* watchers.dryRun(target).pipe(Effect.flip)).reason, "invalid");
+
+      // Once approved, a laptop that answers with a refusal is a failure the Bot hears about.
+      peer.state.refusal = undefined;
+      yield* watchers.dryRun(target);
+      yield* watchers.approve({ ...target, approvedBy: "owner" });
+      peer.state.refusal = "refused";
+      yield* watchers.runDue;
+      assert.include(orchestration.sent[0]?.text, "exit: refused");
+      assert.include(orchestration.sent[0]?.text, "refused");
+    }).pipe(provideWatchers(orchestration, runner.layer, peer.layer));
+  },
+);
+
+it.effect("moves an approved watcher to the laptop only after a dry run there", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  const peer = makeFakePeer();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const hash = yield* installWatcher(botThread.id, "disk");
+    const move = (runsOn: typeof LAPTOP | "local") =>
+      watchers.setRunsOn({ botThreadId: botThread.id, name: "disk", runsOn });
+    assert.strictEqual((yield* move(LAPTOP).pipe(Effect.flip)).reason, "dry_run_required");
+    // The approved version can be run once, where the user wants to move it.
+    yield* watchers.dryRun({ botThreadId: botThread.id, name: "disk", hash, runsOn: LAPTOP });
+    yield* move(LAPTOP);
+    assert.strictEqual((yield* watchers.list(botThread.id)).watchers[0]?.runsOn, LAPTOP);
     yield* watchers.runDue;
     assert.strictEqual(runner.state.runs, 0);
-    assert.deepStrictEqual(yield* statuses(botThread.id), [["disk", "elsewhere"]]);
+    assert.strictEqual(peer.state.calls.length, 2);
 
-    yield* watchers.setRunsOn({ botThreadId: botThread.id, name: "disk", runsOn: "local" });
+    // Moving back is a first run here again, and the laptop's dry run does not cover it.
+    assert.strictEqual((yield* move("local").pipe(Effect.flip)).reason, "dry_run_required");
+    yield* watchers.dryRun({ botThreadId: botThread.id, name: "disk", hash });
+    yield* move("local");
     yield* watchers.runDue;
     assert.strictEqual(runner.state.runs, 1);
+  }).pipe(provideWatchers(orchestration, runner.layer, peer.layer));
+});
+
+it.effect("runs a script for a linked environment only as the bytes it attested", () => {
+  const orchestration = makeOrchestration();
+  const runner = makeScriptedRunner();
+  const source = "#!/bin/sh\necho from-the-box\n";
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const run = (overrides: Partial<Parameters<typeof watchers.runForPeer>[0]> = {}) =>
+      watchers.runForPeer({
+        source,
+        hash: sha256Hex(source),
+        runtime: "sh",
+        timeoutMs: 5_000,
+        dryRun: false,
+        ...overrides,
+      });
+
+    // Bytes that are not the ones whose hash came with them are not run, whatever they say.
+    const tampered = yield* run({ source: `${source}rm -rf ~\n` }).pipe(Effect.flip);
+    assert.strictEqual(tampered.reason, "hash_mismatch");
+    assert.strictEqual(
+      (yield* run({ hash: "0".repeat(64) }).pipe(Effect.flip)).reason,
+      "hash_mismatch",
+    );
+    assert.strictEqual(runner.state.runs, 0);
+    assert.strictEqual(
+      (yield* run({ source: "", hash: sha256Hex("") }).pipe(Effect.flip)).reason,
+      "invalid",
+    );
+
+    // The attested bytes run from a private copy, with the same runner settings as a local run.
+    runner.state.result = { code: ExitCode(3), stdout: "from-the-box", timedOut: false };
+    runner.state.onRun = (input) =>
+      fileSystem.readFileString(input.args[0]!).pipe(
+        Effect.map((copy) => assert.strictEqual(copy, source)),
+        Effect.orDie,
+      );
+    const answered = yield* run({ dryRun: true, timeoutMs: 60 * 60_000 });
+    assert.deepStrictEqual(answered, { exit: "3", stdout: "from-the-box", stderr: "" });
+    const input = runner.state.dryInputs[0]!;
+    assert.strictEqual(input.command, "sh");
+    assert.isFalse(input.inheritEnv);
+    assert.strictEqual(input.stdin, "");
+    assert.strictEqual(input.env?.T3_WATCHER_DRY_RUN, "1");
+    // A peer cannot lengthen the timeout past what a local watcher may have.
+    assert.strictEqual(Duration.toMillis(Duration.fromInputUnsafe(input.timeout!)), 10 * MINUTE);
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
 

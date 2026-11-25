@@ -138,6 +138,10 @@ const ProbeToolkit = Toolkit.make(
   }),
   Tool.make("writes_environment", probe),
   Tool.make("writes_owner_work", probe),
+  Tool.make("runs_for_linked_peer", probe).annotate(
+    McpSchema.EnabledWhen,
+    McpInvocationContext.hiddenFromUnlinked,
+  ),
 );
 const ran = Effect.succeed({ ran: "ran" });
 const probeHandlers: McpToolAccess.Handlers<typeof ProbeToolkit.tools> = {
@@ -157,6 +161,7 @@ const probeHandlers: McpToolAccess.Handlers<typeof ProbeToolkit.tools> = {
   ),
   writes_environment: McpToolAccess.writesEnvironment(() => ran),
   writes_owner_work: McpToolAccess.writesOwnerWork("drive owner work", () => ran),
+  runs_for_linked_peer: McpToolAccess.runsForLinkedPeer(() => ran),
 };
 const layerProbeHandlers = McpToolAccess.toLayer(ProbeToolkit, probeHandlers);
 
@@ -197,6 +202,7 @@ export const refusedAtCompileTime = () => {
       starts_threads: unchecked,
       writes_environment: unchecked,
       writes_owner_work: unchecked,
+      runs_for_linked_peer: unchecked,
     }),
   );
 };
@@ -260,6 +266,18 @@ const atCeilingClient: McpInvocationContext.McpInvocationScope = {
     ...fullAccessClient.client!,
     narrowedTo: { runtimeMode: "auto", interactionMode: "default" },
   },
+};
+// A full-access link whose caller asked for less, or whose environment caps it, is not full access.
+const linkedFullAccessNarrowed: McpInvocationContext.McpInvocationScope = {
+  ...fullAccessLinkedClient,
+  client: {
+    ...fullAccessLinkedClient.client!,
+    narrowedTo: { runtimeMode: "auto", interactionMode: "default" },
+  },
+};
+const linkedFullAccessAtCeiling: McpInvocationContext.McpInvocationScope = {
+  ...linkedFullAccessNarrowed,
+  runtimeModeCeiling: "auto",
 };
 const previewOnly = { ...fullAccess, capabilities: new Set(["preview"] as const) };
 
@@ -345,6 +363,12 @@ it.effect.each([
   ["writes_owner_work", fullAccessLinkedClient, {}, "ran"],
   ["writes_owner_work", atCeilingClient, {}, "ran"],
   ["writes_environment", atCeilingClient, {}, "capability_denied"],
+
+  // Code another environment's user approved runs only for that environment's full-access link.
+  ["runs_for_linked_peer", fullAccessLinkedClient, {}, "ran"],
+  ["runs_for_linked_peer", linkedClient, {}, "capability_denied"],
+  ["runs_for_linked_peer", linkedFullAccessNarrowed, {}, "capability_denied"],
+  ["runs_for_linked_peer", linkedFullAccessAtCeiling, {}, "capability_denied"],
 ] as const)("%s from %o with %o: %s", ([tool, scope, args, expected]) =>
   call(tool, scope, args).pipe(
     Effect.map((outcome) => expect(outcome).toBe(expected)),
@@ -533,4 +557,20 @@ it.effect("refuses to build a thread-bound tool that outside clients would be of
       "reads_as_caller acts as its calling thread",
     );
   }),
+);
+
+it.effect.each([fullAccessClient, readOnlyClient, fullAccess])(
+  "does not offer the linked-peer tool to threads or outside clients at all",
+  (scope) =>
+    call("runs_for_linked_peer", scope).pipe(
+      Effect.flip,
+      Effect.map((error) => expect(String(error)).toContain("not found")),
+      Effect.provide(
+        probeServer(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
+          }),
+        ),
+      ),
+    ),
 );

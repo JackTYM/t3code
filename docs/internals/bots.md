@@ -67,11 +67,21 @@ with the `Scheduler`.
   `run` (node or sh source) and `watcher.json`; the hash covers both. Which hash is approved, who
   approved it and where it runs live in `<stateDir>/watcher-approvals.json`, which only the service
   writes. A directory the Bot writes under `bots/` approves nothing, and the loop runs what that
-  file lists, not what it finds on disk.
+  file lists, not what it finds on disk. The file carries an HMAC kept with the server's other
+  secrets, which a Bot cannot read: one that fails the check, or has no signature, approves
+  nothing, so every watcher waits for the user again, a warning is logged and `botWatcher.list`
+  reports `approvals: unverified`.
 - **Any change stops it.** A different version becomes the pending one and the approved version
   stops until the user approves the new one or rejects it, which resumes the old. The user's
   actions are protected RPCs (`botWatcher.*`) that need terminal access, as saving a workflow
-  file does, because each runs code here. Approval must name the current pending hash.
+  file does, because each runs code. Approval must name the current pending hash, and the
+  server refuses it unless a dry run of exactly that hash has completed where the watcher will
+  run, whatever the run found: a client that skips "Run once" cannot approve what nobody saw
+  behave. Moving an approved watcher (`setRunsOn`) needs the same first run in its new place.
+- **The user can always stop it.** `pause` keeps the approval and stops runs, `remove` deletes the
+  watcher, and neither depends on what woke the Bot or whether it is still live. Both need only
+  operate access since they run nothing; `resume`, which starts approved code again, needs
+  terminal access like approving.
 - **No Bot path to approval.** There is no Bot-callable approve and no Bot-callable dry run: a Bot
   that could dry-run its own proposal would execute it before anyone read it. The propose and
   remove tools are also refused to a turn that did not begin with the user typing, which
@@ -84,8 +94,16 @@ with the `Scheduler`.
   `TMPDIR`, stdin is closed, output and time are capped, one script runs at a time, and the
   environment is an allowlist (`inheritEnv: false`). A dry run uses the same path with
   `T3_WATCHER_DRY_RUN=1`.
-- **Where.** A watcher records `runsOn`, `local` or a linked environment. Only `local` runs here
-  today; another value shows as `elsewhere` and waits.
+- **Where.** A watcher records `runsOn`, `local` or a linked environment. For a linked one this
+  server, the box, calls the peer-only tool `t3_watcher_run` through `PeerMcpClient` with the
+  source and its sha256. The receiving server accepts it only from a linked session paired with
+  full access and not narrowed below it, refuses source that does not hash to what it was sent
+  with, and runs those bytes through the same private-copy path as a local run. The box attests
+  the approval; the laptop keeps no approvals of its own. It returns the exit and output, and
+  the box judges, dedupes and frames them exactly as for a local run. A peer that does not
+  answer is `waiting`, not failing: nothing is counted, `failing` and its backoff stay as they
+  were, and it is asked again after a minute (the link itself is kept alive by
+  `PeerLinkKeepalive`). A peer that answers with a refusal is a failure like any other.
 
 A run is healthy on exit 0 with stdout matching `expect`, if set. A wake is deduplicated per
 failure: a trip, or new output, wakes at once, and the same output wakes again after 15 minutes,

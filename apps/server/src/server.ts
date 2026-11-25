@@ -813,7 +813,14 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
     HomeService.layer.pipe(
       // The watchers' own service, so WebSocket and MCP reach what the loop above runs. It sits
       // below the Bot service it needs.
-      Layer.provideMerge(WatcherService.layer.pipe(Layer.provide(Scheduler.layer))),
+      Layer.provideMerge(
+        WatcherService.layer.pipe(
+          Layer.provide(Scheduler.layer),
+          // The same instances the routes use, by layer memoization: a watcher on a linked
+          // environment calls it through the link the rest of the server keeps alive.
+          Layer.provide(PeerMcpClient.layer.pipe(Layer.provide(PeerLinks.layer))),
+        ),
+      ),
       Layer.provideMerge(BotService.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
       Layer.provideMerge(layerOrchestrationApplication),
     ),
