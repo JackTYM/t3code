@@ -39,9 +39,22 @@ in the same project with a summary of the thread, and that thread becomes its fi
 
 ## Email
 
-A Bot can follow your email. Mail from your accounts is forwarded to a webhook that T3 Code makes for
-the Bot, which shows its address and signing secret once and can replace the secret later (there is no
-screen for either yet). The Bot is told about new mail in a short digest
+A Bot can follow your email. Mail from your accounts is forwarded by a Cloudflare mail Worker to a
+hook that T3 Code makes for the Bot. Set it all up in the **Mail** tab of the **Bot** button, top to
+bottom:
+
+1. **Mail hook.** Choose **Create the mail hook**. It shows the address and signing secret once, with
+   copy buttons; set them as `BOX_URL` and `WEBHOOK_SECRET` on your mail Worker. The secret is not
+   shown again, and closing the popover hides it too. If the hook has no public address, T3 Connect
+   is off and the Worker cannot reach it until you turn it on. **Rotate secret** replaces the secret:
+   mail signed with the old one is refused at once until the Worker has the new one. The tab also
+   shows whether the hook is on and signed, and how the last delivery ended.
+2. **Mailboxes.** Add each of your own addresses exactly as mail arrives at it (your Worker's
+   `MAILBOXES` must list the same ones), then **Save**. The same section sets how many days mail is
+   kept and how often the Bot may be told about new mail, and shows how much is kept per address.
+3. **History import.** See [Importing mail from your Mac](#importing-mail-from-your-mac).
+
+The Bot is told about new mail in a short digest
 (sender, subject, and whether the sender's domain was verified, never the text), at most once every
 few minutes, and can search for emails by sender and subject. It cannot send, delete or archive
 anything.
@@ -52,19 +65,21 @@ comes back, by adding to its task list. Even so, treat that summary as informati
 command: anyone can send you an email that tries to give your Bot orders, and a helper can be steered
 too. If you see an approval request from such a helper that you did not expect, decline it.
 
-The Bot keeps mail only for the addresses you choose, so nothing is stored until you pick them
-(there is no screen for this yet). Each address is one of your own, such as a Gmail account. It keeps
-mail for 90 days by default, and you can forget a single email: only that you forgot it is kept.
-Mail already in the Mac Mail app on a linked laptop can be pulled in as history; that does not wake
-the Bot, and a laptop that is asleep just makes the pull wait.
+The Bot keeps mail only for the addresses you list in the **Mail** tab, so nothing is stored until
+you add them. Each address is one of your own, such as a Gmail account. It keeps mail for 90 days by
+default. Mail already in the Mac Mail app on a linked laptop can be pulled in as history; that does
+not wake the Bot, and a laptop that is asleep just makes the pull wait.
 
 ## Importing mail from your Mac
 
-A Bot that keeps your mail can import the last 30 to 90 days from the Mail app on a Mac linked to its
-environment. The link must be paired with full access. macOS keeps Mail's folder private, so on that
+In the **Mail** tab, choose the linked Mac and 30, 60 or 90 days, then **Import history**. The tab
+shows whether the import is running, waiting, failed (with the reason) or done, and how many emails
+it kept; it does not update by itself, so press refresh to see progress. The link must be paired
+with full access. macOS keeps Mail's folder private, so on that
 Mac open **System Settings → Privacy & Security → Full Disk Access**, turn it on for the app that
 runs the T3 Code server (the T3 Code app, or the terminal app if you started it with `npx t3`), then
 quit and reopen that app. Until you do, the import stops with a message naming this step. Only
 inbound mail is read: Sent, Drafts, Junk and Trash are skipped. A Mail account whose address cannot be
 worked out is kept only if you allow its placeholder address (`...@mail-app.invalid`), which the
-status lists as an unknown account with how many messages it saw.
+tab lists as an unknown account with how many messages it saw, with an **Allow** button that adds
+that exact address.

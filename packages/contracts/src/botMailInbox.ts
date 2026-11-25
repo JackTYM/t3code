@@ -5,11 +5,11 @@ import { BotMailOrigin } from "./botMail.ts";
 
 /** The Bot's mail store keeps an email this long unless the user sets another. */
 export const BOT_MAIL_DEFAULT_RETENTION_DAYS = 90;
-const BOT_MAIL_MAX_RETENTION_DAYS = 3650;
+export const BOT_MAIL_MAX_RETENTION_DAYS = 3650;
 /** One wake at most per window, however much mail arrives in it. */
 export const BOT_MAIL_DEFAULT_DIGEST_WINDOW_MINUTES = 5;
-const BOT_MAIL_MAX_DIGEST_WINDOW_MINUTES = 24 * 60;
-const BOT_MAIL_MAX_MAILBOXES = 50;
+export const BOT_MAIL_MAX_DIGEST_WINDOW_MINUTES = 24 * 60;
+export const BOT_MAIL_MAX_MAILBOXES = 50;
 export const BOT_MAIL_MAX_SEARCH_RESULTS = 50;
 
 const MailboxAddress = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(320));

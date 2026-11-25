@@ -29,6 +29,7 @@ import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
+import { BotMailView } from "./BotMailView";
 import { BotTasksView } from "./BotTasksView";
 import { BotWatchersView } from "./BotWatchersView";
 import { botWatchersNeedingYou } from "./BotWatchersView.logic";
@@ -110,7 +111,7 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
   // The quiet shell skips streaming ticks, so the badge does not re-render with every token.
   const thread = useQuietThreadShell(props.threadRef);
   const [open, setOpen] = useState(false);
-  const [view, setView] = useState<"notes" | "tasks" | "watchers">("notes");
+  const [view, setView] = useState<"notes" | "tasks" | "watchers" | "mail">("notes");
   const canWrite = useAtomValue(
     botFilesEnvironment.write.permissionAtom(props.threadRef.environmentId),
   );
@@ -190,7 +191,7 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
           </Badge>
         )}
       </PopoverTrigger>
-      <PopoverPopup width={view === "watchers" ? "xl" : "lg"} align="end">
+      <PopoverPopup width={view === "watchers" || view === "mail" ? "xl" : "lg"} align="end">
         <div className="flex flex-col gap-3">
           <PopoverTitle>
             <T>Bot notes</T>
@@ -213,7 +214,14 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
             value={[view]}
             onValueChange={(next) => {
               const value = next[0];
-              if (value === "notes" || value === "tasks" || value === "watchers") setView(value);
+              if (
+                value === "notes" ||
+                value === "tasks" ||
+                value === "watchers" ||
+                value === "mail"
+              ) {
+                setView(value);
+              }
             }}
           >
             <Toggle value="notes">
@@ -225,11 +233,16 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
             <Toggle value="watchers">
               <T>Watchers</T>
             </Toggle>
+            <Toggle value="mail">
+              <T>Mail</T>
+            </Toggle>
           </ToggleGroup>
           {view === "tasks" ? (
             <BotTasksView threadRef={props.threadRef} />
           ) : view === "watchers" ? (
             <BotWatchersView threadRef={props.threadRef} />
+          ) : view === "mail" ? (
+            <BotMailView threadRef={props.threadRef} />
           ) : files.data === null ? (
             <p className="text-muted-foreground text-sm">{files.error ?? <T>Loading…</T>}</p>
           ) : (
