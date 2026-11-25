@@ -207,6 +207,26 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
     }),
   );
 
+  it.effect("puts a mail reader in a read-only sandbox with nobody to ask, in any mode", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const resolve = (mailReader: boolean, runtimeMode: RuntimeMode) =>
+        policy.resolve({
+          thread: { ...makeThread({ now, worktreePath: null, runtimeMode }), mailReader },
+          modelSelection,
+        });
+      for (const runtimeMode of ["approval-required", "full-access"] as const) {
+        const reader = yield* resolve(true, runtimeMode);
+        assert.deepEqual(reader.sandboxPolicy, { type: "readOnly" });
+        assert.equal(reader.approvalPolicy, "never");
+        const other = yield* resolve(false, runtimeMode);
+        assert.isUndefined(other.sandboxPolicy);
+        assert.isUndefined(other.approvalPolicy);
+      }
+    }),
+  );
+
   it.effect("carries tracked folders only for a thread in the project's own checkout", () =>
     Effect.gen(function* () {
       const policy = yield* RuntimePolicy.RuntimePolicyV2;

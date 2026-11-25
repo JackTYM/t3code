@@ -40,10 +40,10 @@ export interface McpThreadCaller {
    */
   readonly bot?: boolean;
   /**
-   * A delegated child, however deep, of a Bot. Fixed for its life like `bot`, so it decides which
-   * Bot tools are listed to it; each call still resolves the Bot and checks the caller's mode.
+   * A child a Bot started to read untrusted mail. Fixed for its life: it lists, and may call,
+   * only `t3_bot_mail_read` (`McpHttpServer` hides every other tool from it).
    */
-  readonly botCrew?: boolean;
+  readonly mailReader?: boolean;
 }
 
 export interface McpClientCaller {
@@ -246,13 +246,13 @@ export const hiddenFromNonBots = (): boolean => {
 };
 
 /**
- * `McpSchema.EnabledWhen` for the Bot's mail tools: a Bot lists them, and so does a child it
- * delegated to, which is where email bodies are read. No other thread pays for them.
+ * `McpSchema.EnabledWhen` for reading an email body: only the restricted child a Bot starts for
+ * it lists the tool. Discovery only; the handler checks the caller on every call.
  */
 export const hiddenFromNonMailReaders = (): boolean => {
   const fiber = Fiber.getCurrent();
   const scope = fiber && Context.getOrUndefined(fiber.context, McpInvocationContext);
-  return isBotCaller(scope?.thread) || scope?.thread?.botCrew === true;
+  return scope?.thread?.mailReader === true;
 };
 
 /**

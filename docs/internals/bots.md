@@ -97,23 +97,33 @@ no signal at all.
   it is replaced, so a subject cannot forge the line's own fields. Backfilled mail is history and
   never wakes. `t3_bot_mail_search` returns the same sender and subject and no body text; there is
   no send, delete or archive tool.
-- **Bodies are read by a child that must ask.** Everything in an email body is attacker text, and a
-  Bot's own runtime mode is full access for Home, so `t3_bot_mail_read` refuses any caller whose
-  thread is not `approval-required`, and the refusal tells the Bot to `delegate_task` with that
-  mode. The caller is the one the call came from: `callerMailOwner` in
-  [`handlers.ts`](../../apps/server/src/mcp/toolkits/bot/handlers.ts) loads the thread's current
-  mode on every call and again before the body is returned, so a user who raises the thread while
-  the read runs gets no body. Only `approval-required` passes, not "anything below full access":
-  `auto` lets a classifier approve commands, and `auto-accept-edits` lets a body write files. The
-  child reaches a Bot's mail only by walking its `subagent` parent links to a live Bot, never by
-  naming one. The mail tools are listed to a Bot and to its delegated children (the credential's
-  `botCrew` flag, set when it is issued); ordinary threads pay nothing for them. Flipping the Bot
-  thread's mode around a wake was rejected: it races the user's own turns and is not crash-safe.
-  What the child reports back is a derivative of the same text, so the instructions call it
-  untrusted too. Claude pre-approves T3's MCP tools through the `mcp__t3-code__*` allowed-tools
-  wildcard (`claudeMcpQueryOverrides`), so the child's reads do not wait for the user; its shell
-  and edits still do. Codex raises an MCP elicitation for tools it considers unsafe, which the user
-  would see as an approval; whether it does so for these read-only tools is not tested here.
+- **Bodies are read by a child that can only read.** Everything in an email body is attacker text,
+  so the model that reads it must have nothing a hostile email could use. A Bot starts that reader
+  with `delegate_task` role `mail-reader`; the server marks the child's thread `mailReader` at
+  creation and the mark never changes. Asking a human per read was dropped: on Claude the
+  `mcp__t3-code__*` allowed-tools wildcard (`claudeMcpQueryOverrides`) pre-approves every T3 tool,
+  so an `approval-required` child had no prompt to wait on and still held `t3_thread_send` and the
+  rest. The reader is limited in three layers, none of them prompt text:
+  - **Sandbox.** `RuntimePolicy` gives a `mailReader` thread `sandboxPolicy: readOnly` and
+    `approvalPolicy: never` whatever its mode. Claude then offers only Read, Glob and Grep with
+    nothing pre-approved (`dontAsk`), plus the read-only T3 tools in
+    `CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS`, which includes `t3_bot_mail_read`; Codex runs it in its
+    read-only sandbox. `delegate_task` also forces its runtime mode to `approval-required`.
+  - **MCP.** The credential carries `mailReader` (set when it is issued), and the global visibility
+    gate in [`McpHttpServer`](../../apps/server/src/mcp/McpHttpServer.ts) hides every tool but
+    `t3_bot_mail_read` from it, on list and on call, so it cannot start, message or schedule
+    anything. This holds on every provider, including ones whose own sandbox is weaker.
+  - **Tool.** `callerMailReader` in
+    [`handlers.ts`](../../apps/server/src/mcp/toolkits/bot/handlers.ts) serves a body only to a
+    delegated child whose credential is a mail reader, and finds the Bot by walking its `subagent`
+    parent links to a live Bot, never by naming one. A Bot, a fork and an ordinary child are
+    refused. `t3_bot_mail_search` (sender and subject only) is the Bot's alone.
+    A hostile email can therefore at worst skew the reader's report. That report is a derivative of
+    the same text, so the instructions call it untrusted. The one `delegate_task` role is Bot-only: a
+    non-Bot caller is refused, and a mail reader cannot be started in a linked environment. Not
+    verified here: whether Codex raises an MCP elicitation for `t3_bot_mail_read` (it is annotated
+    read-only, which Codex treats as safe), and how other providers apply a read-only sandbox; the MCP
+    gate holds either way.
 - **Hook setup.** `botMail.createHook` makes the webhook task (`sink: "bot-mail"`, signature header
   `x-t3-signature`, `sha256=` prefix, hex, a generated secret, no dedupe) through
   `ScheduledTaskService`, bound to the Bot's thread, and returns its address and secret once; a

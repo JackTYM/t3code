@@ -95,7 +95,7 @@ import * as WorktreeMcpService from "./WorktreeMcpService.ts";
 import * as PullRequestsHandlers from "./toolkits/pullRequests/handlers.ts";
 import * as ToolSearchHandlers from "./toolkits/toolSearch/handlers.ts";
 import { ToolSearchToolkit } from "./toolkits/toolSearch/tools.ts";
-import { BOT_TOOL_PREFIX, BotToolkit } from "./toolkits/bot/tools.ts";
+import { BOT_MAIL_READ_TOOL, BOT_TOOL_PREFIX, BotToolkit } from "./toolkits/bot/tools.ts";
 import * as BotHandlers from "./toolkits/bot/handlers.ts";
 import { WatcherPeerToolkit } from "./toolkits/watcher/tools.ts";
 import * as WatcherPeerHandlers from "./toolkits/watcher/handlers.ts";
@@ -1553,17 +1553,20 @@ const layerToolExposure = Layer.effect(
 );
 
 /**
- * A provider session that sends `MCP_TOOL_EXPOSURE_HEADER: deferred` lists only
- * the direct tools and what its `tool_search` calls loaded. Calls are never
- * gated, and every other client lists everything but `tool_search`.
+ * A `deferred` session lists only the direct tools and what `tool_search` loaded; calls are not
+ * gated by that. A Bot's mail reader is gated on every request: it sees and calls only
+ * `t3_bot_mail_read`, since a hostile email must find no other tool to talk it into.
  */
 const layerDeferredListing = McpServer.visibility(
   Effect.gen(function* () {
     const exposure = yield* McpToolExposure.McpToolExposure;
     // Untraced: it runs once per tool on every list request.
     return Effect.fnUntraced(function* ({ method, target, headers }: McpServer.MiddlewareOptions) {
-      if (method !== "tools/list") return true;
       const scope = yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext);
+      if (Option.getOrUndefined(scope)?.thread?.mailReader === true) {
+        return method.startsWith("tools/") && target === BOT_MAIL_READ_TOOL;
+      }
+      if (method !== "tools/list") return true;
       const providerSessionId = Option.getOrUndefined(scope)?.thread?.providerSessionId;
       if (headers[MCP_TOOL_EXPOSURE_HEADER] !== "deferred" || providerSessionId === undefined) {
         return target !== McpToolExposure.TOOL_SEARCH;

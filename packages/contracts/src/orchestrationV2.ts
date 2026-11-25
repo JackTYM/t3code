@@ -555,6 +555,11 @@ export const OrchestrationV2AppThread = Schema.Struct({
   /** The top-level thread this one is crew of. Groups are one level deep. */
   groupedUnderThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   botConfig: Schema.optional(Schema.NullOr(ThreadBotConfig)),
+  /**
+   * A delegated child a Bot started to read untrusted mail. Fixed at creation: it runs in a
+   * read-only sandbox and reaches only `t3_bot_mail_read` over MCP.
+   */
+  mailReader: Schema.optional(Schema.Boolean),
   lastVisitedAt: Schema.NullOr(Schema.DateTimeUtc).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
@@ -3820,6 +3825,7 @@ export const OrchestrationV2Command = Schema.Union([
     modelSelection: ModelSelection,
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
+    mailReader: Schema.optional(Schema.Boolean),
     workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
     // Defaults to settled_only; fire-and-forget wakes require always.
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),

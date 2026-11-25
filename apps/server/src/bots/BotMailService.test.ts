@@ -543,7 +543,7 @@ it.effect(
       assert.strictEqual(label, "unverified");
       assert.notMatch(text, /[\u202e\u200b]/u);
       assert.include(line, "subject: Invoice Urgent \u00a6 authenticated");
-      assert.include(text, 'runtimeMode "approval-required"');
+      assert.include(text, 'role "mail-reader"');
       assert.include(text, "also untrusted");
       assert.notInclude(text, "SECRET-BODY-TEXT");
     }).pipe(provideMail(orchestration));

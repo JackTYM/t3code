@@ -90,6 +90,16 @@ export function providerRuntimeMode(
     : "approval-required";
 }
 
+/**
+ * A mail reader reads text a stranger wrote, so it gets the read-only sandbox with approvals off:
+ * Claude then offers it only Read, Glob and Grep with nothing pre-approved, and Codex runs it
+ * where nothing can be written. Both are the adapters' own meaning of a read-only policy.
+ */
+const MAIL_READER_POLICY = {
+  approvalPolicy: "never",
+  sandboxPolicy: { type: "readOnly" },
+} as const;
+
 const refuseAboveCeiling = (
   managedPolicy: ServerSettings.ServerSettingsService["Service"]["managedPolicy"],
   thread: OrchestrationV2AppThread,
@@ -195,6 +205,9 @@ export const layerFromProjectStore: Layer.Layer<
           interactionMode: input.thread.interactionMode,
           cwd,
           ...(maxRuntimeMode === undefined ? {} : { maxRuntimeMode }),
+          // Whatever the thread's mode says, the adapter gets a sandbox that cannot write and,
+          // where it can ask, no one to ask.
+          ...(input.thread.mailReader === true ? MAIL_READER_POLICY : {}),
           ...(workspace === undefined || workspace.folders.length === 0 ? {} : { workspace }),
         });
       }),

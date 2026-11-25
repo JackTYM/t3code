@@ -2250,7 +2250,7 @@ it.effect("lists optional tools to a deferring client only after tool_search loa
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("lists and runs Bot tools only for a Bot thread, deferred or not", () =>
+it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail reader one", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const scopeFor = (token: string): McpInvocationContext.McpThreadInvocationScope => ({
@@ -2261,15 +2261,20 @@ it.effect("lists and runs Bot tools only for a Bot thread, deferred or not", () 
           providerSessionId: token,
           providerInstanceId: ProviderInstanceId.make("codex"),
           bot: token.startsWith("bot"),
+          ...(token.startsWith("reader") ? { subagent: true, mailReader: true } : {}),
         },
         client: undefined,
         capabilities: new Set(["orchestration"]),
         issuedAt: 1,
       });
-      const tokens = ["bot", "botDeferred", "plain", "plainDeferred"];
+      const tokens = ["bot", "botDeferred", "plain", "plainDeferred", "reader", "readerDeferred"];
       const scopes = new Map(tokens.map((token) => [token, scopeFor(token)]));
       const serverLayer = McpHttpServer.layerMcpTransport(
-        Layer.mergeAll(McpHttpServer.layerBotTools, McpHttpServer.layerToolSearch),
+        Layer.mergeAll(
+          McpHttpServer.layerBotTools,
+          McpHttpServer.layerToolSearch,
+          McpHttpServer.layerMessageToolkit,
+        ),
       ).pipe(
         Layer.provide(
           Layer.mock(BotService.BotService)({
@@ -2397,7 +2402,6 @@ it.effect("lists and runs Bot tools only for a Bot thread, deferred or not", () 
         });
 
       const botTools = [
-        "t3_bot_mail_read",
         "t3_bot_mail_search",
         "t3_bot_memory_read",
         "t3_bot_notes_write",
@@ -2413,9 +2417,11 @@ it.effect("lists and runs Bot tools only for a Bot thread, deferred or not", () 
       const botDeferred = yield* session("botDeferred");
       const plain = yield* session("plain");
       const plainDeferred = yield* session("plainDeferred");
-      expect(yield* bot.listed).toEqual(botTools);
+      const reader = yield* session("reader");
+      const readerDeferred = yield* session("readerDeferred");
+      expect(yield* bot.listed).toEqual(["send_to_user", ...botTools]);
       expect(yield* botDeferred.listed).toEqual([...botTools, "tool_search"]);
-      expect(yield* plain.listed).toEqual([]);
+      expect(yield* plain.listed).toEqual(["send_to_user"]);
       expect(yield* plainDeferred.listed).toEqual(["tool_search"]);
       expect(
         (yield* plainDeferred.call("tool_search", { query: "bot notes" })).result
@@ -2428,11 +2434,24 @@ it.effect("lists and runs Bot tools only for a Bot thread, deferred or not", () 
         tasks: "- [ ] t1 | Ship | open",
         watches: [],
       });
-      // Bot threads here run in full access, so the body is withheld and the Bot is told to delegate.
+      // A Bot is never handed a body: the tool is not even there for it.
       const withheld = yield* bot.call("t3_bot_mail_read", { id: 7 });
       expect(withheld.result?.structuredContent).toBeUndefined();
-      expect(JSON.stringify(withheld)).toContain("delegate_task");
       expect(JSON.stringify(withheld)).not.toContain("rm -rf");
+      // A mail reader lists and may call that one tool, and nothing else, deferred or not.
+      expect(yield* reader.listed).toEqual(["t3_bot_mail_read"]);
+      expect(yield* readerDeferred.listed).toEqual(["t3_bot_mail_read"]);
+      for (const hidden of [
+        reader.call("t3_bot_memory_read", {}),
+        reader.call("t3_bot_mail_search", { query: "hello" }),
+        reader.call("send_to_user", { message: "hi" }),
+        readerDeferred.call("tool_search", { query: "bot" }),
+      ]) {
+        const refusedToReader = yield* hidden;
+        expect(refusedToReader.result?.structuredContent).toBeUndefined();
+        expect(refusedToReader.error).toBeDefined();
+        expect(JSON.stringify(refusedToReader)).not.toContain("Ship on Fridays");
+      }
       const found = (yield* bot.call("t3_bot_mail_search", { query: "hello" })).result
         ?.structuredContent as { results: ReadonlyArray<{ id: number; message: string }> };
       expect(found.results).toHaveLength(1);

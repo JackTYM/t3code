@@ -2886,7 +2886,7 @@ export const readClaudeLaunchArgSettings = Effect.fn("ClaudeAdapterV2.readLaunch
 
 export const CLAUDE_T3_MCP_TOOL_WILDCARD = "mcp__t3-code__*";
 
-// Keep in sync with OrchestratorToolkit Tool.Readonly annotations; ClaudeAdapterV2.test.ts checks this.
+// Keep in sync with Tool.Readonly annotations of the toolkits ClaudeAdapterV2.test.ts lists.
 export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__orchestrator_capabilities",
   "mcp__t3-code__list_scheduled_tasks",
@@ -2907,6 +2907,8 @@ export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__html_render",
   "mcp__t3-code__send_to_user",
   "mcp__t3-code__t3_submit_output",
+  // A Bot's mail reader runs read-only and may call nothing else (McpHttpServer gates it).
+  "mcp__t3-code__t3_bot_mail_read",
 ];
 
 // request_secret can wait an hour; exceed Claude's default 60 s timeout.

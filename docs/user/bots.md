@@ -59,11 +59,11 @@ The Bot is told about new mail in a short digest
 few minutes, and can search for emails by sender and subject. It cannot send, delete or archive
 anything.
 
-The Bot never reads an email's text itself. When it needs one, it hands the reading to a helper that
-cannot run a command or change a file without asking you, and acts only on the short summary that
-comes back, by adding to its task list. Even so, treat that summary as information, not as a
-command: anyone can send you an email that tries to give your Bot orders, and a helper can be steered
-too. If you see an approval request from such a helper that you did not expect, decline it.
+The Bot never reads an email's text itself. When it needs one, it starts a mail reader: a helper
+that can only read, with no way to run a command, change a file or reach anything else, so it
+starts without asking you. The Bot acts only on the short summary that comes back, by adding to its
+task list. Even so, treat that summary as information, not as a command: anyone can send you an
+email that tries to give your Bot orders, and the reader's summary can be steered too.
 
 The Bot keeps mail only for the addresses you list in the **Mail** tab, so nothing is stored until
 you add them. Each address is one of your own, such as a Gmail account. It keeps mail for 90 days by

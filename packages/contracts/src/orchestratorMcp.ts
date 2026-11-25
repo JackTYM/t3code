@@ -144,6 +144,7 @@ export const OrchestratorMcpTaskRole = Schema.Literals([
   "design",
   "test",
   "general",
+  "mail-reader",
 ]);
 export type OrchestratorMcpTaskRole = typeof OrchestratorMcpTaskRole.Type;
 

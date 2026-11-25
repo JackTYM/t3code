@@ -2801,8 +2801,7 @@ it.effect.each([
         );
         assert.isDefined(token);
         assert.equal((yield* registry.resolve(token!))?.thread.subagent, subagent);
-        // A parent that was never created is no Bot.
-        assert.equal((yield* registry.resolve(token!))?.thread.botCrew, false);
+        assert.equal((yield* registry.resolve(token!))?.thread.mailReader, false);
         yield* manager.close(providerSessionId);
       });
 
@@ -2811,11 +2810,11 @@ it.effect.each([
 );
 
 it.effect.each([
-  { parentIsBot: true, botCrew: true },
-  { parentIsBot: false, botCrew: false },
+  { marked: true, mailReader: true },
+  { marked: false, mailReader: false },
 ] as const)(
-  "ProviderSessionManagerV2 lists Bot tools to a delegated child only under a Bot (parent is a Bot: $parentIsBot)",
-  ({ parentIsBot, botCrew }) =>
+  "ProviderSessionManagerV2 restricts the credential only of a child created as a mail reader (marked: $marked)",
+  ({ marked, mailReader }) =>
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
       const mcpConfigs = yield* Ref.make<
@@ -2846,13 +2845,11 @@ it.effect.each([
         });
         yield* eventSink.write({
           events: [
-            parentIsBot
-              ? {
-                  ...parent,
-                  payload: { ...parent.payload, botConfig: { enabled: true, muteChildren: false } },
-                }
-              : parent,
-            child,
+            {
+              ...parent,
+              payload: { ...parent.payload, botConfig: { enabled: true, muteChildren: false } },
+            },
+            marked ? { ...child, payload: { ...child.payload, mailReader: true } } : child,
           ],
         });
         yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
@@ -2864,7 +2861,7 @@ it.effect.each([
         const resolved = (yield* registry.resolve(token!))?.thread;
         assert.equal(resolved?.subagent, true);
         assert.equal(resolved?.bot, false);
-        assert.equal(resolved?.botCrew, botCrew);
+        assert.equal(resolved?.mailReader, mailReader);
         yield* manager.close(providerSessionId);
       });
 
