@@ -32,5 +32,7 @@ in the same project with a summary of the thread, and that thread becomes its fi
   use **Ask the Bot to revise**; you cannot edit it yourself. **Pause**, **Resume** and **Remove**
   work any time. A watcher on a linked environment shows **waiting** while that environment does
   not answer, and moving one needs a **Run once** there first.
+  A count on the **Bot** button shows how many watchers need you; it updates when you return to the
+  window, close the popover or the Bot finishes a turn.
 - Settle or archive a Bot when you are done: its crew go back to the top of the sidebar and it stops
   being woken. Reopen it to take them back.

@@ -57,6 +57,10 @@ export function groupBotWatchers(
     .filter((entry) => entry.watchers.length > 0);
 }
 
+/** How many watchers sit under "Needs you", which the Bot button badge counts. */
+export const botWatchersNeedingYou = (watchers: ReadonlyArray<BotWatcher>): number =>
+  groupBotWatchers(watchers).find(({ group }) => group === "attention")?.watchers.length ?? 0;
+
 /** The version `watcher.lastDryRun` describes, when it is the one on show. */
 export const botWatcherDryRunOf = (watcher: BotWatcher) =>
   watcher.lastDryRun?.hash === watcher.hash ? watcher.lastDryRun : undefined;

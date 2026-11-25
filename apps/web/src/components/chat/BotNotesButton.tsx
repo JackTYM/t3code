@@ -1,20 +1,27 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
+  selectEnvironmentQueryData,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import type { BotFileKind, BotFilesReadResult, ScopedThreadRef } from "@t3tools/contracts";
 import { T, useGT } from "gt-react";
 import { BotIcon } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useEffect, useEffectEvent, useRef, useState, type FormEvent } from "react";
 
+import { useLiveRefresh } from "~/hooks/useLiveRefresh";
 import { useThreadGroupingActions } from "~/hooks/useThreadGroupingActions";
 import { m } from "~/i18n/messages";
 import { botFilesEnvironment } from "~/state/botFiles";
-import { useThreadShell } from "~/state/entities";
-import { useEnvironmentQuery } from "~/state/query";
+import { useQuietThreadShell } from "~/state/entities";
+import {
+  useEnvironmentQuery,
+  useEnvironmentQueryRefresh,
+  useEnvironmentQuerySelector,
+} from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Label } from "../ui/label";
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "../ui/popover";
@@ -24,6 +31,7 @@ import { toastManager } from "../ui/toast";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { BotTasksView } from "./BotTasksView";
 import { BotWatchersView } from "./BotWatchersView";
+import { botWatchersNeedingYou } from "./BotWatchersView.logic";
 
 // tasks.md is edited as a list in the Tasks view, not as text.
 const FILES: ReadonlyArray<Exclude<BotFileKind, "tasks">> = ["notes", "preferences"];
@@ -99,7 +107,8 @@ function BotFilesForm(props: {
 /** A Bot's memory files and crew muting, reachable from its header; Home's too. */
 export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
   const gt = useGT();
-  const thread = useThreadShell(props.threadRef);
+  // The quiet shell skips streaming ticks, so the badge does not re-render with every token.
+  const thread = useQuietThreadShell(props.threadRef);
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<"notes" | "tasks" | "watchers">("notes");
   const canWrite = useAtomValue(
@@ -115,12 +124,71 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
       : null,
   );
   const botConfig = thread?.botConfig;
+
+  // The list shares its atom with the Watchers tab, so mounting this fetches it once. The server
+  // pushes no watcher changes, so it is refetched on window return, popover close and a settled
+  // run, never on a timer.
+  const watchersAtom =
+    botConfig == null
+      ? null
+      : botFilesEnvironment.watchers({
+          environmentId: props.threadRef.environmentId,
+          input: { threadId: props.threadRef.threadId },
+        });
+  const watchersData = useEnvironmentQuerySelector(watchersAtom, selectEnvironmentQueryData);
+  const { refresh: refreshWatchers, isPending: watchersPending } =
+    useEnvironmentQueryRefresh(watchersAtom);
+  const needYou = watchersData === null ? 0 : botWatchersNeedingYou(watchersData.watchers);
+  // A refresh restarts a read in flight, so one already running stands for this one.
+  const refreshWatchersIfIdle = () => {
+    if (!watchersPending()) refreshWatchers();
+  };
+  useLiveRefresh(refreshWatchersIfIdle, {
+    enabled: botConfig != null,
+    key: `bot-watchers:${props.threadRef.environmentId}:${props.threadRef.threadId}`,
+    intervalMs: null,
+  });
+  const runCompletedAt = thread?.latestRun?.completedAt ?? null;
+  const seenRunCompletedAt = useRef(runCompletedAt);
+  const onRunSettled = useEffectEvent(refreshWatchersIfIdle);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a Bot's run is when it proposes a watcher, and nothing else pushes that to the client
+  useEffect(() => {
+    if (seenRunCompletedAt.current === runCompletedAt) return;
+    seenRunCompletedAt.current = runCompletedAt;
+    if (runCompletedAt !== null) onRunSettled();
+  }, [runCompletedAt]);
+
   if (botConfig == null) return null;
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger render={<Button variant="ghost" size="xs" aria-label={gt("Bot notes")} />}>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) refreshWatchersIfIdle();
+      }}
+    >
+      <PopoverTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="xs"
+            aria-label={
+              needYou === 0
+                ? gt("Bot notes")
+                : needYou === 1
+                  ? gt("Bot notes, 1 watcher needs you")
+                  : gt("Bot notes, {count} watchers need you", { count: needYou })
+            }
+          />
+        }
+      >
         <BotIcon aria-hidden />
         <T>Bot</T>
+        {needYou === 0 ? null : (
+          <Badge variant="warning" size="sm" aria-hidden>
+            {needYou}
+          </Badge>
+        )}
       </PopoverTrigger>
       <PopoverPopup width={view === "watchers" ? "xl" : "lg"} align="end">
         <div className="flex flex-col gap-3">

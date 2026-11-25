@@ -8,6 +8,7 @@ import {
   botWatcherPlaces,
   botWatcherReviseMessage,
   botWatcherState,
+  botWatchersNeedingYou,
   groupBotWatchers,
   parseBotWatcherDiff,
 } from "./BotWatchersView.logic";
@@ -83,6 +84,29 @@ describe("groupBotWatchers", () => {
 
   it("leaves out empty groups", () => {
     expect(groupBotWatchers([])).toEqual([]);
+  });
+});
+
+describe("botWatchersNeedingYou", () => {
+  it("counts exactly the watchers listed under Needs you", () => {
+    const watchers = [
+      pending({ name: "new-one", approvedHash: undefined }),
+      pending({ name: "changed-one" }),
+      pending({ name: "paused-with-update", paused: true }),
+      watcher({ name: "failing-one", status: "tripped" }),
+      watcher({ name: "fine" }),
+      watcher({ name: "waiting-one", status: "waiting" }),
+      watcher({ name: "stopped", status: "paused", paused: true }),
+    ];
+    expect(botWatchersNeedingYou(watchers)).toBe(4);
+    expect(botWatchersNeedingYou(watchers)).toBe(
+      groupBotWatchers(watchers).find((entry) => entry.group === "attention")?.watchers.length,
+    );
+  });
+
+  it("is zero with nothing waiting on the user", () => {
+    expect(botWatchersNeedingYou([])).toBe(0);
+    expect(botWatchersNeedingYou([watcher({ name: "fine" })])).toBe(0);
   });
 });
 
