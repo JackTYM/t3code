@@ -191,7 +191,15 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
           </Badge>
         )}
       </PopoverTrigger>
-      <PopoverPopup width={view === "watchers" || view === "mail" ? "xl" : "lg"} align="end">
+      <PopoverPopup
+        width={view === "watchers" || view === "mail" ? "xl" : "lg"}
+        align="end"
+        // Base UI sizes the popup to its content, so a wide row can push it past the window; this
+        // pins the wide views to their width or the window minus a gutter, whichever is smaller.
+        className={
+          view === "watchers" || view === "mail" ? "w-[min(34rem,calc(100vw-2rem))]" : undefined
+        }
+      >
         <div className="flex flex-col gap-3">
           <PopoverTitle>
             <T>Bot notes</T>

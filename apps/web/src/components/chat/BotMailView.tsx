@@ -50,6 +50,7 @@ import { toastManager } from "../ui/toast";
 import {
   BOT_MAIL_BACKFILL_DAYS,
   botMailCountRows,
+  botMailDroppedMailboxes,
   botMailDeliveryOutcome,
   botMailHookControls,
   botMailHookProblem,
@@ -59,6 +60,7 @@ import {
   botMailImportTarget,
   botMailSaveControl,
   botMailSettingsPlan,
+  botMailTotals,
   botMailUnknownAccounts,
   EMPTY_BOT_MAIL_SETTINGS_DRAFT,
   parseBotMailMailbox,
@@ -421,6 +423,10 @@ function MailboxesSection(props: {
   const counts = new Map(botMailCountRows(props.status).map((row) => [row.mailbox, row]));
   const unlisted = botMailCountRows(props.status).filter((row) => !row.listed);
   const unknown = botMailUnknownAccounts(props.status);
+  const dropped = botMailDroppedMailboxes(props.status);
+  const clearDropped = useAtomCommand(botFilesEnvironment.mailClearDropped, {
+    reportFailure: false,
+  });
   const editable = props.grants.operate && !busy;
   const problemText = problem === null ? null : mailboxProblem(problem);
 
@@ -458,8 +464,15 @@ function MailboxesSection(props: {
     else failed(gt("Failed to allow the account"), result);
   };
 
+  const clear = async () => {
+    setBusy(true);
+    const result = await clearDropped({ environmentId, input: { threadId } });
+    setBusy(false);
+    failed(gt("Failed to clear the dropped mail"), result);
+  };
+
   return (
-    <section className="flex flex-col gap-2">
+    <section className="flex min-w-0 flex-col gap-2">
       <h3 className="font-medium text-sm">
         <T>2. Mailboxes</T>
       </h3>
@@ -604,6 +617,50 @@ function MailboxesSection(props: {
           <T>Use whole numbers within the ranges shown.</T>
         </p>
       ) : null}
+
+      {props.status.dropped === undefined ? null : (
+        <div className="flex flex-col gap-1.5 rounded-lg border p-2">
+          <p className="text-muted-foreground text-xs">
+            {gt(
+              "{count, plural, one {# email was} other {# emails were}} dropped because the address it was sent to is not on your list. Apple Hide My Email addresses arrive like this.",
+              { count: props.status.dropped.count },
+            )}
+          </p>
+          {dropped.length === 0 ? null : (
+            <ul className="flex flex-col divide-y text-sm">
+              {dropped.map((entry) => (
+                <li key={entry.mailbox} className="flex items-center gap-2 py-1.5">
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate font-mono text-xs">{entry.mailbox}</span>
+                    <span className="text-muted-foreground text-xs">
+                      {gt("{count, plural, one {# email} other {# emails}} dropped", {
+                        count: entry.count,
+                      })}
+                    </span>
+                  </div>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={!editable}
+                    onClick={() => void allow(entry.mailbox)}
+                  >
+                    <T>Add to my addresses</T>
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <Button
+            size="xs"
+            variant="ghost"
+            className="self-end"
+            disabled={!editable}
+            onClick={() => void clear()}
+          >
+            <T>Clear</T>
+          </Button>
+        </div>
+      )}
 
       {unknown.length === 0 ? null : (
         <div className="flex flex-col gap-1.5 rounded-lg border p-2">
@@ -845,7 +902,12 @@ export function BotMailView(props: { threadRef: ScopedThreadRef }) {
   const canRotateHook = useAtomValue(
     botFilesEnvironment.mailRotateHook.permissionAtom(environmentId),
   );
-  const grants = { operate: canSetMailboxes && canBackfill && canCreateHook && canRotateHook };
+  const canClearDropped = useAtomValue(
+    botFilesEnvironment.mailClearDropped.permissionAtom(environmentId),
+  );
+  const grants = {
+    operate: canSetMailboxes && canBackfill && canCreateHook && canRotateHook && canClearDropped,
+  };
 
   // Nothing pushes mail changes, so opening the tab and coming back to the window ask again; a
   // read already in flight stands for the new one.
@@ -862,9 +924,10 @@ export function BotMailView(props: { threadRef: ScopedThreadRef }) {
     return <p className="text-muted-foreground text-sm">{status.error ?? <T>Loading…</T>}</p>;
   }
   const { data } = status;
+  const totals = botMailTotals(data);
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex min-w-0 flex-col gap-2">
       <div className="flex items-start justify-between gap-2">
         <p className="text-muted-foreground text-xs">
           {data.lastReceivedAt === undefined ? (
@@ -886,8 +949,15 @@ export function BotMailView(props: { threadRef: ScopedThreadRef }) {
           <RefreshCwIcon aria-hidden />
         </Button>
       </div>
+      <p className="text-muted-foreground text-xs">
+        {gt("{stored} stored · {bulk} bulk (never wakes the Bot) · {dropped} dropped", {
+          stored: totals.stored,
+          bulk: totals.bulk,
+          dropped: totals.dropped,
+        })}
+      </p>
       <ScrollArea className="max-h-[28rem]">
-        <div className="flex flex-col gap-5">
+        <div className="flex min-w-0 flex-col gap-5">
           <HookSection threadRef={props.threadRef} hook={data.hook} grants={grants} />
           <MailboxesSection threadRef={props.threadRef} status={data} grants={grants} />
           <ImportSection threadRef={props.threadRef} status={data} grants={grants} />

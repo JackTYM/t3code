@@ -136,6 +136,24 @@ export function botMailCountRows(
     );
 }
 
+/** What is kept (bulk included), how much of it is bulk, and what was dropped for an unlisted mailbox. */
+export function botMailTotals(status: Pick<BotMailStatus, "counts" | "bulk" | "dropped">) {
+  return {
+    stored: status.counts.reduce((sum, { count }) => sum + count, 0),
+    bulk: status.bulk ?? 0,
+    dropped: status.dropped?.count ?? 0,
+  };
+}
+
+/** Recently dropped mailboxes the user can still allow, newest first. */
+export function botMailDroppedMailboxes(
+  status: Pick<BotMailStatus, "mailboxes" | "dropped">,
+): ReadonlyArray<{ readonly mailbox: string; readonly count: number }> {
+  return (status.dropped?.mailboxes ?? []).filter(
+    ({ mailbox }) => !status.mailboxes.includes(mailbox),
+  );
+}
+
 /** Placeholder accounts the import saw, minus any the user has already allowed. */
 export function botMailUnknownAccounts(
   status: Pick<BotMailStatus, "mailboxes" | "unknownAccounts">,

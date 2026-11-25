@@ -3,6 +3,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   botMailCountRows,
+  botMailDroppedMailboxes,
+  botMailTotals,
   botMailDeliveryOutcome,
   botMailHookControls,
   botMailHookProblem,
@@ -170,6 +172,42 @@ describe("botMailCountRows", () => {
       ["z@x.com", true],
       ["a@x.com", false],
     ]);
+  });
+});
+
+describe("botMailTotals", () => {
+  it("adds up stored mail across mailboxes and origins, and reads bulk and dropped", () => {
+    expect(
+      botMailTotals({
+        counts: [
+          { mailbox: "a@x.com", origin: "forward", count: 5 },
+          { mailbox: "a@x.com", origin: "backfill", count: 2 },
+          { mailbox: "b@x.com", origin: "forward", count: 1 },
+        ],
+        bulk: 3,
+        dropped: { count: 9, mailboxes: [] },
+      }),
+    ).toEqual({ stored: 8, bulk: 3, dropped: 9 });
+  });
+
+  it("treats a server that counts neither as zero", () => {
+    expect(botMailTotals({ counts: [] })).toEqual({ stored: 0, bulk: 0, dropped: 0 });
+  });
+});
+
+describe("botMailDroppedMailboxes", () => {
+  it("offers dropped mailboxes that are still not on the list", () => {
+    const dropped = {
+      count: 4,
+      mailboxes: [
+        { mailbox: "relay@privaterelay.appleid.com", count: 3 },
+        { mailbox: "me@gmail.com", count: 1 },
+      ],
+    };
+    expect(botMailDroppedMailboxes({ mailboxes: ["me@gmail.com"], dropped })).toEqual([
+      { mailbox: "relay@privaterelay.appleid.com", count: 3 },
+    ]);
+    expect(botMailDroppedMailboxes({ mailboxes: [] })).toEqual([]);
   });
 });
 
