@@ -1583,7 +1583,10 @@ export const layerToolSearch = Layer.mergeAll(
 export const layerBotTools = toolkitRegistration(BotToolkit, BotHandlers.layer);
 
 /** Outside layerTools: only a linked environment's session lists it, to run an approved watcher. */
-const layerWatcherPeerTools = toolkitRegistration(WatcherPeerToolkit, WatcherPeerHandlers.layer);
+export const layerWatcherPeerTools = toolkitRegistration(
+  WatcherPeerToolkit,
+  WatcherPeerHandlers.layer,
+);
 
 /**
  * A webhook subscription belongs to the outside client's session. Its id is the same for the
