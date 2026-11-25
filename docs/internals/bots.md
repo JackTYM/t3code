@@ -124,6 +124,25 @@ no signal at all.
     verified here: whether Codex raises an MCP elicitation for `t3_bot_mail_read` (it is annotated
     read-only, which Codex treats as safe), and how other providers apply a read-only sandbox; the MCP
     gate holds either way.
+- **Mail-influenced turns hold consequential calls.** The reader is not the only way a hostile
+  email reaches the Bot: the digest names senders and subjects, and the reader's report is shaped
+  by the body. [`BotHoldService`](../../apps/server/src/bots/BotHoldService.ts) calls a Bot's turn
+  influenced when its run began with a mail digest (a `bot-wake:mail:` message), began with a mail
+  reader's report (the run's first message is the completion delivery of a task whose child is a
+  `mailReader`), or has since searched mail or started a reader. Starting a reader taints the run that did
+  it, so a Bot cannot read the child's thread or poll its task from a turn the user typed. In an
+  influenced turn the middleware in `McpHttpServer` (`layerBotMailHold`, global, so it sees every
+  toolkit's calls) answers any Bot call that is not read-only, not the Bot's own `t3_bot_*` memory
+  tool or `task_cancel`, not a mail reader's start and not a message to its own crew with an error
+  result instead of running it. That is a deny-by-default list, so a tool added later is held
+  until someone decides it is free; anything naming a linked environment is held too. Thread
+  launches, other delegations, messages outside the crew, schedules and project changes therefore
+  wait for the user. A held call is stored in memory with its arguments (a restart drops it, and
+  the Bot asks again), listed by `botHold.list` and shown on the Bot popover. Allowing needs
+  terminal access, as approving a watcher does, and wakes the Bot with the call as the user saw
+  it; the wake is not a mail message, so that turn is not itself held. A hostile context can still
+  steer that turn, which is why the user reads the arguments first. Watchers keep their own,
+  stricter rule: propose and remove are refused in any turn the user did not type.
 - **Hook setup.** `botMail.createHook` makes the webhook task (`sink: "bot-mail"`, signature header
   `x-t3-signature`, `sha256=` prefix, hex, a generated secret, no dedupe) through
   `ScheduledTaskService`, bound to the Bot's thread, and returns its address and secret once; a

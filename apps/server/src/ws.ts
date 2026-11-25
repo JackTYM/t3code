@@ -133,6 +133,7 @@ import * as SessionMcpServers from "./mcpServers/SessionMcpServers.ts";
 import * as UiBundleService from "./uiBundles/UiBundleService.ts";
 import * as McpSignIn from "./mcpApps/McpSignIn.ts";
 import * as BotService from "./bots/BotService.ts";
+import * as BotHoldService from "./bots/BotHoldService.ts";
 import * as BotMailService from "./bots/BotMailService.ts";
 import * as WatcherService from "./bots/WatcherService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
@@ -1505,6 +1506,7 @@ export const layerWsRpc = (
       const bots = yield* BotService.BotService;
       const botWatchers = yield* WatcherService.WatcherService;
       const botMail = yield* BotMailService.BotMailService;
+      const botHolds = yield* BotHoldService.BotHoldService;
       const analytics = yield* AnalyticsService.AnalyticsService;
       const originProps = clientAnalyticsProps;
       const recordClientCommandAnalytics = (command: OrchestrationV2Command) => {
@@ -2752,6 +2754,11 @@ export const layerWsRpc = (
           botWatchers.resume({ botThreadId: input.threadId, name: input.name }),
         [WS_METHODS.botWatcherRemove]: (input) =>
           botWatchers.removeByUser({ botThreadId: input.threadId, name: input.name }),
+        [WS_METHODS.botHoldList]: ({ threadId }) => botHolds.list(threadId),
+        [WS_METHODS.botHoldAllow]: (input) =>
+          botHolds.allow({ botThreadId: input.threadId, id: input.id }),
+        [WS_METHODS.botHoldReject]: (input) =>
+          botHolds.reject({ botThreadId: input.threadId, id: input.id }),
         [WS_METHODS.providerMcpSignInStart]: (input) => mcpSignIn.start(input),
         [WS_METHODS.providerMcpSignInComplete]: (input) => mcpSignIn.complete(input),
         [WS_METHODS.providerUploadFeedback]:

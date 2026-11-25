@@ -185,6 +185,12 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("lets readers list the actions a Bot holds, but allowing one takes terminal access", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.botHoldList)).toBe(AuthOrchestrationReadScope);
+    expect(requiredScopeForRpcMethod(WS_METHODS.botHoldAllow)).toBe(AuthTerminalOperateScope);
+    expect(requiredScopeForRpcMethod(WS_METHODS.botHoldReject)).toBe(AuthOrchestrationOperateScope);
+  });
+
   it("still lets readers load settings the way installed Swift clients ask", () => {
     expect(requiredScopeForRpcMethod("server.getSettings")).toBe(AuthOrchestrationReadScope);
   });

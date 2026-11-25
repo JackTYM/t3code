@@ -95,6 +95,7 @@ import * as WorktreeMcpService from "./WorktreeMcpService.ts";
 import * as PullRequestsHandlers from "./toolkits/pullRequests/handlers.ts";
 import * as ToolSearchHandlers from "./toolkits/toolSearch/handlers.ts";
 import { ToolSearchToolkit } from "./toolkits/toolSearch/tools.ts";
+import * as BotHoldService from "../bots/BotHoldService.ts";
 import { BOT_MAIL_READ_TOOL, BOT_TOOL_PREFIX, BotToolkit } from "./toolkits/bot/tools.ts";
 import * as BotHandlers from "./toolkits/bot/handlers.ts";
 import { WatcherPeerToolkit } from "./toolkits/watcher/tools.ts";
@@ -1584,8 +1585,50 @@ export const layerToolSearch = Layer.mergeAll(
   layerDeferredListing,
 ).pipe(Layer.provide(layerToolExposure));
 
+/**
+ * A Bot's consequential calls wait for the user in a turn email influenced. It wraps every
+ * `tools/call` on the server, since the held tools belong to other toolkits, and answers a held
+ * call with an error result in place of running it.
+ */
+const layerBotMailHold = McpServer.middleware(
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const holds = yield* BotHoldService.BotHoldService;
+    return (effect, { method, target, payload }) =>
+      method !== "tools/call"
+        ? effect
+        : Effect.gen(function* () {
+            const scope = Option.getOrUndefined(
+              yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext),
+            );
+            const thread = scope?.thread;
+            if (scope === undefined || thread?.bot !== true || thread.subagent === true) {
+              return yield* effect;
+            }
+            const registered = server.tools.find(({ tool }) => tool.name === target);
+            const verdict = yield* holds.check({
+              botThreadId: thread.threadId,
+              tool: target,
+              readonly: registered?.tool.annotations?.readOnlyHint === true,
+              params: Predicate.hasProperty(payload, "arguments") ? payload.arguments : undefined,
+              environmentId: scope.environmentId,
+            });
+            if (!verdict.held) return yield* effect;
+            // The middleware's success type is opaque; a tool call's is this result.
+            return new McpSchema.CallToolResult({
+              content: [{ type: "text", text: verdict.message }],
+              isError: true,
+            }) as never;
+          });
+  }),
+  { global: true },
+);
+
 /** Outside layerTools: only Bot threads list these, so ordinary threads pay nothing for them. */
-export const layerBotTools = toolkitRegistration(BotToolkit, BotHandlers.layer);
+export const layerBotTools = Layer.mergeAll(
+  toolkitRegistration(BotToolkit, BotHandlers.layer),
+  layerBotMailHold,
+);
 
 /** Outside layerTools: only a linked environment's session lists it, to run an approved watcher. */
 export const layerWatcherPeerTools = toolkitRegistration(

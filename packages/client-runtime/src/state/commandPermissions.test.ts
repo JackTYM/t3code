@@ -258,6 +258,7 @@ describe("command permissions", () => {
     WS_METHODS.botWatcherReject,
     WS_METHODS.botWatcherPause,
     WS_METHODS.botWatcherRemove,
+    WS_METHODS.botHoldReject,
     WS_METHODS.botMailSetMailboxes,
     WS_METHODS.botMailForget,
     WS_METHODS.botMailBackfill,
@@ -300,6 +301,7 @@ describe("command permissions", () => {
     WS_METHODS.botWatcherApprove,
     WS_METHODS.botWatcherSetRunsOn,
     WS_METHODS.botWatcherResume,
+    WS_METHODS.botHoldAllow,
   ])("running a Bot's watcher script (%s) takes more than operating threads", (method) =>
     Effect.gen(function* () {
       const registry = yield* setup;

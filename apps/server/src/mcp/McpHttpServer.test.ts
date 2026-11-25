@@ -60,6 +60,7 @@ import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as BotService from "../bots/BotService.ts";
+import * as BotHoldService from "../bots/BotHoldService.ts";
 import * as BotMailService from "../bots/BotMailService.ts";
 import * as WatcherService from "../bots/WatcherService.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
@@ -2268,6 +2269,7 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
         issuedAt: 1,
       });
       const tokens = ["bot", "botDeferred", "plain", "plainDeferred", "reader", "readerDeferred"];
+      const holdChecks: Array<BotHoldService.HoldCall> = [];
       const scopes = new Map(tokens.map((token) => [token, scopeFor(token)]));
       const serverLayer = McpHttpServer.layerMcpTransport(
         Layer.mergeAll(
@@ -2282,6 +2284,17 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
             readFiles: () => Effect.succeed({ notes: "Ship on Fridays.", preferences: "" }),
             readTasksFile: () => Effect.succeed("- [ ] t1 | Ship | open"),
             watches: () => Effect.succeed([]),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(BotHoldService.BotHoldService)({
+            check: (call) =>
+              Effect.sync(() => {
+                holdChecks.push(call);
+                return call.tool === "send_to_user"
+                  ? { held: true as const, message: "Held for the user: test" }
+                  : { held: false as const };
+              }),
           }),
         ),
         Layer.provide(
@@ -2434,6 +2447,23 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
         tasks: "- [ ] t1 | Ship | open",
         watches: [],
       });
+      // A Bot's call a hold refuses comes back as an error result and never reaches the tool; the
+      // hold sees the tool's read-only annotation and its arguments. Other threads are not asked.
+      const heldCall = yield* bot.call("send_to_user", { message: "hi" });
+      expect(heldCall.result).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: "Held for the user: test" }],
+      });
+      expect(
+        holdChecks
+          .filter(({ tool }) => tool === "send_to_user")
+          .map(({ tool, readonly, params }) => ({ tool, readonly, params })),
+      ).toEqual([{ tool: "send_to_user", readonly: true, params: { message: "hi" } }]);
+      const askedBefore = holdChecks.length;
+      expect((yield* plain.call("send_to_user", { message: "hi" })).result).not.toMatchObject({
+        isError: true,
+      });
+      expect(holdChecks).toHaveLength(askedBefore);
       // A Bot is never handed a body: the tool is not even there for it.
       const withheld = yield* bot.call("t3_bot_mail_read", { id: 7 });
       expect(withheld.result?.structuredContent).toBeUndefined();

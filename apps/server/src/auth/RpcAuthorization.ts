@@ -206,6 +206,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.botTasksRead]: AuthOrchestrationReadScope,
   [WS_METHODS.botMailStatus]: AuthOrchestrationReadScope,
   [WS_METHODS.botWatcherList]: AuthOrchestrationReadScope,
+  [WS_METHODS.botHoldList]: AuthOrchestrationReadScope,
   [WS_METHODS.mcpAppsCallTool]: AuthOrchestrationOperateScope,
   [WS_METHODS.mcpAppsToolInfo]: AuthOrchestrationReadScope,
   [WS_METHODS.mcpAppsReadResource]: AuthOrchestrationReadScope,
