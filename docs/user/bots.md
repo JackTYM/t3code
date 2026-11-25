@@ -51,13 +51,19 @@ bottom:
    shows whether the hook is on and signed, and how the last delivery ended.
 2. **Mailboxes.** Add each of your own addresses exactly as mail arrives at it (your Worker's
    `MAILBOXES` must list the same ones), then **Save**. The same section sets how many days mail is
-   kept and how often the Bot may be told about new mail, and shows how much is kept per address.
+   kept and how often the Bot may be told about new mail, and shows how much is kept per address. The
+   top of the tab counts what is stored, how much of it is bulk, and how much was dropped. Mail sent
+   to an address that is not on your list is dropped and counted; the section lists the latest few
+   such addresses (Apple's Hide My Email addresses show up here) with **Add to my addresses**, and
+   **Clear** resets the count.
 3. **History import.** See [Importing mail from your Mac](#importing-mail-from-your-mac).
 
 The Bot is told about new mail in a short digest
 (sender, subject, and whether the sender's domain was verified, never the text), at most once every
-few minutes, and can search for emails by sender and subject. It cannot send, delete or archive
-anything.
+few minutes, and can search for emails by sender and subject. Newsletters, marketing and automated
+mail (judged from the sender's own headers) are still stored and searchable, but never wake the Bot;
+a digest only says how many were stored, and the Bot looks for them when asked. It cannot send,
+delete or archive anything.
 
 The Bot never reads an email's text itself. When it needs one, it hands the reading to a helper that
 cannot run a command or change a file without asking you, and acts only on the short summary that

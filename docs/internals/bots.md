@@ -82,7 +82,12 @@ no signal at all.
   none registered fails like a run that could not start, so the relay sends it again.
 - **Only mailboxes the user allowed.** `mailbox` is the user's own To address. The allowlist is
   Bot configuration the user sets over `botMail.setMailboxes`; the Bot has no tool for it. Mail to
-  any other mailbox is dropped and logged, never stored. Empty by default.
+  any other mailbox is dropped and logged, never stored. Empty by default. A forwarded drop is also
+  counted in `bot_mail_settings.dropped_json`: a total and the newest ten distinct mailbox names
+  with their counts, never a sender, subject or body. A sender chooses what `mailbox` says, so only
+  a name shaped like an address is kept by name. Allowing a mailbox removes its entry and its
+  count; `botMail.clearDropped` forgets the rest. History pulls are not counted here, since they
+  have their own placeholder-account tally.
 - **Store.** SQLite (`bot_mail_messages`), keyed by the Bot's memory folder so a Home started fresh
   keeps its mail, deduped on (mailbox, Message-ID). Retention (default 90 days, per Bot) counts from
   the earlier of the sender's date and arrival, so dating mail ahead keeps nothing. A Bot holds at
@@ -97,6 +102,17 @@ no signal at all.
   it is replaced, so a subject cannot forge the line's own fields. Backfilled mail is history and
   never wakes. `t3_bot_mail_search` returns the same sender and subject and no body text; there is
   no send, delete or archive tool.
+- **Bulk mail is stored, never announced.** `BotMailMessage.bulk` is judged from the sender's own
+  headers where the full message exists: `List-Unsubscribe`, `List-Id`, `Precedence: bulk|list|junk`,
+  `Auto-Submitted` other than `no`, and a short list of machine sender names (`noreply`,
+  `do-not-reply`, `newsletter`, `marketing`, `notifications`, with `+tags` ignored). The Worker
+  ([`bulk.ts`](../../infra/mail-worker/src/bulk.ts)) and the Mac Mail reader (`isBulkMail` in
+  `MailMessageParser.ts`) each carry the rule, because the Worker is a separate bundle; keep them
+  identical. The sender writes all of those headers, so `bulk` sorts mail and vouches for nothing:
+  the worst a hostile sender gains is mail that does not wake the Bot, which is still stored and
+  searchable. Bulk mail is born announced, so it can never be what wakes a Bot. A wake for ordinary
+  mail adds one count line of bulk mail received since the previous wake, and
+  `t3_bot_mail_search` leaves bulk out unless `includeBulk` is set, marking each bulk result.
 - **Bodies are read by a child that must ask.** Everything in an email body is attacker text, and a
   Bot's own runtime mode is full access for Home, so `t3_bot_mail_read` refuses any caller whose
   thread is not `approval-required`, and the refusal tells the Bot to `delegate_task` with that

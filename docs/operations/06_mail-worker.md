@@ -8,6 +8,10 @@ Statements below come from the Cloudflare Email Service docs (developers.cloudfl
 
 Email Routing prepends an `Authentication-Results` header with the authserv-id `mx.cloudflare.net`; Cloudflare's docs say to read the _first_ such header, check that id, and not trust any other. The Worker does exactly that: only the topmost `Authentication-Results` header counts, and only if its id is `mx.cloudflare.net`. If it is missing or names another server, `dkim`, `spf` and `dmarc` are all `none`. DMARC is read from the header, never computed.
 
+## Bulk mail
+
+The Worker sets `bulk` on each message from the sender's own headers: `List-Unsubscribe`, `List-Id`, `Precedence: bulk`, `list` or `junk`, `Auto-Submitted` other than `no`, or a no-reply style sender (`noreply`, `no-reply`, `donotreply`, `newsletter`, `marketing`, `notifications`). The box stores bulk mail but never wakes the Bot for it. The rule lives in `src/bulk.ts` and is mirrored in the box's Mac Mail reader; change both together. A Worker deployed before this sends no `bulk`, and every message counts as ordinary until it is redeployed.
+
 Expect `spf` to say `fail` or `softfail` for most forwarded mail: Cloudflare sees Google's or Apple's server, not the original sender's. `dkim` and `dmarc` carry the signal. This is reasoning from how forwarding works, **unverified** against real mail.
 
 Cloudflare rejects some mail before the Worker runs: mail that fails both SPF and DKIM, fails the sender domain's DMARC policy, or comes from a blocklisted IP. Forwarding can trip a strict sender DMARC policy. Those messages never reach the box; Gmail or iCloud still holds its copy.
