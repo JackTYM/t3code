@@ -14,6 +14,18 @@ export const BOT_MAIL_MAX_SEARCH_RESULTS = 50;
 
 const MailboxAddress = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(320));
 
+/**
+ * The Mac Mail reader names an account it cannot work out an address for `<8 hex>@` this domain.
+ * It is a placeholder, not the user's mailbox: the box keeps nothing for one unless the user
+ * allows that exact address.
+ */
+const BOT_MAIL_UNKNOWN_ACCOUNT_DOMAIN = "mail-app.invalid";
+export const isUnknownAccountMailbox = (mailbox: string) =>
+  mailbox.toLowerCase().endsWith(`@${BOT_MAIL_UNKNOWN_ACCOUNT_DOMAIN}`);
+
+/** Mail the last pull dropped because it came from an account of this placeholder mailbox. */
+const BotMailUnknownAccount = Schema.Struct({ mailbox: MailboxAddress, seen: Schema.Int });
+
 export const BotMailBackfillStatus = Schema.Struct({
   /**
    * `waiting`: the laptop did not answer, so the pull stops where it is and a later pull picks up.
@@ -28,6 +40,8 @@ export const BotMailBackfillStatus = Schema.Struct({
   updatedAt: IsoDateTime,
   /** Why it is waiting or failed; safe to show. */
   reason: Schema.optional(Schema.String),
+  /** Placeholder accounts this pull saw mail from and dropped, so the user can allow one. */
+  unknownAccounts: Schema.optional(Schema.Array(BotMailUnknownAccount)),
 });
 export type BotMailBackfillStatus = typeof BotMailBackfillStatus.Type;
 
@@ -46,6 +60,10 @@ export const BotMailStatus = Schema.Struct({
   forgotten: Schema.Int,
   lastReceivedAt: Schema.optional(IsoDateTime),
   backfill: Schema.optional(BotMailBackfillStatus),
+  /** Accounts the Mac Mail reader could not name, with how much mail of theirs was dropped. */
+  unknownAccounts: Schema.optional(
+    Schema.Array(Schema.Struct({ ...BotMailUnknownAccount.fields, label: Schema.String })),
+  ),
 });
 export type BotMailStatus = typeof BotMailStatus.Type;
 

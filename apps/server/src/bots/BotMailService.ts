@@ -8,6 +8,7 @@ import {
   type BotMailBackfillRequest,
   BotMailError,
   BotMailMessage,
+  isUnknownAccountMailbox,
   type BotMailOrigin,
   type BotMailSetMailboxesInput,
   ScheduledTaskError,
@@ -460,6 +461,14 @@ const make = Effect.gen(function* () {
       SELECT COUNT(forgotten_at) AS forgotten, MAX(received_at) AS last_received_at
       FROM bot_mail_messages WHERE folder = ${folder}
     `;
+    // One the user has since allowed is an account like any other, so it is no longer unknown.
+    const unknownAccounts = (current.backfill?.unknownAccounts ?? [])
+      .filter(({ mailbox }) => !current.mailboxes.includes(mailbox))
+      .map(({ mailbox, seen }) => ({
+        mailbox,
+        seen,
+        label: `unknown account (${seen} message${seen === 1 ? "" : "s"} seen)`,
+      }));
     return {
       mailboxes: current.mailboxes,
       retentionDays: current.retentionDays,
@@ -472,6 +481,7 @@ const make = Effect.gen(function* () {
             lastReceivedAt: DateTime.formatIso(DateTime.makeUnsafe(totals.last_received_at)),
           }),
       ...(current.backfill === undefined ? {} : { backfill: current.backfill }),
+      ...(unknownAccounts.length === 0 ? {} : { unknownAccounts }),
     } satisfies BotMailStatus;
   });
 
@@ -666,6 +676,11 @@ const make = Effect.gen(function* () {
         updatedAt: startedAt,
       };
       let cursor: string | null = resumes ? current.backfillCursor : null;
+      const unknown = new Map<string, number>(
+        resumes
+          ? (current.backfill?.unknownAccounts ?? []).map(({ mailbox, seen }) => [mailbox, seen])
+          : [],
+      );
       yield* saveBackfill(folder, state, cursor).pipe(Effect.mapError(ioError(botThreadId)));
       const finish = Effect.fn("BotMailService.finishBackfill")(function* (
         next: { readonly state: BotMailBackfillStatus["state"]; readonly reason?: string },
@@ -738,7 +753,12 @@ const make = Effect.gen(function* () {
             allowed,
           );
           if (outcome === "stored") stored += 1;
-          if (outcome === "dropped") dropped += 1;
+          if (outcome === "dropped") {
+            dropped += 1;
+            const mailbox = normalizeMailbox(message.mailbox);
+            if (isUnknownAccountMailbox(mailbox))
+              unknown.set(mailbox, (unknown.get(mailbox) ?? 0) + 1);
+          }
         }
         if (dropped > 0) {
           yield* Effect.logInfo(
@@ -748,7 +768,15 @@ const make = Effect.gen(function* () {
             },
           );
         }
-        state = { ...state, stored: state.stored + stored };
+        state = {
+          ...state,
+          stored: state.stored + stored,
+          ...(unknown.size === 0
+            ? {}
+            : {
+                unknownAccounts: [...unknown].map(([mailbox, seen]) => ({ mailbox, seen })),
+              }),
+        };
         if (nextCursor === undefined) return yield* finish({ state: "done" }, null);
         // A peer that hands back a cursor it already gave would be asked the same page forever.
         if (nextCursor === cursor || seen.has(nextCursor)) {

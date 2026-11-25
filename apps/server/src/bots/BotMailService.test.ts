@@ -598,6 +598,73 @@ it.effect("pulls backfill page by page, as history that never wakes the Bot", ()
   }).pipe(provideMail(orchestration, laptop1.layer));
 });
 
+it.effect("keeps nothing for an account the Mac could not name, and says what it saw", () => {
+  const orchestration = makeOrchestration();
+  const laptop1 = makeFakeLaptop();
+  const unknown = "aaaaaaaa@mail-app.invalid";
+  laptop1.state.pages.set(
+    "",
+    page(
+      [
+        mail("known"),
+        mail("u1", { mailbox: unknown }),
+        mail("u2", { mailbox: unknown }),
+        mail("v1", { mailbox: "bbbbbbbb@mail-app.invalid" }),
+      ],
+      "c2",
+    ),
+  );
+  laptop1.state.pages.set("c2", page([mail("u3", { mailbox: unknown.toUpperCase() })]));
+  return Effect.gen(function* () {
+    const { mailService, threadId } = yield* setupBot(orchestration);
+    const finished = yield* mailService.runBackfill({
+      threadId,
+      environmentId: laptop,
+      sinceDays: 30,
+    });
+    // Only the one mailbox the user allowed was kept; the puller reports every placeholder it saw.
+    assert.strictEqual(finished.stored, 1);
+    assert.deepStrictEqual(finished.unknownAccounts, [
+      { mailbox: unknown, seen: 3 },
+      { mailbox: "bbbbbbbb@mail-app.invalid", seen: 1 },
+    ]);
+    const status = yield* mailService.status({ botThreadId: threadId });
+    assert.deepStrictEqual(
+      status.unknownAccounts?.map(({ label }) => label),
+      ["unknown account (3 messages seen)", "unknown account (1 message seen)"],
+    );
+    assert.deepStrictEqual(status.counts, [
+      { mailbox: "me@gmail.com", origin: "backfill", count: 1 },
+    ]);
+
+    // The user allows exactly one placeholder: its mail is kept on the next pull, the other
+    // stays unknown.
+    yield* mailService.setMailboxes({ threadId, mailboxes: ["me@gmail.com", unknown] });
+    const next = yield* mailService.runBackfill({ threadId, environmentId: laptop, sinceDays: 30 });
+    assert.strictEqual(next.stored, 3);
+    const after = yield* mailService.status({ botThreadId: threadId });
+    assert.deepStrictEqual(
+      after.unknownAccounts?.map(({ mailbox }) => mailbox),
+      ["bbbbbbbb@mail-app.invalid"],
+    );
+  }).pipe(provideMail(orchestration, laptop1.layer));
+});
+
+it.effect("drops forwarded mail for a placeholder mailbox unless it is allowed", () => {
+  const orchestration = makeOrchestration();
+  return Effect.gen(function* () {
+    const { mailService, threadId } = yield* setupBot(orchestration);
+    assert.strictEqual(
+      yield* mailService.ingest({
+        botThreadId: threadId,
+        message: mail("p", { mailbox: "cccccccc@mail-app.invalid" }),
+      }),
+      "dropped",
+    );
+    assert.deepStrictEqual((yield* mailService.status({ botThreadId: threadId })).counts, []);
+  }).pipe(provideMail(orchestration));
+});
+
 it.effect("waits for a laptop that does not answer and resumes from its cursor", () => {
   const orchestration = makeOrchestration();
   const laptop1 = makeFakeLaptop();
