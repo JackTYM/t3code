@@ -1,0 +1,773 @@
+import { useAtomValue } from "@effect/atom-react";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+  type AtomCommandResult,
+} from "@t3tools/client-runtime/state/runtime";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import {
+  type BotWatcher,
+  type BotWatcherRunsOn,
+  type EnvironmentId,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
+import { T, useGT } from "gt-react";
+import { ChevronRightIcon, RefreshCwIcon } from "lucide-react";
+import { useState } from "react";
+
+import { newMessageId } from "~/lib/utils";
+import { m } from "~/i18n/messages";
+import { botFilesEnvironment } from "~/state/botFiles";
+import { useThreadShell } from "~/state/entities";
+import { useLinkedEnvironments } from "~/state/peerLinks";
+import { useEnvironmentQuery } from "~/state/query";
+import { threadEnvironment } from "~/state/threads";
+import { useAtomCommand } from "~/state/use-atom-command";
+import { useOrchestrationCommand } from "~/state/use-orchestration-command";
+import { RelativeTime } from "../RelativeTime";
+import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
+import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
+import { ScrollArea } from "../ui/scroll-area";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { Textarea } from "../ui/textarea";
+import { toastManager } from "../ui/toast";
+import {
+  botWatcherControls,
+  botWatcherDryRunOf,
+  botWatcherInterval,
+  botWatcherPlaces,
+  botWatcherReviseMessage,
+  botWatcherState,
+  groupBotWatchers,
+  parseBotWatcherDiff,
+  shortBotWatcherHash,
+  type BotWatcherBlock,
+  type BotWatcherControl,
+  type BotWatcherGroup,
+  type BotWatcherState,
+} from "./BotWatchersView.logic";
+
+const STATE_BADGE = {
+  new: "warning",
+  changed: "warning",
+  invalid: "error",
+  paused: "outline",
+  waiting: "warning",
+  failing: "error",
+  running: "success",
+} as const satisfies Record<BotWatcherState, "warning" | "error" | "outline" | "success" | "info">;
+
+function StateBadge(props: { state: BotWatcherState }) {
+  switch (props.state) {
+    case "new":
+      return (
+        <Badge variant={STATE_BADGE.new}>
+          <T>needs approval</T>
+        </Badge>
+      );
+    case "changed":
+      return (
+        <Badge variant={STATE_BADGE.changed}>
+          <T>stopped: changed</T>
+        </Badge>
+      );
+    case "invalid":
+      return (
+        <Badge variant={STATE_BADGE.invalid}>
+          <T>invalid</T>
+        </Badge>
+      );
+    case "paused":
+      return (
+        <Badge variant={STATE_BADGE.paused}>
+          <T>paused</T>
+        </Badge>
+      );
+    case "waiting":
+      return (
+        <Badge variant={STATE_BADGE.waiting}>
+          <T>waiting</T>
+        </Badge>
+      );
+    case "failing":
+      return (
+        <Badge variant={STATE_BADGE.failing}>
+          <T>failing</T>
+        </Badge>
+      );
+    case "running":
+      return (
+        <Badge variant={STATE_BADGE.running}>
+          <T>running</T>
+        </Badge>
+      );
+  }
+}
+
+function useBlockedReason() {
+  const gt = useGT();
+  return (block: BotWatcherBlock): string => {
+    switch (block) {
+      case "needs_terminal_access":
+        return gt("This connection cannot run code on this environment.");
+      case "needs_operate_access":
+        return gt("This connection cannot change threads on this environment.");
+      case "no_source":
+        return gt("The files for this version are missing or were changed on disk.");
+      case "run_once_first":
+        return gt("Run it once first. Approval needs a run of exactly this version.");
+      case "run_once_there_first":
+        return gt("Run it once where it will run first.");
+      case "nothing_to_approve":
+        return gt("There is no new version waiting.");
+      case "already_there":
+        return gt("It already runs there.");
+    }
+  };
+}
+
+function useIntervalLabel() {
+  const gt = useGT();
+  return (seconds: number): string => {
+    const { count, unit } = botWatcherInterval(seconds);
+    switch (unit) {
+      case "second":
+        return gt("every {count} s", { count });
+      case "minute":
+        return gt("every {count} min", { count });
+      case "hour":
+        return gt("every {count} h", { count });
+      case "day":
+        return gt("every {count} d", { count });
+    }
+  };
+}
+
+function ScriptOutput(props: { label: string; text: string }) {
+  if (props.text.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-muted-foreground text-xs">{props.label}</span>
+      <pre className="max-h-40 overflow-auto rounded-md bg-muted/50 p-2 font-mono text-xs whitespace-pre-wrap break-all">
+        {props.text}
+      </pre>
+    </div>
+  );
+}
+
+function DiffView(props: { diff: string }) {
+  const lines = parseBotWatcherDiff(props.diff);
+  return (
+    <pre className="max-h-64 overflow-auto rounded-md bg-muted/50 py-1 font-mono text-xs">
+      {lines.map((line, index) => (
+        <span
+          // The same text can repeat, and a patch is never reordered.
+          // oxlint-disable-next-line react/no-array-index-key
+          key={index}
+          className={
+            line.kind === "add"
+              ? "block bg-success/8 px-2 text-success-foreground"
+              : line.kind === "remove"
+                ? "block bg-destructive/8 px-2 text-destructive-foreground"
+                : line.kind === "hunk"
+                  ? "block px-2 text-muted-foreground"
+                  : "block px-2"
+          }
+        >
+          {`${line.kind === "add" ? "+" : line.kind === "remove" ? "-" : " "} ${line.text}`}
+        </span>
+      ))}
+    </pre>
+  );
+}
+
+type Busy = "run" | "approve" | "reject" | "move" | "pause" | "resume" | "remove" | "revise";
+
+function WatcherCard(props: {
+  threadRef: ScopedThreadRef;
+  watcher: BotWatcher;
+  linked: ReadonlyMap<EnvironmentId, string>;
+  grants: { readonly runCode: boolean; readonly operate: boolean };
+}) {
+  const gt = useGT();
+  const blockedReason = useBlockedReason();
+  const intervalLabel = useIntervalLabel();
+  const { watcher } = props;
+  const { environmentId, threadId } = props.threadRef;
+  const thread = useThreadShell(props.threadRef);
+  const dryRun = useAtomCommand(botFilesEnvironment.watcherDryRun, { reportFailure: false });
+  const approve = useAtomCommand(botFilesEnvironment.watcherApprove, { reportFailure: false });
+  const reject = useAtomCommand(botFilesEnvironment.watcherReject, { reportFailure: false });
+  const setRunsOn = useAtomCommand(botFilesEnvironment.watcherSetRunsOn, {
+    reportFailure: false,
+  });
+  const pause = useAtomCommand(botFilesEnvironment.watcherPause, { reportFailure: false });
+  const resume = useAtomCommand(botFilesEnvironment.watcherResume, { reportFailure: false });
+  const remove = useAtomCommand(botFilesEnvironment.watcherRemove, { reportFailure: false });
+  const startTurn = useOrchestrationCommand(threadEnvironment.startTurn, { reportFailure: false });
+  // Where the user means it to run. It follows the server until they pick a place.
+  const [picked, setPicked] = useState<BotWatcherRunsOn | null>(null);
+  const [busy, setBusy] = useState<Busy | null>(null);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const [revising, setRevising] = useState(false);
+  const [note, setNote] = useState("");
+
+  const target = picked ?? watcher.runsOn;
+  const state = botWatcherState(watcher);
+  const controls = botWatcherControls(watcher, target, props.grants);
+  const places = botWatcherPlaces(props.linked, watcher.runsOn);
+  const placeLabel = (place: BotWatcherRunsOn) =>
+    place === "local"
+      ? gt("This environment")
+      : (props.linked.get(place as EnvironmentId) ?? gt("A linked environment"));
+  const dryRunShown = botWatcherDryRunOf(watcher);
+  const runnableHash = watcher.pendingHash ?? watcher.approvedHash;
+  const showsMove = controls.move.enabled || (!controls.pending && target !== watcher.runsOn);
+
+  const settle = async (
+    action: Busy,
+    failureTitle: string,
+    perform: () => Promise<AtomCommandResult<unknown, unknown>>,
+  ) => {
+    setBusy(action);
+    const result = await perform();
+    setBusy(null);
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      toastManager.add({
+        type: "error",
+        title: failureTitle,
+        description:
+          thrownErrorMessage(squashAtomCommandFailure(result), m) ?? gt("An error occurred."),
+      });
+      return false;
+    }
+    return result._tag === "Success";
+  };
+  const base = { threadId, name: watcher.name };
+
+  const runOnce = () => {
+    if (runnableHash === undefined) return;
+    void settle("run", gt("Failed to run the watcher"), () =>
+      dryRun({
+        environmentId,
+        input: { ...base, hash: runnableHash, runsOn: target },
+      }),
+    );
+  };
+  const approveVersion = async () => {
+    if (watcher.pendingHash === undefined) return;
+    const done = await settle("approve", gt("Failed to approve the watcher"), () =>
+      approve({
+        environmentId,
+        input: { ...base, hash: watcher.pendingHash!, runsOn: target },
+      }),
+    );
+    if (done) setPicked(null);
+  };
+  const rejectVersion = () =>
+    void settle("reject", gt("Failed to reject the new version"), () =>
+      reject({ environmentId, input: base }),
+    );
+  const moveWatcher = async () => {
+    const done = await settle("move", gt("Failed to move the watcher"), () =>
+      setRunsOn({ environmentId, input: { ...base, runsOn: target } }),
+    );
+    if (done) setPicked(null);
+  };
+  const togglePaused = () =>
+    void settle(
+      watcher.paused ? "resume" : "pause",
+      watcher.paused ? gt("Failed to resume the watcher") : gt("Failed to pause the watcher"),
+      () =>
+        watcher.paused
+          ? resume({ environmentId, input: base })
+          : pause({ environmentId, input: base }),
+    );
+  const removeWatcher = () => {
+    setConfirmingRemove(false);
+    void settle("remove", gt("Failed to remove the watcher"), () =>
+      remove({ environmentId, input: base }),
+    );
+  };
+  const askForRevision = async () => {
+    if (thread === null) return;
+    const done = await settle("revise", gt("Failed to message the Bot"), () =>
+      startTurn({
+        environmentId,
+        input: {
+          threadId,
+          message: {
+            messageId: newMessageId(),
+            role: "user",
+            text: botWatcherReviseMessage(watcher, note),
+            attachments: [],
+          },
+          runtimeMode: thread.runtimeMode,
+          interactionMode: thread.interactionMode,
+          // Queued, so the Bot starts a turn from this message instead of steering one a wake
+          // began, which could not propose a watcher.
+          dispatchMode: "queue",
+          createdAt: new Date().toISOString(),
+        },
+      }),
+    );
+    if (done) {
+      setRevising(false);
+      setNote("");
+      toastManager.add({
+        type: "success",
+        title: gt("Asked the Bot to revise {name}", { name: watcher.name }),
+        description: gt("A new version needs its own Run once and approval."),
+      });
+    }
+  };
+
+  const why = (control: BotWatcherControl) =>
+    control.enabled ? undefined : blockedReason(control.reason);
+  // A disabled button has no tooltip, so the reason is printed under the row.
+  const approveReason = why(controls.approve);
+  const idle = busy === null;
+
+  return (
+    <li className="flex flex-col gap-2 py-3">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="font-medium">{watcher.name}</span>
+        <StateBadge state={state} />
+        {watcher.paused && state !== "paused" ? (
+          <Badge variant="outline">
+            <T>paused</T>
+          </Badge>
+        ) : null}
+        {watcher.intervalSeconds === undefined ? null : (
+          <span className="text-muted-foreground text-xs">
+            {intervalLabel(watcher.intervalSeconds)}
+          </span>
+        )}
+        {watcher.runtime === undefined ? null : (
+          <span className="text-muted-foreground text-xs">{watcher.runtime}</span>
+        )}
+        <label className="ms-auto flex items-center gap-1.5 text-muted-foreground text-xs">
+          <T>Runs on</T>
+          <Select<BotWatcherRunsOn, false>
+            value={target}
+            disabled={!props.grants.runCode || !idle}
+            onValueChange={(value) => {
+              if (value !== null) setPicked(value);
+            }}
+          >
+            <SelectTrigger size="xs" variant="ghost" aria-label={gt("Runs on")}>
+              <SelectValue>{(value: BotWatcherRunsOn) => placeLabel(value)}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              {places.map((place) => (
+                <SelectItem hideIndicator key={place.value} value={place.value}>
+                  {place.name ?? placeLabel(place.value)}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        </label>
+      </div>
+
+      {state === "new" ? (
+        <p className="text-muted-foreground text-xs">
+          <T>The Bot proposed this. Nothing runs until you approve this exact version.</T>
+        </p>
+      ) : state === "changed" ? (
+        <p className="text-muted-foreground text-xs">
+          <T>
+            The Bot saved a new version. The version you approved is stopped until you approve the
+            new one or reject it.
+          </T>
+        </p>
+      ) : state === "invalid" ? (
+        <p className="text-destructive-foreground text-xs">
+          <T>The files for this version are missing or were changed on disk. It does not run.</T>
+        </p>
+      ) : state === "waiting" && watcher.waiting !== undefined ? (
+        <p className="text-muted-foreground text-xs">
+          {gt("{place} did not answer: {reason}", {
+            place: placeLabel(watcher.runsOn),
+            reason: watcher.waiting.reason,
+          })}
+          {" · "}
+          <RelativeTime timestamp={new Date(watcher.waiting.since).toISOString()} />
+          {" · "}
+          <T>This is not a failure. It runs again when the environment answers.</T>
+        </p>
+      ) : state === "failing" && watcher.failingSince !== undefined ? (
+        <p className="text-muted-foreground text-xs">
+          <T>Failing since</T>{" "}
+          <RelativeTime timestamp={new Date(watcher.failingSince).toISOString()} />
+          {watcher.nextWakeAt === undefined ? null : (
+            <>
+              {" · "}
+              <T>wakes the Bot again</T>{" "}
+              <RelativeTime timestamp={new Date(watcher.nextWakeAt).toISOString()} />
+            </>
+          )}
+        </p>
+      ) : state === "paused" ? (
+        <p className="text-muted-foreground text-xs">
+          <T>Paused by you. The approved version is kept and does not run.</T>
+        </p>
+      ) : watcher.lastRunAt === undefined ? null : (
+        <p className="text-muted-foreground text-xs">
+          <T>Last ran</T> <RelativeTime timestamp={new Date(watcher.lastRunAt).toISOString()} />
+        </p>
+      )}
+
+      {controls.pending && watcher.diff !== undefined ? (
+        <div className="flex flex-col gap-1">
+          <span className="text-muted-foreground text-xs">
+            {gt("Changed since the version you approved ({from} to {to})", {
+              from: shortBotWatcherHash(watcher.approvedHash ?? ""),
+              to: shortBotWatcherHash(watcher.hash),
+            })}
+          </span>
+          <DiffView diff={watcher.diff} />
+        </div>
+      ) : null}
+
+      {watcher.source === undefined ? null : (
+        <Collapsible defaultOpen={state === "new"}>
+          <CollapsibleTrigger
+            render={<Button variant="ghost-muted" size="xs" className="group self-start" />}
+          >
+            <ChevronRightIcon aria-hidden className="group-data-panel-open:rotate-90" />
+            {gt("Source {hash}", { hash: shortBotWatcherHash(watcher.hash) })}
+          </CollapsibleTrigger>
+          <CollapsiblePanel animate={false}>
+            <ScrollArea className="max-h-64">
+              <pre className="rounded-md bg-muted/50 p-2 font-mono text-xs whitespace-pre-wrap break-all">
+                {watcher.source}
+              </pre>
+            </ScrollArea>
+            {watcher.expect === undefined ? null : (
+              <p className="mt-1 text-muted-foreground text-xs">
+                {gt("Healthy when the output matches {expect}", { expect: watcher.expect })}
+              </p>
+            )}
+          </CollapsiblePanel>
+        </Collapsible>
+      )}
+
+      {dryRunShown === undefined ? null : (
+        <div className="flex flex-col gap-1.5 rounded-lg border p-2">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+            <span className="font-medium">
+              <T>Run once</T>
+            </span>
+            <Badge variant={dryRunShown.healthy ? "success" : "error"}>
+              {gt("exit {exit}", { exit: dryRunShown.exit })}
+            </Badge>
+            <span className="text-muted-foreground">
+              {placeLabel(dryRunShown.runsOn ?? "local")}
+              {" · "}
+              <RelativeTime timestamp={dryRunShown.ranAt} />
+            </span>
+          </div>
+          <ScriptOutput label={gt("Output")} text={dryRunShown.stdout} />
+          <ScriptOutput label={gt("Errors")} text={dryRunShown.stderr} />
+          {dryRunShown.stdout.length === 0 && dryRunShown.stderr.length === 0 ? (
+            <span className="text-muted-foreground text-xs">
+              <T>It printed nothing.</T>
+            </span>
+          ) : null}
+        </div>
+      )}
+
+      {controls.pending ? (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={!controls.runOnce.enabled || !idle}
+              onClick={runOnce}
+            >
+              {busy === "run" ? <T>Running…</T> : <T>Run once</T>}
+            </Button>
+            <Button
+              size="xs"
+              disabled={!controls.approve.enabled || !idle}
+              onClick={() => void approveVersion()}
+            >
+              {busy === "approve" ? <T>Approving…</T> : <T>Approve this version</T>}
+            </Button>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={!controls.reject.enabled || !idle}
+              onClick={rejectVersion}
+            >
+              {watcher.approvedHash === undefined ? (
+                <T>Reject</T>
+              ) : (
+                <T>Reject, keep the approved version running</T>
+              )}
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={thread === null || !idle}
+              onClick={() => setRevising((open) => !open)}
+            >
+              <T>Ask the Bot to revise</T>
+            </Button>
+          </div>
+          {approveReason === undefined ? null : (
+            <p className="text-muted-foreground text-xs">{approveReason}</p>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          {showsMove ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-muted-foreground text-xs">
+                {gt("Moving to {place} needs a run there first.", { place: placeLabel(target) })}
+              </span>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={!controls.runOnce.enabled || !idle}
+                onClick={runOnce}
+              >
+                {busy === "run" ? <T>Running…</T> : <T>Run once there</T>}
+              </Button>
+              <Button
+                size="xs"
+                disabled={!controls.move.enabled || !idle}
+                onClick={() => void moveWatcher()}
+              >
+                <T>Move</T>
+              </Button>
+              <Button size="xs" variant="ghost" disabled={!idle} onClick={() => setPicked(null)}>
+                <T>Cancel</T>
+              </Button>
+            </div>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {watcher.approvedHash === undefined ? null : watcher.paused ? (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={!controls.resume.enabled || !idle}
+                onClick={togglePaused}
+              >
+                <T>Resume</T>
+              </Button>
+            ) : (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={!controls.pause.enabled || !idle}
+                onClick={togglePaused}
+              >
+                <T>Pause</T>
+              </Button>
+            )}
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={thread === null || !idle}
+              onClick={() => setRevising((open) => !open)}
+            >
+              <T>Ask the Bot to revise</T>
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {revising ? (
+        <form
+          className="flex flex-col gap-1.5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void askForRevision();
+          }}
+        >
+          <Textarea
+            size="sm"
+            rows={3}
+            value={note}
+            aria-label={gt("What should the Bot change?")}
+            placeholder={gt("What should the Bot change?")}
+            onChange={(event) => setNote(event.target.value)}
+          />
+          <div className="flex items-center justify-end gap-1.5">
+            <Button
+              size="xs"
+              variant="ghost"
+              type="button"
+              disabled={!idle}
+              onClick={() => setRevising(false)}
+            >
+              <T>Cancel</T>
+            </Button>
+            <Button size="xs" type="submit" disabled={note.trim().length === 0 || !idle}>
+              {busy === "revise" ? <T>Sending…</T> : <T>Send to the Bot</T>}
+            </Button>
+          </div>
+        </form>
+      ) : null}
+
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-muted-foreground text-xs">
+          {watcher.approvedHash === undefined
+            ? gt("No version approved yet.")
+            : gt("Approved version {hash}", { hash: shortBotWatcherHash(watcher.approvedHash) })}
+        </span>
+        <Button
+          size="xs"
+          variant="ghost-destructive"
+          disabled={!controls.remove.enabled || !idle}
+          onClick={() => setConfirmingRemove(true)}
+        >
+          <T>Remove</T>
+        </Button>
+      </div>
+
+      <AlertDialog open={confirmingRemove} onOpenChange={setConfirmingRemove}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{gt("Remove {name}?", { name: watcher.name })}</AlertDialogTitle>
+            <AlertDialogDescription>
+              <T>
+                This deletes the watcher and its versions. The Bot can propose it again, and you
+                would approve it again.
+              </T>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>
+              <T>Cancel</T>
+            </AlertDialogClose>
+            <Button variant="destructive" onClick={removeWatcher}>
+              <T>Remove</T>
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+    </li>
+  );
+}
+
+function GroupHeading(props: { group: BotWatcherGroup; count: number }) {
+  return (
+    <h3 className="pt-2 font-medium text-muted-foreground text-xs">
+      {props.group === "attention" ? (
+        <T>Needs you</T>
+      ) : props.group === "running" ? (
+        <T>Running</T>
+      ) : (
+        <T>Paused</T>
+      )}{" "}
+      · {props.count}
+    </h3>
+  );
+}
+
+/**
+ * The scripts the Bot proposes to watch things for free. The user reads each version, runs it
+ * once, and approves exactly that version; the source is never editable here.
+ */
+export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
+  const gt = useGT();
+  const { environmentId, threadId } = props.threadRef;
+  const watchers = useEnvironmentQuery(
+    botFilesEnvironment.watchers({ environmentId, input: { threadId } }),
+  );
+  // Run once, approve, move and resume all run code, so each needs terminal access. Every
+  // permission is read before any is combined, since a short-circuit would skip a hook.
+  const canDryRun = useAtomValue(botFilesEnvironment.watcherDryRun.permissionAtom(environmentId));
+  const canApprove = useAtomValue(botFilesEnvironment.watcherApprove.permissionAtom(environmentId));
+  const canMove = useAtomValue(botFilesEnvironment.watcherSetRunsOn.permissionAtom(environmentId));
+  const canResume = useAtomValue(botFilesEnvironment.watcherResume.permissionAtom(environmentId));
+  const canReject = useAtomValue(botFilesEnvironment.watcherReject.permissionAtom(environmentId));
+  const canPause = useAtomValue(botFilesEnvironment.watcherPause.permissionAtom(environmentId));
+  const canRemove = useAtomValue(botFilesEnvironment.watcherRemove.permissionAtom(environmentId));
+  const firstRemote = watchers.data?.watchers
+    .map((watcher) => watcher.runsOn)
+    .find((place): place is EnvironmentId => place !== "local");
+  const linked = useLinkedEnvironments(environmentId, firstRemote);
+
+  if (watchers.data === null) {
+    return <p className="text-muted-foreground text-sm">{watchers.error ?? <T>Loading…</T>}</p>;
+  }
+  const grants = {
+    runCode: canDryRun && canApprove && canMove && canResume,
+    operate: canReject && canPause && canRemove,
+  };
+  const groups = groupBotWatchers(watchers.data.watchers);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-muted-foreground text-xs">
+          <T>
+            The Bot writes these. Nothing runs until you approve that exact version, and any change
+            stops it again.
+          </T>
+        </p>
+        <Button
+          variant="ghost-muted"
+          size="icon-xs"
+          aria-label={gt("Refresh watchers")}
+          disabled={watchers.isPending}
+          onClick={watchers.refresh}
+        >
+          <RefreshCwIcon aria-hidden />
+        </Button>
+      </div>
+      {watchers.data.approvals === "unverified" ? (
+        <Alert variant="warning">
+          <AlertTitle>
+            <T>Approvals could not be verified</T>
+          </AlertTitle>
+          <AlertDescription>
+            <T>
+              The saved approvals failed their signature check, so every watcher is stopped until
+              you approve it again.
+            </T>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      {groups.length === 0 ? (
+        <p className="text-muted-foreground text-sm">
+          <T>The Bot has no watchers yet. Ask it to watch something and it will propose one.</T>
+        </p>
+      ) : (
+        <ScrollArea className="max-h-[28rem]">
+          {groups.map(({ group, watchers: inGroup }) => (
+            <section key={group}>
+              <GroupHeading group={group} count={inGroup.length} />
+              <ul className="flex flex-col divide-y text-sm">
+                {inGroup.map((watcher) => (
+                  <WatcherCard
+                    key={watcher.name}
+                    threadRef={props.threadRef}
+                    watcher={watcher}
+                    linked={linked}
+                    grants={grants}
+                  />
+                ))}
+              </ul>
+            </section>
+          ))}
+        </ScrollArea>
+      )}
+    </div>
+  );
+}

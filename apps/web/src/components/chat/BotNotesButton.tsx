@@ -23,6 +23,7 @@ import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { BotTasksView } from "./BotTasksView";
+import { BotWatchersView } from "./BotWatchersView";
 
 // tasks.md is edited as a list in the Tasks view, not as text.
 const FILES: ReadonlyArray<Exclude<BotFileKind, "tasks">> = ["notes", "preferences"];
@@ -100,7 +101,7 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
   const gt = useGT();
   const thread = useThreadShell(props.threadRef);
   const [open, setOpen] = useState(false);
-  const [view, setView] = useState<"notes" | "tasks">("notes");
+  const [view, setView] = useState<"notes" | "tasks" | "watchers">("notes");
   const canWrite = useAtomValue(
     botFilesEnvironment.write.permissionAtom(props.threadRef.environmentId),
   );
@@ -121,7 +122,7 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
         <BotIcon aria-hidden />
         <T>Bot</T>
       </PopoverTrigger>
-      <PopoverPopup width="lg" align="end">
+      <PopoverPopup width={view === "watchers" ? "xl" : "lg"} align="end">
         <div className="flex flex-col gap-3">
           <PopoverTitle>
             <T>Bot notes</T>
@@ -144,7 +145,7 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
             value={[view]}
             onValueChange={(next) => {
               const value = next[0];
-              if (value === "notes" || value === "tasks") setView(value);
+              if (value === "notes" || value === "tasks" || value === "watchers") setView(value);
             }}
           >
             <Toggle value="notes">
@@ -153,9 +154,14 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
             <Toggle value="tasks">
               <T>Tasks</T>
             </Toggle>
+            <Toggle value="watchers">
+              <T>Watchers</T>
+            </Toggle>
           </ToggleGroup>
           {view === "tasks" ? (
             <BotTasksView threadRef={props.threadRef} />
+          ) : view === "watchers" ? (
+            <BotWatchersView threadRef={props.threadRef} />
           ) : files.data === null ? (
             <p className="text-muted-foreground text-sm">{files.error ?? <T>Loading…</T>}</p>
           ) : (
