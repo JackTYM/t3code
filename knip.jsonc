@@ -159,6 +159,13 @@
       // Alchemy loads src/worker.ts as the Worker entry and reads its default export.
       "entry": ["alchemy.run.ts!", "src/persistence/schema.ts!", "src/worker.ts!"],
     },
+    "infra/mail-worker": {
+      // Wrangler loads src/worker.ts as the Worker entry (wrangler.jsonc `main`). The package has
+      // no Vitest dependency to switch on knip's test-file detection, so the tests are listed.
+      "entry": ["src/worker.ts!", "src/**/*.test.ts"],
+      // The Worker's runtime types are loaded by tsconfig `types`, which knip does not trace here.
+      "ignoreDependencies": ["@cloudflare/workers-types"],
+    },
     "packages/*": {
       // These workspace packages are private to this monorepo.
       "includeEntryExports": true,

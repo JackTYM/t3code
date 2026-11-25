@@ -1,0 +1,8 @@
+{
+  "name": "t3code-mail-worker",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-01",
+  // Bindings BOX_URL, WEBHOOK_SECRET and MAILBOXES are set as secrets, not here: the mailbox
+  // list is personal data and must stay out of git. See docs/operations/06_mail-worker.md.
+  "observability": { "enabled": true },
+}

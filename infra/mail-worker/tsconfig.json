@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "WebWorker"],
+    "types": ["@cloudflare/workers-types", "node"],
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        // Severities deep-merge with tsconfig.effect.json; this Worker is plain TypeScript, not Effect.
+        "diagnosticSeverity": {
+          "globalDate": "off",
+          "globalConsole": "off",
+          "globalTimers": "off",
+          "globalFetch": "off"
+        }
+      }
+    ]
+  },
+  "include": ["src/**/*.ts"]
+}
