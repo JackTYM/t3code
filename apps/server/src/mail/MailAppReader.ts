@@ -16,7 +16,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import { receiverAuth, type MailProvider } from "./MailAuthResults.ts";
+import { providerOfAccount, receiverAuth, type MailProvider } from "./MailAuthResults.ts";
 import {
   emlxMessage,
   parseMail,
@@ -264,11 +264,9 @@ const make = Effect.fn("MailAppReader.make")(function* (options: MailAppReaderOp
     entries: ReadonlyArray<Entry>,
   ): Effect.fn.Return<Account, PlatformError> {
     const topLevel = yield* listDirectory(dir);
-    const provider: MailProvider = topLevel.some((entry) =>
+    const hasGmailFolder = topLevel.some((entry) =>
       ["[gmail].mbox", "[google mail].mbox"].includes(entry.name.toLowerCase()),
-    )
-      ? "google"
-      : "other";
+    );
     const newest = (kind: Entry["kind"]) =>
       entries
         .filter((entry) => entry.kind === kind)
@@ -296,7 +294,7 @@ const make = Effect.fn("MailAppReader.make")(function* (options: MailAppReaderOp
         ...[...delivered, ...sentFrom].filter((row) => row.count >= 2).map((row) => row.address),
       ]),
     ];
-    return { provider, addresses };
+    return { provider: providerOfAccount({ hasGmailFolder, addresses }), addresses };
   });
 
   const buildIndex = Effect.fn("MailAppReader.buildIndex")(function* (nowMs: number) {

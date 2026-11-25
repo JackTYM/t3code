@@ -6,16 +6,37 @@ import { stripCommentsAndQuotes, type MailHeader } from "./MailMessageParser.ts"
  * Who received the mail, which decides whose `Authentication-Results` can be believed. Only the
  * receiving provider's own server vouches for a verdict; a sender can write any header it likes.
  */
-export type MailProvider = "google" | "other";
+export type MailProvider = "google" | "icloud" | "other";
 
 // The authserv-id each provider writes at the front of the header it adds on receipt. Google's is
-// the `mx.google.com` its Gmail headers show. iCloud's value is not here on purpose: no public
-// source states it, so an iCloud message gets no verdict until someone confirms one from a real
-// header, rather than trusting a value that was guessed.
+// the `mx.google.com` its Gmail headers show. iCloud's, `bimi.icloud.com`, was read off real
+// iCloud messages; no public source states it. Providers are not interchangeable: a Google id on
+// an iCloud account is a header some sender wrote.
 const TRUSTED_AUTHSERV_IDS: Readonly<Record<MailProvider, ReadonlySet<string>>> = {
   google: new Set(["mx.google.com"]),
+  icloud: new Set(["bimi.icloud.com"]),
   other: new Set(),
 };
+
+const ICLOUD_DOMAINS: ReadonlySet<string> = new Set(["icloud.com", "me.com", "mac.com"]);
+
+/**
+ * Which provider received an account's mail. Gmail is known by its folder layout. iCloud is known
+ * by the account's own address, since Mail's folder names for it are the same as for any other
+ * IMAP server. An iCloud account on a custom domain or a Hide My Email alias is not recognised,
+ * which only costs it a verdict: unknown means `other`, and `other` trusts no header.
+ */
+export function providerOfAccount(account: {
+  readonly hasGmailFolder: boolean;
+  readonly addresses: ReadonlyArray<string>;
+}): MailProvider {
+  if (account.hasGmailFolder) return "google";
+  return account.addresses.some((address) =>
+    ICLOUD_DOMAINS.has(address.slice(address.lastIndexOf("@") + 1).toLowerCase()),
+  )
+    ? "icloud"
+    : "other";
+}
 
 const NONE: BotMailAuth = { dkim: "none", spf: "none", dmarc: "none", source: "mail-app" };
 

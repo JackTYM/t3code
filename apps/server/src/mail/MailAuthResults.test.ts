@@ -1,14 +1,18 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { receiverAuth } from "./MailAuthResults.ts";
+import { providerOfAccount, receiverAuth } from "./MailAuthResults.ts";
 import { rfc822 } from "./MailAppReader.testkit.ts";
 import { parseMail } from "./MailMessageParser.ts";
 
-const authFor = (headers: ReadonlyArray<readonly [string, string]>, provider: "google" | "other") =>
-  receiverAuth(parseMail(new TextEncoder().encode(rfc822(headers, ""))).headers, provider);
+const authFor = (
+  headers: ReadonlyArray<readonly [string, string]>,
+  provider: "google" | "icloud" | "other",
+) => receiverAuth(parseMail(new TextEncoder().encode(rfc822(headers, ""))).headers, provider);
 
 const GOOGLE =
   "mx.google.com; dkim=pass header.i=@x.test header.s=s1; spf=pass (google.com: domain of a@x.test designates 1.2.3.4 as permitted sender) smtp.mailfrom=a@x.test; dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=x.test";
+const ICLOUD =
+  'bimi.icloud.com; bimi=skipped reason="insufficient dmarc"; dkim=pass header.d=x.test header.s=s1; dmarc=pass header.from=x.test; spf=pass smtp.mailfrom=a@x.test';
 const NONE = { dkim: "none", spf: "none", dmarc: "none", source: "mail-app" } as const;
 
 describe("receiverAuth", () => {
@@ -119,5 +123,74 @@ describe("receiverAuth", () => {
       new TextEncoder().encode(rfc822([["Subject", "x"]], `Authentication-Results: ${GOOGLE}`)),
     );
     assert.deepStrictEqual(receiverAuth(mail.headers, "google"), NONE);
+  });
+});
+
+describe("receiverAuth on iCloud", () => {
+  it("reads the verdicts iCloud added when it received the mail", () => {
+    assert.deepStrictEqual(authFor([["Authentication-Results", ICLOUD]], "icloud"), {
+      dkim: "pass",
+      spf: "pass",
+      dmarc: "pass",
+      source: "mail-app",
+    });
+  });
+
+  it("ignores a forged header the sender put below iCloud's own", () => {
+    assert.deepStrictEqual(
+      authFor(
+        [
+          ["Authentication-Results", "bimi.icloud.com; dkim=fail; spf=fail; dmarc=fail"],
+          ["Received", "from elsewhere by bimi.icloud.com"],
+          ["Authentication-Results", ICLOUD],
+        ],
+        "icloud",
+      ),
+      { dkim: "fail", spf: "fail", dmarc: "fail", source: "mail-app" },
+    );
+  });
+
+  it("gives no verdict when a forged header is on top, whoever it claims to be", () => {
+    for (const id of ["relay.evil.test", "mx.google.com", "bimi.icloud.com.evil.test"]) {
+      assert.deepStrictEqual(
+        authFor(
+          [
+            ["Authentication-Results", `${id}; dkim=pass; spf=pass; dmarc=pass`],
+            ["Authentication-Results", ICLOUD],
+          ],
+          "icloud",
+        ),
+        NONE,
+      );
+    }
+  });
+
+  it("does not take a Gmail-style id on an iCloud account, or iCloud's on a Gmail one", () => {
+    assert.deepStrictEqual(authFor([["Authentication-Results", GOOGLE]], "icloud"), NONE);
+    assert.deepStrictEqual(authFor([["Authentication-Results", ICLOUD]], "google"), NONE);
+    assert.deepStrictEqual(authFor([["Authentication-Results", ICLOUD]], "other"), NONE);
+  });
+});
+
+describe("providerOfAccount", () => {
+  it("knows Gmail by its folder and iCloud by the account's own address", () => {
+    assert.strictEqual(providerOfAccount({ hasGmailFolder: true, addresses: [] }), "google");
+    for (const address of ["me@icloud.com", "Me@ME.com", "old@mac.com"]) {
+      assert.strictEqual(
+        providerOfAccount({ hasGmailFolder: false, addresses: [address] }),
+        "icloud",
+      );
+    }
+  });
+
+  it("leaves everything else, and an account with no known address, as other", () => {
+    for (const addresses of [
+      [],
+      ["me@gmail.com"],
+      ["me@icloud.com.evil.test"],
+      ["me@noticloud.com"],
+    ]) {
+      assert.strictEqual(providerOfAccount({ hasGmailFolder: false, addresses }), "other");
+    }
   });
 });

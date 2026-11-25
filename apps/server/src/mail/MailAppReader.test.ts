@@ -26,6 +26,8 @@ const decodePage = Schema.decodeUnknownSync(BotMailBackfillPage);
 
 const GOOGLE_AUTH =
   "mx.google.com; dkim=pass header.i=@news.test; spf=pass smtp.mailfrom=n@news.test; dmarc=pass header.from=news.test";
+const ICLOUD_AUTH =
+  'bimi.icloud.com; bimi=skipped reason="insufficient dmarc"; dkim=pass header.d=news.test; dmarc=pass header.from=news.test; spf=pass smtp.mailfrom=n@news.test';
 const NO_VERDICT = { dkim: "none", spf: "none", dmarc: "none", source: "mail-app" } as const;
 
 type FixtureMessages = FixtureAccount["mailboxes"][number]["messages"];
@@ -451,6 +453,65 @@ it.effect("trusts the verdicts only on a Gmail account, and only the receiver's 
         });
         assert.deepStrictEqual(authOf("Subject noheader"), NO_VERDICT);
         assert.deepStrictEqual(authOf("Subject claimsGoogle"), NO_VERDICT);
+      }),
+  ),
+);
+
+it.effect("trusts iCloud's own verdict on an iCloud address, and no other header there", () =>
+  withStore(
+    [
+      {
+        id: ICLOUD,
+        mailboxes: [
+          {
+            folder: ["INBOX"],
+            messages: [
+              mail("genuine", {
+                to: "me@icloud.com",
+                date: "2025-06-14T09:00:00Z",
+                extra: [["Authentication-Results", ICLOUD_AUTH]],
+              }),
+              mail("claimsGoogle", {
+                to: "me@icloud.com",
+                date: "2025-06-13T09:00:00Z",
+                extra: [["Authentication-Results", GOOGLE_AUTH]],
+              }),
+              mail("forgedAbove", {
+                to: "me@icloud.com",
+                date: "2025-06-12T09:00:00Z",
+                extra: [
+                  ["Authentication-Results", "relay.evil.test; dkim=pass; spf=pass; dmarc=pass"],
+                  ["Authentication-Results", ICLOUD_AUTH],
+                ],
+              }),
+            ],
+          },
+          {
+            folder: ["Sent Messages"],
+            messages: [1, 2].map((n) =>
+              mail(`isent${n}`, {
+                from: "Me <me@icloud.com>",
+                to: "x@y.test",
+                date: "2025-06-01T10:00:00Z",
+              }),
+            ),
+          },
+        ],
+      },
+    ],
+    (reader) =>
+      Effect.gen(function* () {
+        const page = yield* reader.backfill({ sinceDays: 30 });
+        const authOf = (subject: string) =>
+          page.messages.find((message) => message.subject === subject)?.auth;
+        assert.deepStrictEqual(authOf("Subject genuine"), {
+          dkim: "pass",
+          spf: "pass",
+          dmarc: "pass",
+          source: "mail-app",
+        });
+        assert.deepStrictEqual(authOf("Subject claimsGoogle"), NO_VERDICT);
+        assert.deepStrictEqual(authOf("Subject forgedAbove"), NO_VERDICT);
       }),
   ),
 );
