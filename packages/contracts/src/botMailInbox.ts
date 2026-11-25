@@ -11,6 +11,7 @@ export const BOT_MAIL_DEFAULT_DIGEST_WINDOW_MINUTES = 5;
 export const BOT_MAIL_MAX_DIGEST_WINDOW_MINUTES = 24 * 60;
 export const BOT_MAIL_MAX_MAILBOXES = 50;
 export const BOT_MAIL_MAX_SEARCH_RESULTS = 50;
+export const BOT_MAIL_MAX_DROPPED_MAILBOXES = 10;
 
 const MailboxAddress = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(320));
 
@@ -59,6 +60,16 @@ const BotMailHookState = Schema.Struct({
   lastOutcome: Schema.optional(Schema.String),
 });
 
+/**
+ * Mail dropped because its mailbox is not on the allowlist. Only the count and a few recent
+ * mailbox names are kept: no subjects, senders or bodies.
+ */
+export const BotMailDropped = Schema.Struct({
+  count: Schema.Int,
+  /** Newest first, distinct, at most `BOT_MAIL_MAX_DROPPED_MAILBOXES`. */
+  mailboxes: Schema.Array(Schema.Struct({ mailbox: MailboxAddress, count: Schema.Int })),
+});
+
 export const BotMailStatusInput = Schema.Struct({ threadId: ThreadId });
 export type BotMailStatusInput = typeof BotMailStatusInput.Type;
 
@@ -72,6 +83,10 @@ export const BotMailStatus = Schema.Struct({
   ),
   /** Emails forgotten: only that they were is kept. */
   forgotten: Schema.Int,
+  /** How many stored emails are bulk. Absent from a server that does not count them. */
+  bulk: Schema.optional(Schema.Int),
+  /** Absent when nothing has been dropped since the user last cleared it. */
+  dropped: Schema.optional(BotMailDropped),
   lastReceivedAt: Schema.optional(IsoDateTime),
   backfill: Schema.optional(BotMailBackfillStatus),
   /** Accounts the Mac Mail reader could not name, with how much mail of theirs was dropped. */
@@ -117,6 +132,10 @@ export const BotMailHookSetup = Schema.Struct({
   created: Schema.Boolean,
 });
 export type BotMailHookSetup = typeof BotMailHookSetup.Type;
+
+/** Forgets the dropped-mail count and names. Adding a mailbox to the list clears just its own. */
+export const BotMailClearDroppedInput = Schema.Struct({ threadId: ThreadId });
+export type BotMailClearDroppedInput = typeof BotMailClearDroppedInput.Type;
 
 export const BotMailForgetInput = Schema.Struct({
   threadId: ThreadId,

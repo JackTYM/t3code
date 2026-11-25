@@ -260,6 +260,7 @@ describe("command permissions", () => {
     WS_METHODS.botWatcherRemove,
     WS_METHODS.botMailSetMailboxes,
     WS_METHODS.botMailForget,
+    WS_METHODS.botMailClearDropped,
     WS_METHODS.botMailBackfill,
     WS_METHODS.botMailCreateHook,
     WS_METHODS.botMailRotateHook,

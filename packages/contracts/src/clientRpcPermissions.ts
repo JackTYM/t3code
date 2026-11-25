@@ -67,6 +67,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // steer it; forgetting and pulling history change what it can read, nothing runs.
   [WS_METHODS.botMailSetMailboxes]: AuthOrchestrationOperateScope,
   [WS_METHODS.botMailForget]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botMailClearDropped]: AuthOrchestrationOperateScope,
   [WS_METHODS.botMailBackfill]: AuthOrchestrationOperateScope,
   // Makes the webhook mail arrives through, as saving a scheduled task does, and shows its secret
   // to the caller once; the hook runs nothing.

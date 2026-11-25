@@ -13,6 +13,7 @@ import {
 type BotMailCommandTag =
   | typeof WS_METHODS.botMailSetMailboxes
   | typeof WS_METHODS.botMailForget
+  | typeof WS_METHODS.botMailClearDropped
   | typeof WS_METHODS.botMailBackfill
   | typeof WS_METHODS.botMailCreateHook
   | typeof WS_METHODS.botMailRotateHook;
@@ -86,6 +87,7 @@ export function createBotFilesEnvironmentAtoms<R, E>(
     mailStatus,
     mailSetMailboxes: mailCommand("set-mailboxes", WS_METHODS.botMailSetMailboxes),
     mailForget: mailCommand("forget", WS_METHODS.botMailForget),
+    mailClearDropped: mailCommand("clear-dropped", WS_METHODS.botMailClearDropped),
     mailBackfill: mailCommand("backfill", WS_METHODS.botMailBackfill),
     mailCreateHook: mailCommand("create-hook", WS_METHODS.botMailCreateHook),
     mailRotateHook: mailCommand("rotate-hook", WS_METHODS.botMailRotateHook),

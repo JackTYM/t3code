@@ -228,6 +228,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.botMailStatus]: "orchestration",
   [WS_METHODS.botMailSetMailboxes]: "orchestration",
   [WS_METHODS.botMailForget]: "orchestration",
+  [WS_METHODS.botMailClearDropped]: "orchestration",
   [WS_METHODS.botMailBackfill]: "orchestration",
   [WS_METHODS.botMailCreateHook]: "orchestration",
   [WS_METHODS.botMailRotateHook]: "orchestration",

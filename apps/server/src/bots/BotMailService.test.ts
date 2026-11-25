@@ -564,6 +564,7 @@ it.effect("search returns summaries with no body text", () => {
     assert.notInclude(JSON.stringify(found), "SECRET-BODY-TEXT");
     assert.deepStrictEqual(Object.keys(found[0]!).sort(), [
       "authenticated",
+      "bulk",
       "from",
       "id",
       "mailbox",
@@ -967,4 +968,125 @@ it.effect("makes no hook for a thread that is not a Bot", () => {
     assert.strictEqual(refused.reason, "not_a_bot");
     assert.strictEqual(tasks.state.upserts.length, 0);
   }).pipe(provideMail(orchestration, makeFakeLaptop().layer, tasks.layer));
+});
+
+it.effect("stores bulk mail without waking the Bot and finds it only when asked", () => {
+  const orchestration = makeOrchestration();
+  return Effect.gen(function* () {
+    const { mailService, threadId } = yield* setupBot(orchestration);
+    const put = (message: BotMailMessage) => mailService.ingest({ botThreadId: threadId, message });
+    assert.strictEqual(yield* put(mail("promo", { subject: "50% off", bulk: true })), "stored");
+    yield* mailService.runDigest;
+    yield* TestClock.adjust(10 * MINUTE);
+    yield* mailService.runDigest;
+    assert.strictEqual(orchestration.sent.length, 0);
+
+    const status = yield* mailService.status({ botThreadId: threadId });
+    assert.strictEqual(status.bulk, 1);
+    assert.deepStrictEqual(status.counts, [
+      { mailbox: "me@gmail.com", origin: "forward", count: 1 },
+    ]);
+
+    const subjects = (includeBulk?: boolean) =>
+      mailService
+        .search({ botThreadId: threadId, includeBulk })
+        .pipe(Effect.map((found) => found.map(({ subject, bulk }) => `${subject}:${bulk}`)));
+    assert.deepStrictEqual(yield* subjects(), []);
+    assert.deepStrictEqual(yield* subjects(false), []);
+    assert.deepStrictEqual(yield* subjects(true), ["50% off:true"]);
+  }).pipe(provideMail(orchestration));
+});
+
+it.effect("a wake for ordinary mail lists none of the bulk mail and counts it", () => {
+  const orchestration = makeOrchestration();
+  return Effect.gen(function* () {
+    const { mailService, threadId } = yield* setupBot(orchestration);
+    const put = (message: BotMailMessage) => mailService.ingest({ botThreadId: threadId, message });
+    for (let n = 0; n < 14; n += 1)
+      yield* put(mail(`promo-${n}`, { subject: `Deal ${n}`, bulk: true }));
+    yield* put(mail("person", { subject: "Lunch?" }));
+    // Bulk mail pulled in from history is not new mail either.
+    yield* put(mail("old", { origin: "backfill", bulk: true, subject: "Old deal" }));
+
+    yield* mailService.runDigest;
+    assert.strictEqual(orchestration.sent.length, 1);
+    const text = orchestration.sent[0]!.text;
+    assert.match(text, /Mail digest: 1 new email\./u);
+    assert.include(text, "Lunch?");
+    assert.notInclude(text, "Deal ");
+    assert.notInclude(text, "Old deal");
+    assert.include(text, "14 bulk emails stored, not shown");
+
+    // The next wake only counts bulk mail that arrived since this one.
+    yield* TestClock.adjust(1);
+    yield* put(mail("promo-late", { subject: "Late deal", bulk: true }));
+    yield* put(mail("person-2", { subject: "Dinner?" }));
+    yield* TestClock.adjust(5 * MINUTE);
+    yield* mailService.runDigest;
+    assert.strictEqual(orchestration.sent.length, 2);
+    assert.include(orchestration.sent[1]!.text, "1 bulk email stored, not shown");
+    assert.notInclude(orchestration.sent[1]!.text, "14 bulk");
+
+    yield* put(mail("person-3", { subject: "Coffee?" }));
+    yield* TestClock.adjust(5 * MINUTE);
+    yield* mailService.runDigest;
+    assert.notInclude(orchestration.sent[2]!.text, "bulk email");
+  }).pipe(provideMail(orchestration));
+});
+
+it.effect("counts mail dropped for a mailbox that is not allowed, and clears it", () => {
+  const orchestration = makeOrchestration();
+  return Effect.gen(function* () {
+    const { mailService, threadId } = yield* setupBot(orchestration);
+    const put = (message: BotMailMessage) => mailService.ingest({ botThreadId: threadId, message });
+    assert.isUndefined((yield* mailService.status({ botThreadId: threadId })).dropped);
+
+    yield* put(mail("1", { mailbox: "abcd@privaterelay.appleid.com", subject: "SECRET-SUBJECT" }));
+    yield* put(mail("2", { mailbox: "abcd@privaterelay.appleid.com" }));
+    yield* put(mail("3", { mailbox: "other@example.com" }));
+    // A mailbox that is not shaped like an address is counted but never kept by name.
+    yield* put(mail("4", { mailbox: "not an address" }));
+    const status = yield* mailService.status({ botThreadId: threadId });
+    assert.deepStrictEqual(status.dropped, {
+      count: 4,
+      mailboxes: [
+        { mailbox: "other@example.com", count: 1 },
+        { mailbox: "abcd@privaterelay.appleid.com", count: 2 },
+      ],
+    });
+    assert.notInclude(JSON.stringify(status), "SECRET-SUBJECT");
+
+    // Allowing a mailbox takes just its own count off.
+    const allowed = yield* mailService.setMailboxes({
+      threadId,
+      mailboxes: ["me@gmail.com", "abcd@privaterelay.appleid.com"],
+    });
+    assert.deepStrictEqual(allowed.dropped, {
+      count: 2,
+      mailboxes: [{ mailbox: "other@example.com", count: 1 }],
+    });
+
+    const cleared = yield* mailService.clearDropped({ botThreadId: threadId });
+    assert.isUndefined(cleared.dropped);
+    assert.deepStrictEqual(cleared.mailboxes, ["me@gmail.com", "abcd@privaterelay.appleid.com"]);
+  }).pipe(provideMail(orchestration));
+});
+
+it.effect("remembers only the ten newest dropped mailboxes", () => {
+  const orchestration = makeOrchestration();
+  return Effect.gen(function* () {
+    const { mailService, threadId } = yield* setupBot(orchestration);
+    for (let n = 0; n < 12; n += 1) {
+      yield* mailService.ingest({
+        botThreadId: threadId,
+        message: mail(`m${n}`, { mailbox: `relay${n}@example.com` }),
+      });
+    }
+    const { dropped } = yield* mailService.status({ botThreadId: threadId });
+    assert.strictEqual(dropped?.count, 12);
+    assert.deepStrictEqual(
+      dropped?.mailboxes.map(({ mailbox }) => mailbox),
+      Array.from({ length: 10 }, (_, n) => `relay${11 - n}@example.com`),
+    );
+  }).pipe(provideMail(orchestration));
 });

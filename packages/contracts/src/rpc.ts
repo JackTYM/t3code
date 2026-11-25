@@ -226,6 +226,7 @@ import {
 import {
   BotMailBackfillRequest,
   BotMailBackfillStatus,
+  BotMailClearDroppedInput,
   BotMailError,
   BotMailForgetInput,
   BotMailHookInput,
@@ -583,6 +584,7 @@ export const WS_METHODS = {
   botMailStatus: "botMail.status",
   botMailSetMailboxes: "botMail.setMailboxes",
   botMailForget: "botMail.forget",
+  botMailClearDropped: "botMail.clearDropped",
   botMailBackfill: "botMail.backfill",
   botMailCreateHook: "botMail.createHook",
   botMailRotateHook: "botMail.rotateHook",
@@ -1982,6 +1984,12 @@ const WsBotMailForgetRpc = Rpc.make(WS_METHODS.botMailForget, {
   error: botMailFailure,
 });
 
+const WsBotMailClearDroppedRpc = Rpc.make(WS_METHODS.botMailClearDropped, {
+  payload: BotMailClearDroppedInput,
+  success: BotMailStatus,
+  error: botMailFailure,
+});
+
 const WsBotMailBackfillRpc = Rpc.make(WS_METHODS.botMailBackfill, {
   payload: BotMailBackfillRequest,
   success: BotMailBackfillStatus,
@@ -2954,6 +2962,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotMailStatusRpc,
   WsBotMailSetMailboxesRpc,
   WsBotMailForgetRpc,
+  WsBotMailClearDroppedRpc,
   WsBotMailBackfillRpc,
   WsBotMailCreateHookRpc,
   WsBotMailRotateHookRpc,

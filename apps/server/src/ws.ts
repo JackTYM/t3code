@@ -2717,6 +2717,8 @@ export const layerWsRpc = (
         [WS_METHODS.botMailSetMailboxes]: (input) => botMail.setMailboxes(input),
         [WS_METHODS.botMailForget]: ({ threadId, id }) =>
           botMail.forget({ botThreadId: threadId, id, by: "user" }),
+        [WS_METHODS.botMailClearDropped]: ({ threadId }) =>
+          botMail.clearDropped({ botThreadId: threadId }),
         [WS_METHODS.botMailBackfill]: (input) => botMail.backfill(input),
         [WS_METHODS.botMailCreateHook]: ({ threadId }) =>
           botMail.createHook({ botThreadId: threadId }),

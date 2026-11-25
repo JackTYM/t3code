@@ -229,17 +229,20 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
         .pipe(Effect.mapError(mailFailure));
       const tag = yield* mail.frameTag;
       return {
-        results: found.map(({ id, mailbox, sentAt, origin, authenticated, from, subject }) => ({
-          id,
-          mailbox,
-          sentAt,
-          origin,
-          authenticated,
-          message: frameUntrustedText(
-            tag,
-            `from: ${BotMailService.oneLine(from, BotMailService.MAIL_SENDER_MAX_CHARS)}\nsubject: ${BotMailService.oneLine(subject, BotMailService.MAIL_SUBJECT_MAX_CHARS)}`,
-          ),
-        })),
+        results: found.map(
+          ({ id, mailbox, sentAt, origin, authenticated, bulk, from, subject }) => ({
+            id,
+            mailbox,
+            sentAt,
+            origin,
+            authenticated,
+            bulk,
+            message: frameUntrustedText(
+              tag,
+              `from: ${BotMailService.oneLine(from, BotMailService.MAIL_SENDER_MAX_CHARS)}\nsubject: ${BotMailService.oneLine(subject, BotMailService.MAIL_SUBJECT_MAX_CHARS)}`,
+            ),
+          }),
+        ),
         notice: untrustedNotice(tag),
       };
     }),
