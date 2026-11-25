@@ -116,6 +116,13 @@ const ScheduledTaskWebhookDedupe = Schema.Struct({
   description: "Replay and coalesce key templates. Window in seconds, default 120.",
 });
 
+/**
+ * Where a verified delivery goes when it is not a prompt for a run. `bot-mail` hands the request
+ * body to the Bot's mail store; the task's thread names the Bot, and the body is never logged.
+ */
+export const ScheduledTaskWebhookSink = Schema.Literal("bot-mail");
+export type ScheduledTaskWebhookSink = typeof ScheduledTaskWebhookSink.Type;
+
 export const MAX_WEBHOOK_FILTERS = 16;
 
 const WebhookFilterPath = TrimmedNonEmptyString.check(
@@ -161,6 +168,7 @@ const ScheduledTaskWebhookSchedule = Schema.Struct({
   maxDeliveryAgeMinutes: Schema.optional(Schema.NullOr(WebhookMaxDeliveryAgeMinutes)),
   dedupe: Schema.optional(ScheduledTaskWebhookDedupe),
   filters: Schema.optional(ScheduledTaskWebhookFilters),
+  sink: Schema.optional(ScheduledTaskWebhookSink),
 }).annotate({
   description: "Run on each webhook request.",
 });
@@ -185,6 +193,10 @@ const ScheduledTaskUpsertWebhookSchedule = Schema.Struct({
   maxDeliveryAgeMinutes: Schema.optional(Schema.NullOr(WebhookMaxDeliveryAgeMinutes)),
   dedupe: Schema.optional(ScheduledTaskWebhookDedupe),
   filters: Schema.optional(ScheduledTaskWebhookFilters),
+  sink: Schema.optional(Schema.NullOr(ScheduledTaskWebhookSink)).annotate({
+    description:
+      "`bot-mail`: keep each request as an email in the thread's Bot mail store instead of running the prompt. Needs a Bot thread and no dedupe. Omitted: keep stored. Null clears.",
+  }),
 }).annotate({
   description:
     "Run per webhook request. Prompt can use {{body.path}}, {{headers.name}}, {{query.name}}, {{body}}, {{request}}.",
