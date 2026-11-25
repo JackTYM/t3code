@@ -593,6 +593,30 @@ export function parseMail(message: Uint8Array): ParsedMail {
   };
 }
 
+// Mirrors infra/mail-worker/src/bulk.ts, which judges forwarded mail; keep the two rules
+// identical. Only machine and marketing names: a real person's mail marked bulk would never wake
+// the Bot. `mailer-daemon` is automated but not bulk.
+const BULK_SENDER =
+  /^(?:no[-_.]?reply|do[-_.]?not[-_.]?reply|newsletters?|marketing|notifications?)$/u;
+
+/**
+ * Whether a message is marketing or automated mail, from the sender's own headers and an obvious
+ * no-reply sender. The sender writes all of these, so it sorts mail and vouches for nothing.
+ */
+export function isBulkMail(headers: ReadonlyArray<MailHeader>, from: string): boolean {
+  for (const { name, value: raw } of headers) {
+    const value = raw.trim();
+    if ((name === "list-unsubscribe" || name === "list-id") && value !== "") return true;
+    if (name === "precedence" && /^(?:bulk|list|junk)$/iu.test(value)) return true;
+    if (name === "auto-submitted") {
+      const kind = value.split(/[\s;]/u)[0]!.toLowerCase();
+      if (kind !== "" && kind !== "no") return true;
+    }
+  }
+  const at = from.lastIndexOf("@");
+  return at > 0 && BULK_SENDER.test(from.slice(0, at).split("+")[0]!.toLowerCase());
+}
+
 /** What sorting and account detection need from a header block, without reading a body. */
 export const summarizeHeaders = (headers: ReadonlyArray<MailHeader>) => ({
   from: addressesOf(headerValue(headers, "from"))[0],

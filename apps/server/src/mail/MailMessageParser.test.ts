@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- fixtures build message bytes.
 import { assert, describe, it } from "@effect/vitest";
 
-import { emlxMessage, parseMail } from "./MailMessageParser.ts";
+import { emlxMessage, isBulkMail, parseMail } from "./MailMessageParser.ts";
 import { rfc822 } from "./MailAppReader.testkit.ts";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
@@ -314,5 +314,52 @@ describe("bodies", () => {
     );
     assert.isAtMost(mail.bodyText.length, 200_000);
     assert.notMatch(mail.bodyText, /[\ud800-\udbff]$/u);
+  });
+});
+
+describe("isBulkMail", () => {
+  const bulk = (fields: Array<[string, string]>, from = "alice@example.com") => {
+    const mail = parse(rfc822([["From", from], ...fields], "body"));
+    return isBulkMail(mail.headers, mail.from);
+  };
+
+  it("leaves a person's mail alone", () => {
+    assert.isFalse(
+      bulk([
+        ["Subject", "Lunch?"],
+        ["Auto-Submitted", "no"],
+        ["Precedence", "normal"],
+      ]),
+    );
+  });
+
+  it("is bulk for list headers, bulk precedence and automated submission", () => {
+    assert.isTrue(bulk([["List-Unsubscribe", "<mailto:leave@shop.example>"]]));
+    assert.isTrue(bulk([["List-Id", "<news.example.com>"]]));
+    assert.isTrue(bulk([["Precedence", "Bulk"]]));
+    assert.isTrue(bulk([["Precedence", "list"]]));
+    assert.isTrue(bulk([["Precedence", "junk"]]));
+    assert.isTrue(bulk([["Auto-Submitted", "auto-generated"]]));
+    assert.isTrue(bulk([["Auto-Submitted", "auto-replied (vacation)"]]));
+  });
+
+  it("is bulk for obvious machine senders, and not for look-alikes or mailer-daemon", () => {
+    for (const from of [
+      "noreply@shop.example",
+      "No-Reply+x@shop.example",
+      "newsletter@shop.example",
+      "marketing@shop.example",
+      "notifications@shop.example",
+      "do_not_reply@shop.example",
+    ]) {
+      assert.isTrue(bulk([], from), from);
+    }
+    for (const from of [
+      "mailer-daemon@example.com",
+      "noreply.person@example.com",
+      "alice@noreply.example.com",
+    ]) {
+      assert.isFalse(bulk([], from), from);
+    }
   });
 });

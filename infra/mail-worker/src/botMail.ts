@@ -3,6 +3,7 @@ import PostalMime from "postal-mime";
 import type { Address } from "postal-mime";
 
 import { readCloudflareAuth } from "./authResults.ts";
+import { isBulkMail } from "./bulk.ts";
 import { htmlToText } from "./htmlToText.ts";
 import { chooseMailbox } from "./mailbox.ts";
 
@@ -79,5 +80,6 @@ export async function toBotMail(input: {
       ),
     auth: readCloudflareAuth(email.headers),
     origin: "forward",
+    bulk: isBulkMail(email.headers, (fromAddress ?? "").toLowerCase()),
   };
 }

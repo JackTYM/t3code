@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import { toBotMail } from "./botMail.ts";
+import { eml } from "./testFixtures.ts";
 import * as fixtures from "./testFixtures.ts";
 
 const NOW = new Date("2026-11-25T00:00:00.000Z");
@@ -124,5 +125,28 @@ describe("toBotMail", () => {
     const second = await convert(fixtures.noMessageIdBadDate);
     expect(first.messageId).toBe(second.messageId);
     expect(first.sentAt).toBe(NOW.toISOString());
+  });
+
+  it("marks newsletters bulk from their headers and leaves a person's mail alone", async () => {
+    const newsletter = eml(
+      "Message-ID: <n@shop.example>",
+      "From: Shop <deals@shop.example>",
+      "To: me@example.org",
+      "Subject: 50% off",
+      "List-Unsubscribe: <mailto:leave@shop.example>",
+      "",
+      "Buy things.",
+    );
+    expect((await convert(newsletter)).bulk).toBe(true);
+    const noreply = eml(
+      "Message-ID: <r@shop.example>",
+      "From: Shop <No-Reply@shop.example>",
+      "To: me@example.org",
+      "Subject: Your receipt",
+      "",
+      "Thanks.",
+    );
+    expect((await convert(noreply)).bulk).toBe(true);
+    expect((await convert(fixtures.multipartAlternative)).bulk).toBe(false);
   });
 });

@@ -19,6 +19,7 @@ import * as Semaphore from "effect/Semaphore";
 import { providerOfAccount, receiverAuth, type MailProvider } from "./MailAuthResults.ts";
 import {
   emlxMessage,
+  isBulkMail,
   parseMail,
   readHeaders,
   summarizeHeaders,
@@ -392,6 +393,7 @@ const make = Effect.fn("MailAppReader.make")(function* (options: MailAppReaderOp
       attachmentNames: parsed.attachmentNames,
       auth: receiverAuth(parsed.headers, account?.provider ?? "other"),
       origin: "backfill",
+      bulk: isBulkMail(parsed.headers, parsed.from),
     };
   };
 

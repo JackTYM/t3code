@@ -51,6 +51,12 @@ export const BotMailMessage = Schema.Struct({
   attachmentNames: Schema.Array(Schema.String.check(Schema.isMaxLength(255))),
   auth: BotMailAuth,
   origin: BotMailOrigin,
+  /**
+   * Marketing or automated mail, judged from the sender's own headers (`List-Unsubscribe`,
+   * `List-Id`, `Precedence`, `Auto-Submitted`) and obvious no-reply sender names. It is stored and
+   * searchable but never wakes the Bot. Absent on mail stored before this existed: not bulk.
+   */
+  bulk: Schema.optional(Schema.Boolean),
 });
 export type BotMailMessage = typeof BotMailMessage.Type;
 
