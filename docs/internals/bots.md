@@ -91,21 +91,40 @@ no signal at all.
   back; tombstones outlive the mail by one retention period.
 - **The Bot hears a digest, not mail.** At most one wake per window (default 5 minutes, per Bot),
   through `BotService.wakeWith`, so the turn it starts counts as a wake turn for `startedByWake` and
-  cannot propose or remove watchers. One line per new email (#number, mailbox, sender, subject,
-  authenticated or unverified from DMARC), never bodies, framed as untrusted data. Backfilled mail
-  is history and never wakes. The Bot reads with `t3_bot_mail_read` (body inside the frame) and
-  `t3_bot_mail_search`, and writes follow-ups to `tasks.md` itself. There is no send, delete or
-  archive tool.
+  cannot propose or remove watchers. One line per new email (#number, mailbox, sender capped at 100
+  characters, subject capped at 200, authenticated or unverified from DMARC), never bodies, framed
+  as untrusted data. Control and bidi characters are stripped from what a sender wrote, and `|` in
+  it is replaced, so a subject cannot forge the line's own fields. Backfilled mail is history and
+  never wakes. `t3_bot_mail_search` returns the same sender and subject and no body text; there is
+  no send, delete or archive tool.
+- **Bodies are read by a child that must ask.** Everything in an email body is attacker text, and a
+  Bot's own runtime mode is full access for Home, so `t3_bot_mail_read` refuses any caller whose
+  thread is not `approval-required`, and the refusal tells the Bot to `delegate_task` with that
+  mode. The caller is the one the call came from: `callerMailOwner` in
+  [`handlers.ts`](../../apps/server/src/mcp/toolkits/bot/handlers.ts) loads the thread's current
+  mode on every call and again before the body is returned, so a user who raises the thread while
+  the read runs gets no body. Only `approval-required` passes, not "anything below full access":
+  `auto` lets a classifier approve commands, and `auto-accept-edits` lets a body write files. The
+  child reaches a Bot's mail only by walking its `subagent` parent links to a live Bot, never by
+  naming one. The mail tools are listed to a Bot and to its delegated children (the credential's
+  `botCrew` flag, set when it is issued); ordinary threads pay nothing for them. Flipping the Bot
+  thread's mode around a wake was rejected: it races the user's own turns and is not crash-safe.
+  What the child reports back is a derivative of the same text, so the instructions call it
+  untrusted too. Claude pre-approves T3's MCP tools through the `mcp__t3-code__*` allowed-tools
+  wildcard (`claudeMcpQueryOverrides`), so the child's reads do not wait for the user; its shell
+  and edits still do. Codex raises an MCP elicitation for tools it considers unsafe, which the user
+  would see as an approval; whether it does so for these read-only tools is not tested here.
+- **Hook setup.** `botMail.createHook` makes the webhook task (`sink: "bot-mail"`, signature header
+  `x-t3-signature`, `sha256=` prefix, hex, a generated secret, no dedupe) through
+  `ScheduledTaskService`, bound to the Bot's thread, and returns its address and secret once; a
+  second call returns the same hook without the secret. `botMail.rotateHook` saves a new secret over
+  the task. A task holds one signing secret, so there is no overlap: mail signed with the old secret
+  is refused until the Worker has the new one. `botMail.status` shows whether the hook exists, is
+  enabled and signed, and how its last delivery ended; its address and secret are not in a status,
+  which any reader can fetch.
 - **Backfill** is pulled by the box: it asks the laptop's peer-only `t3_mail_backfill` through
   `PeerMcpClient` page by page, stores each page as `backfill`, and resumes from its saved cursor.
   A laptop that does not answer leaves it `waiting`, not failed.
-- **Containment is not done.** A mail-woken turn runs in the Bot thread's own runtime mode, which
-  is full access for Home. A turn's mode is the thread's, read when the turn starts; a message
-  carries none, and the dispatch mode limit only refuses commands against a thread above it. Lowering
-  one wake would mean lowering the thread and restoring it afterwards, which also changes what the
-  user's own turns in that window may do. Until that is built, the Bot instructions (never run
-  shell commands or edit files) and the user approving every watcher are what stand between a
-  hostile email and a command.
 
 ## Mail backfill from the Mac Mail app
 
@@ -126,11 +145,17 @@ maps to a file, while the files and their headers do not.
   dropped by header, which also covers folders with names the list lacks.
 - **Which account.** The directory is the account; its address is the majority `From` of its sent
   mail and `Delivered-To` of its received mail. The box dedupes per mailbox, so an account with no
-  readable address gets a `<uuid>@mail-app.invalid` mailbox rather than none.
+  readable address gets a `<8 hex>@mail-app.invalid` mailbox rather than none. That is a
+  placeholder, not the user's mailbox: the box keeps its mail only if the user allows that exact
+  address, and otherwise counts what it dropped per placeholder, on the pull and in `botMail.status`
+  (`unknownAccounts`), so the user can see what is missing.
 - **Authentication.** `auth` is read only from the topmost `Authentication-Results` header, and only
-  when its authserv-id is the receiving provider's: `mx.google.com` for an account with a
-  `[Gmail]` folder. Receivers prepend their headers, so anything a sender forged sits below. iCloud
-  returns `none` until its authserv-id is confirmed from a real header: no public source states it.
+  when its authserv-id is the receiving provider's: `mx.google.com` for an account with a `[Gmail]`
+  folder, `bimi.icloud.com` (read off real iCloud messages) for one whose own address is on
+  icloud.com, me.com or mac.com. Receivers prepend their headers, so anything a sender forged sits
+  below, and another provider's id on top is itself a forgery. Mail names iCloud's folders as it does
+  any IMAP server's, so the address is the only signal; an iCloud account on a custom domain or a Hide
+  My Email alias gets no verdict, never a wrong one.
 
 ## Watchers
 

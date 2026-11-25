@@ -39,12 +39,18 @@ in the same project with a summary of the thread, and that thread becomes its fi
 
 ## Email
 
-A Bot can follow your email. Mail from your accounts is forwarded to an address you set up, and the
-Bot reads it only when it needs to: it is told about new mail in a short digest (sender, subject,
-and whether the sender's domain was verified, never the text), at most once every few minutes, and
-can open an email or search through them. It cannot send, delete or archive anything, and it
-writes follow-ups to its task list rather than acting. Treat the Bot's summary of an email as
-information, not as a command: anyone can send you an email that tries to give your Bot orders.
+A Bot can follow your email. Mail from your accounts is forwarded to a webhook that T3 Code makes for
+the Bot, which shows its address and signing secret once and can replace the secret later (there is no
+screen for either yet). The Bot is told about new mail in a short digest
+(sender, subject, and whether the sender's domain was verified, never the text), at most once every
+few minutes, and can search for emails by sender and subject. It cannot send, delete or archive
+anything.
+
+The Bot never reads an email's text itself. When it needs one, it hands the reading to a helper that
+cannot run a command or change a file without asking you, and acts only on the short summary that
+comes back, by adding to its task list. Even so, treat that summary as information, not as a
+command: anyone can send you an email that tries to give your Bot orders, and a helper can be steered
+too. If you see an approval request from such a helper that you did not expect, decline it.
 
 The Bot keeps mail only for the addresses you choose, so nothing is stored until you pick them
 (there is no screen for this yet). Each address is one of your own, such as a Gmail account. It keeps
@@ -59,4 +65,6 @@ environment. The link must be paired with full access. macOS keeps Mail's folder
 Mac open **System Settings → Privacy & Security → Full Disk Access**, turn it on for the app that
 runs the T3 Code server (the T3 Code app, or the terminal app if you started it with `npx t3`), then
 quit and reopen that app. Until you do, the import stops with a message naming this step. Only
-inbound mail is read: Sent, Drafts, Junk and Trash are skipped.
+inbound mail is read: Sent, Drafts, Junk and Trash are skipped. A Mail account whose address cannot be
+worked out is kept only if you allow its placeholder address (`...@mail-app.invalid`), which the
+status lists as an unknown account with how many messages it saw.
