@@ -51,3 +51,12 @@ The Bot keeps mail only for the addresses you choose, so nothing is stored until
 mail for 90 days by default, and you can forget a single email: only that you forgot it is kept.
 Mail already in the Mac Mail app on a linked laptop can be pulled in as history; that does not wake
 the Bot, and a laptop that is asleep just makes the pull wait.
+
+## Importing mail from your Mac
+
+A Bot that keeps your mail can import the last 30 to 90 days from the Mail app on a Mac linked to its
+environment. The link must be paired with full access. macOS keeps Mail's folder private, so on that
+Mac open **System Settings → Privacy & Security → Full Disk Access**, turn it on for the app that
+runs the T3 Code server (the T3 Code app, or the terminal app if you started it with `npx t3`), then
+quit and reopen that app. Until you do, the import stops with a message naming this step. Only
+inbound mail is read: Sent, Drafts, Junk and Trash are skipped.
