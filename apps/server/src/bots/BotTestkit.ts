@@ -42,6 +42,7 @@ export interface FakeThread {
   readonly title: string;
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: "full-access";
+  readonly interactionMode: "default";
   readonly lineage: { readonly parentThreadId: ThreadId | null };
   botConfig: ThreadBotConfig | null;
   groupedUnderThreadId: ThreadId | null;
@@ -91,6 +92,7 @@ export const makeOrchestration = () => {
       title: id,
       modelSelection: model,
       runtimeMode: "full-access",
+      interactionMode: "default",
       lineage: { parentThreadId: null },
       botConfig: null,
       groupedUnderThreadId: null,

@@ -261,6 +261,8 @@ describe("command permissions", () => {
     WS_METHODS.botMailSetMailboxes,
     WS_METHODS.botMailForget,
     WS_METHODS.botMailBackfill,
+    WS_METHODS.botMailCreateHook,
+    WS_METHODS.botMailRotateHook,
   ])("uses the target grant for both availability and execution of %s", (method) =>
     Effect.gen(function* () {
       const registry = yield* setup;

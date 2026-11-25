@@ -228,6 +228,8 @@ import {
   BotMailBackfillStatus,
   BotMailError,
   BotMailForgetInput,
+  BotMailHookInput,
+  BotMailHookSetup,
   BotMailSetMailboxesInput,
   BotMailStatus,
   BotMailStatusInput,
@@ -582,6 +584,8 @@ export const WS_METHODS = {
   botMailSetMailboxes: "botMail.setMailboxes",
   botMailForget: "botMail.forget",
   botMailBackfill: "botMail.backfill",
+  botMailCreateHook: "botMail.createHook",
+  botMailRotateHook: "botMail.rotateHook",
   botWatcherList: "botWatcher.list",
   botWatcherDryRun: "botWatcher.dryRun",
   botWatcherApprove: "botWatcher.approve",
@@ -1984,6 +1988,18 @@ const WsBotMailBackfillRpc = Rpc.make(WS_METHODS.botMailBackfill, {
   error: botMailFailure,
 });
 
+const WsBotMailCreateHookRpc = Rpc.make(WS_METHODS.botMailCreateHook, {
+  payload: BotMailHookInput,
+  success: BotMailHookSetup,
+  error: botMailFailure,
+});
+
+const WsBotMailRotateHookRpc = Rpc.make(WS_METHODS.botMailRotateHook, {
+  payload: BotMailHookInput,
+  success: BotMailHookSetup,
+  error: botMailFailure,
+});
+
 const botWatcherFailure = Schema.Union([BotWatcherError, EnvironmentAuthorizationError]);
 
 const WsBotWatcherListRpc = Rpc.make(WS_METHODS.botWatcherList, {
@@ -2939,6 +2955,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotMailSetMailboxesRpc,
   WsBotMailForgetRpc,
   WsBotMailBackfillRpc,
+  WsBotMailCreateHookRpc,
+  WsBotMailRotateHookRpc,
   WsBotWatcherListRpc,
   WsBotWatcherDryRunRpc,
   WsBotWatcherApproveRpc,

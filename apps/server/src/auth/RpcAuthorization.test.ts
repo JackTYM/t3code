@@ -151,12 +151,14 @@ describe("RPC authorization scopes", () => {
     }
   });
 
-  it("lets readers see a Bot's mail status, but choosing mailboxes, forgetting or pulling takes operate", () => {
+  it("lets readers see a Bot's mail status, but choosing mailboxes, forgetting, pulling or setting up the hook takes operate", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.botMailStatus)).toBe(AuthOrchestrationReadScope);
     for (const method of [
       WS_METHODS.botMailSetMailboxes,
       WS_METHODS.botMailForget,
       WS_METHODS.botMailBackfill,
+      WS_METHODS.botMailCreateHook,
+      WS_METHODS.botMailRotateHook,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }

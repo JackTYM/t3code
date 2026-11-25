@@ -2309,6 +2309,51 @@ it.effect("hands a signed delivery to the task's sink instead of starting a run"
   ),
 );
 
+it.effect("a rotated signing secret replaces the old one at once; the two never overlap", () =>
+  withService(({ service }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* service.registerWebhookSink("bot-mail", () => Effect.void);
+        const { task } = yield* service.upsert(yield* mailHookInput());
+        const rotated = yield* service.upsert(
+          yield* mailHookInput({
+            requireExisting: true,
+            schedule: {
+              type: "webhook",
+              sink: "bot-mail",
+              signature: {
+                header: "x-t3-signature",
+                encoding: "hex",
+                prefix: "sha256=",
+                secret: "rotated-secret",
+              },
+            },
+          }),
+        );
+        // Same address, so the Worker's URL stays and only its secret changes.
+        assert.equal(rotated.task.webhook?.path, task.webhook?.path);
+        const signedWith = (secret: string) =>
+          requestFor(task, {
+            body: new TextEncoder().encode("{}"),
+            bodyText: "{}",
+            headers: {
+              "content-type": "application/json",
+              "x-t3-signature": `sha256=${NodeCrypto.createHmac("sha256", secret).update("{}").digest("hex")}`,
+            },
+          });
+        assert.equal(
+          (yield* service.triggerWebhook(signedWith("mail-secret")))._tag,
+          "rejected_signature",
+        );
+        assert.equal(
+          (yield* service.triggerWebhook(signedWith("rotated-secret")))._tag,
+          "accepted",
+        );
+      }),
+    ),
+  ),
+);
+
 it.effect("fails a sink delivery that finds no sink, so the sender tries again", () =>
   withService(({ service, launches }) =>
     Effect.gen(function* () {

@@ -7,6 +7,8 @@ import {
   type BotMailBackfillPage,
   EnvironmentId,
   OrchestratorMcpFailure,
+  type ScheduledTask,
+  type ScheduledTaskUpsertInput,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -19,6 +21,7 @@ import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as BotMailService from "./BotMailService.ts";
 import * as BotService from "./BotService.ts";
@@ -90,15 +93,88 @@ const makeFakeLaptop = () => {
   return { state, layer };
 };
 
+/**
+ * A scheduled-task service that keeps what it is given, so a test sees the hook the box made. Its
+ * addresses are the relay form when `relay` is set, as the real one answers with T3 Connect on.
+ */
+const makeFakeTasks = (options: { readonly relay: boolean } = { relay: true }) => {
+  const state = {
+    tasks: [] as Array<ScheduledTask>,
+    secrets: new Map<string, string>(),
+    upserts: [] as Array<ScheduledTaskUpsertInput>,
+    deliveries: [] as Array<{ readonly receivedAt: string; readonly outcome: string }>,
+  };
+  const endpointOf = (id: string, hasSecret: boolean) => ({
+    path: `/api/hooks/${id}/tok`,
+    url: options.relay ? `https://relay.example/v1/hooks/0123456789abcdef/${id}/tok` : null,
+    hasSecret,
+  });
+  const layer = Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+    list: () => Effect.succeed({ tasks: state.tasks }),
+    upsert: (input) =>
+      Effect.sync(() => {
+        state.upserts.push(input);
+        const id = input.id!;
+        const schedule = input.schedule;
+        if (schedule.type !== "webhook") throw new Error("not a webhook");
+        const secret = schedule.signature?.secret ?? state.secrets.get(id);
+        if (secret !== undefined) state.secrets.set(id, secret);
+        const task = {
+          id,
+          title: input.title,
+          prompt: input.prompt,
+          enabled: input.enabled,
+          schedule: {
+            type: "webhook",
+            signature:
+              schedule.signature == null
+                ? null
+                : {
+                    header: schedule.signature.header,
+                    encoding: schedule.signature.encoding,
+                    prefix: schedule.signature.prefix,
+                  },
+            maxDeliveryAgeMinutes: schedule.maxDeliveryAgeMinutes ?? null,
+            ...(schedule.sink == null ? {} : { sink: schedule.sink }),
+          },
+          projectId: input.projectId,
+          threadId: input.threadId ?? null,
+          workspaceStrategy: input.workspaceStrategy,
+          modelSelection: input.modelSelection,
+          runtimeMode: input.runtimeMode,
+          interactionMode: input.interactionMode,
+          createdBy: "user",
+          creationSource: "web",
+          createdAt: "2026-11-25T12:00:00.000Z",
+          updatedAt: "2026-11-25T12:00:00.000Z",
+          nextRunAt: null,
+          lastRunAt: null,
+          lastRunStatus: "never",
+          lastRunError: null,
+          runCount: 0,
+          webhook: endpointOf(id, secret !== undefined),
+        } as unknown as ScheduledTask;
+        state.tasks = [...state.tasks.filter((existing) => existing.id !== id), task];
+        return { task };
+      }),
+    listWebhookDeliveries: () =>
+      Effect.succeed({
+        deliveries: state.deliveries.map((delivery) => ({ ...delivery })) as never,
+      }),
+  });
+  return { state, layer };
+};
+
 // The real one ticks every five seconds forever, which setTime would have to replay from 1970.
 const layerScheduler = Layer.mock(Scheduler.Scheduler)({ register: () => Effect.void });
 
 const layerMail = (
   orchestration: ReturnType<typeof makeOrchestration>,
   laptopLayer: Layer.Layer<PeerMcpClient.PeerMcpClient>,
+  tasksLayer: Layer.Layer<ScheduledTaskService.ScheduledTaskService>,
 ) =>
   BotMailService.layer.pipe(
-    Layer.provideMerge(Layer.mergeAll(laptopLayer, layerScheduler)),
+    Layer.provideMerge(Layer.mergeAll(laptopLayer, layerScheduler, tasksLayer)),
     Layer.provideMerge(BotService.layer),
     Layer.provideMerge(orchestration.layer),
     Layer.provideMerge(ServerSettings.ServerSettingsService.layerTest()),
@@ -110,7 +186,8 @@ const layerMail = (
 const provideMail = (
   orchestration: ReturnType<typeof makeOrchestration>,
   laptopLayer: Layer.Layer<PeerMcpClient.PeerMcpClient> = makeFakeLaptop().layer,
-) => Effect.provide(layerMail(orchestration, laptopLayer));
+  tasksLayer: Layer.Layer<ScheduledTaskService.ScheduledTaskService> = makeFakeTasks().layer,
+) => Effect.provide(layerMail(orchestration, laptopLayer, tasksLayer));
 
 /** A Bot that keeps mail for `me@gmail.com`. */
 const setupBot = (orchestration: ReturnType<typeof makeOrchestration>, id = "thread:bot") => {
@@ -741,4 +818,153 @@ it.effect("reports a pull that a restart interrupted as waiting", () => {
     assert.strictEqual(status.backfill?.state, "waiting");
     assert.strictEqual(status.backfill?.stored, 4);
   }).pipe(provideMail(orchestration));
+});
+
+it.effect("makes the mail hook once, signed, and shows its secret only that once", () => {
+  const orchestration = makeOrchestration();
+  const tasks = makeFakeTasks();
+  return Effect.gen(function* () {
+    const { mailService, threadId } = yield* setupBot(orchestration);
+    const first = yield* mailService.createHook({ botThreadId: threadId });
+    assert.isTrue(first.created);
+    assert.match(first.secret ?? "", /^[0-9a-f]{64}$/u);
+    assert.strictEqual(first.signatureHeader, "x-t3-signature");
+    assert.strictEqual(first.signaturePrefix, "sha256=");
+    assert.match(first.url ?? "", /^https:\/\/relay\.example\/v1\/hooks\//u);
+
+    const [saved] = tasks.state.upserts;
+    assert.strictEqual(tasks.state.upserts.length, 1);
+    assert.strictEqual(saved?.threadId, threadId);
+    assert.strictEqual(saved?.enabled, true);
+    assert.deepStrictEqual(saved?.schedule, {
+      type: "webhook",
+      signature: {
+        header: "x-t3-signature",
+        encoding: "hex",
+        prefix: "sha256=",
+        secret: first.secret,
+      },
+      sink: "bot-mail",
+    });
+
+    // Asking again is the same hook, with the address and without the secret.
+    const second = yield* mailService.createHook({ botThreadId: threadId });
+    assert.isFalse(second.created);
+    assert.strictEqual(second.taskId, first.taskId);
+    assert.strictEqual(second.url, first.url);
+    assert.isUndefined(second.secret);
+    assert.strictEqual(tasks.state.upserts.length, 1);
+
+    // The status any reader fetches says the hook is there, never where it is or how it is signed.
+    const status = yield* mailService.status({ botThreadId: threadId });
+    assert.deepStrictEqual(status.hook, { taskId: first.taskId, enabled: true, signed: true });
+    assert.notInclude(JSON.stringify(status), first.secret!);
+    assert.notInclude(JSON.stringify(status), "relay.example");
+  }).pipe(provideMail(orchestration, makeFakeLaptop().layer, tasks.layer));
+});
+
+it.effect("two creates at once still make one hook", () => {
+  const orchestration = makeOrchestration();
+  const tasks = makeFakeTasks();
+  return Effect.gen(function* () {
+    const { mailService, threadId } = yield* setupBot(orchestration);
+    const both = yield* Effect.all(
+      [
+        mailService.createHook({ botThreadId: threadId }),
+        mailService.createHook({ botThreadId: threadId }),
+      ],
+      { concurrency: 2 },
+    );
+    assert.strictEqual(tasks.state.upserts.length, 1);
+    assert.strictEqual(both.filter((setup) => setup.created).length, 1);
+    assert.strictEqual(both[0].taskId, both[1].taskId);
+  }).pipe(provideMail(orchestration, makeFakeLaptop().layer, tasks.layer));
+});
+
+it.effect("says there is no public address when T3 Connect is off", () => {
+  const orchestration = makeOrchestration();
+  const tasks = makeFakeTasks({ relay: false });
+  return Effect.gen(function* () {
+    const { mailService, threadId } = yield* setupBot(orchestration);
+    const setup = yield* mailService.createHook({ botThreadId: threadId });
+    assert.isNull(setup.url);
+    assert.match(setup.path, /^\/api\/hooks\//u);
+  }).pipe(provideMail(orchestration, makeFakeLaptop().layer, tasks.layer));
+});
+
+it.effect("rotates the secret in place, keeps the address and settings, and says so once", () => {
+  const orchestration = makeOrchestration();
+  const tasks = makeFakeTasks();
+  return Effect.gen(function* () {
+    const { mailService, threadId } = yield* setupBot(orchestration);
+    const none = yield* mailService.rotateHook({ botThreadId: threadId }).pipe(Effect.flip);
+    assert.strictEqual(none.reason, "invalid");
+    assert.strictEqual(tasks.state.upserts.length, 0);
+
+    const made = yield* mailService.createHook({ botThreadId: threadId });
+    // The user paused it; rotating must not switch it back on.
+    tasks.state.tasks = tasks.state.tasks.map((task) => ({ ...task, enabled: false }));
+    const rotated = yield* mailService.rotateHook({ botThreadId: threadId });
+    assert.strictEqual(rotated.taskId, made.taskId);
+    assert.strictEqual(rotated.url, made.url);
+    assert.isFalse(rotated.created);
+    assert.match(rotated.secret ?? "", /^[0-9a-f]{64}$/u);
+    assert.notStrictEqual(rotated.secret, made.secret);
+    assert.strictEqual(tasks.state.secrets.get(made.taskId), rotated.secret);
+    const upsert = tasks.state.upserts.at(-1);
+    assert.strictEqual(upsert?.id, made.taskId);
+    assert.isTrue(upsert?.requireExisting);
+    assert.isFalse(upsert?.enabled);
+    // Only one secret is ever stored, so the old one stops working at once.
+    assert.strictEqual(tasks.state.secrets.size, 1);
+  }).pipe(provideMail(orchestration, makeFakeLaptop().layer, tasks.layer));
+});
+
+it.effect("gives a hook made by hand a signing secret the first time", () => {
+  const orchestration = makeOrchestration();
+  const tasks = makeFakeTasks();
+  return Effect.gen(function* () {
+    const { mailService, threadId } = yield* setupBot(orchestration);
+    yield* mailService.createHook({ botThreadId: threadId });
+    // As if it had been saved from Scheduled Tasks without a signature.
+    tasks.state.tasks = tasks.state.tasks.map((task) => ({
+      ...task,
+      webhook: { ...task.webhook!, hasSecret: false },
+    }));
+    const setup = yield* mailService.createHook({ botThreadId: threadId });
+    assert.isFalse(setup.created);
+    assert.match(setup.secret ?? "", /^[0-9a-f]{64}$/u);
+    assert.strictEqual(tasks.state.upserts.length, 2);
+  }).pipe(provideMail(orchestration, makeFakeLaptop().layer, tasks.layer));
+});
+
+it.effect("shows when the hook last heard from the Worker and how it ended", () => {
+  const orchestration = makeOrchestration();
+  const tasks = makeFakeTasks();
+  return Effect.gen(function* () {
+    const { mailService, threadId } = yield* setupBot(orchestration);
+    assert.isUndefined((yield* mailService.status({ botThreadId: threadId })).hook);
+    yield* mailService.createHook({ botThreadId: threadId });
+    tasks.state.deliveries = [
+      { receivedAt: "2026-11-25T11:00:00.000Z", outcome: "rejected_signature" },
+      { receivedAt: "2026-11-25T10:00:00.000Z", outcome: "accepted" },
+    ];
+    const hook = (yield* mailService.status({ botThreadId: threadId })).hook;
+    assert.strictEqual(hook?.lastDeliveryAt, "2026-11-25T11:00:00.000Z");
+    assert.strictEqual(hook?.lastOutcome, "rejected_signature");
+  }).pipe(provideMail(orchestration, makeFakeLaptop().layer, tasks.layer));
+});
+
+it.effect("makes no hook for a thread that is not a Bot", () => {
+  const orchestration = makeOrchestration();
+  const tasks = makeFakeTasks();
+  orchestration.addThread("thread:plain");
+  return Effect.gen(function* () {
+    const mailService = yield* BotMailService.BotMailService;
+    const refused = yield* mailService
+      .createHook({ botThreadId: "thread:plain" as ThreadId })
+      .pipe(Effect.flip);
+    assert.strictEqual(refused.reason, "not_a_bot");
+    assert.strictEqual(tasks.state.upserts.length, 0);
+  }).pipe(provideMail(orchestration, makeFakeLaptop().layer, tasks.layer));
 });

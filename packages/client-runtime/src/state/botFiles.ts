@@ -13,7 +13,9 @@ import {
 type BotMailCommandTag =
   | typeof WS_METHODS.botMailSetMailboxes
   | typeof WS_METHODS.botMailForget
-  | typeof WS_METHODS.botMailBackfill;
+  | typeof WS_METHODS.botMailBackfill
+  | typeof WS_METHODS.botMailCreateHook
+  | typeof WS_METHODS.botMailRotateHook;
 
 type BotWatcherDecisionTag =
   | typeof WS_METHODS.botWatcherDryRun
@@ -85,6 +87,8 @@ export function createBotFilesEnvironmentAtoms<R, E>(
     mailSetMailboxes: mailCommand("set-mailboxes", WS_METHODS.botMailSetMailboxes),
     mailForget: mailCommand("forget", WS_METHODS.botMailForget),
     mailBackfill: mailCommand("backfill", WS_METHODS.botMailBackfill),
+    mailCreateHook: mailCommand("create-hook", WS_METHODS.botMailCreateHook),
+    mailRotateHook: mailCommand("rotate-hook", WS_METHODS.botMailRotateHook),
     watcherDryRun: watcherDecision("dry-run", WS_METHODS.botWatcherDryRun),
     watcherApprove: watcherDecision("approve", WS_METHODS.botWatcherApprove),
     watcherReject: watcherDecision("reject", WS_METHODS.botWatcherReject),

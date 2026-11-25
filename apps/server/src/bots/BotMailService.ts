@@ -7,11 +7,14 @@ import {
   BotMailBackfillStatus,
   type BotMailBackfillRequest,
   BotMailError,
+  type BotMailHookSetup,
   BotMailMessage,
   isUnknownAccountMailbox,
   type BotMailOrigin,
   type BotMailSetMailboxesInput,
+  type ScheduledTask,
   ScheduledTaskError,
+  ScheduledTaskId,
   type BotMailStatus,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -25,10 +28,12 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { frameUntrustedText } from "../scheduledTasks/webhookTemplate.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -64,6 +69,10 @@ const MAIL_DELEGATION_NOTICE =
 // What the Bot sees of an email's sender and subject is capped, since both are the sender's.
 export const MAIL_SENDER_MAX_CHARS = 100;
 export const MAIL_SUBJECT_MAX_CHARS = 200;
+
+// What the Cloudflare Worker signs with: HMAC-SHA256 of the raw body, hex, in this header.
+const HOOK_SIGNATURE = { header: "x-t3-signature", encoding: "hex", prefix: "sha256=" } as const;
+const HOOK_SECRET_BYTES = 32;
 
 const MAILBOX_PATTERN = /^[^\s@<>]+@[^\s@<>]+$/u;
 
@@ -128,6 +137,20 @@ export class BotMailService extends Context.Service<
     }) => Effect.Effect<void, BotMailError>;
     /** A tag nobody can guess in advance, for framing what a sender wrote as untrusted data. */
     readonly frameTag: Effect.Effect<string>;
+    /**
+     * Makes the webhook the Worker posts mail to, for this Bot. A second call returns the same
+     * hook and no secret; only a hook that had none (made by hand) gets one here.
+     */
+    readonly createHook: (input: {
+      readonly botThreadId: ThreadId;
+    }) => Effect.Effect<BotMailHookSetup, BotMailError>;
+    /**
+     * Replaces the signing secret and returns it once. The hook keeps one secret at a time, so
+     * mail the Worker signs with the old one is refused until the Worker has the new one.
+     */
+    readonly rotateHook: (input: {
+      readonly botThreadId: ThreadId;
+    }) => Effect.Effect<BotMailHookSetup, BotMailError>;
     readonly status: (input: {
       readonly botThreadId: ThreadId;
     }) => Effect.Effect<BotMailStatus, BotMailError>;
@@ -237,6 +260,10 @@ const make = Effect.gen(function* () {
   const scheduler = yield* Scheduler.Scheduler;
   const peers = yield* PeerMcpClient.PeerMcpClient;
   const random = yield* SecureRandom.SecureRandom;
+  const tasks = yield* ScheduledTaskService.ScheduledTaskService;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  // Two creates at once must not make two hooks.
+  const hookLock = yield* Semaphore.make(1);
   const serviceScope = yield* Effect.scope;
   const backfilling = yield* Ref.make<ReadonlySet<string>>(new Set());
   const lastSweepAt = yield* Ref.make(0);
@@ -485,10 +512,184 @@ const make = Effect.gen(function* () {
     } satisfies BotMailStatus;
   });
 
+  // A scheduler error's message is its own wording, never a payload, so it is safe to show.
+  const scheduledTaskFailure = (threadId: ThreadId) => (error: ScheduledTaskError) =>
+    new BotMailError({ threadId, reason: "invalid", detail: error.message, cause: error });
+
+  type MailHook = ScheduledTask & {
+    readonly schedule: Extract<ScheduledTask["schedule"], { readonly type: "webhook" }>;
+  };
+  const isMailHook =
+    (botThreadId: ThreadId) =>
+    (task: ScheduledTask): task is MailHook =>
+      task.threadId === botThreadId &&
+      task.schedule.type === "webhook" &&
+      task.schedule.sink === "bot-mail";
+
+  /** The Bot's mail hook, oldest first if the user made more than one by hand. */
+  const findHook = (botThreadId: ThreadId) =>
+    tasks.list().pipe(
+      Effect.map(({ tasks: all }) =>
+        all
+          .filter(isMailHook(botThreadId))
+          .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt))
+          .at(0),
+      ),
+      Effect.mapError(scheduledTaskFailure(botThreadId)),
+    );
+
+  const hookState = Effect.fn("BotMailService.hookState")(function* (botThreadId: ThreadId) {
+    const hook = yield* findHook(botThreadId);
+    if (hook === undefined) return undefined;
+    const { deliveries } = yield* tasks
+      .listWebhookDeliveries({ id: hook.id, acceptAnyOutcome: true })
+      .pipe(Effect.mapError(scheduledTaskFailure(botThreadId)));
+    const last = deliveries.at(0);
+    return {
+      taskId: hook.id,
+      enabled: hook.enabled,
+      signed: hook.webhook?.hasSecret === true,
+      ...(last === undefined ? {} : { lastDeliveryAt: last.receivedAt, lastOutcome: last.outcome }),
+    };
+  });
+
+  // A scheduler that cannot answer leaves the hook out of the status; it does not hide the rest.
+  const withHook = Effect.fn("BotMailService.withHook")(function* (
+    botThreadId: ThreadId,
+    base: BotMailStatus,
+  ) {
+    const hook = yield* hookState(botThreadId).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("Bot mail hook state unavailable.", { reason: error.reason }).pipe(
+          Effect.as(undefined),
+        ),
+      ),
+    );
+    return hook === undefined ? base : { ...base, hook };
+  });
+
+  const newSecret = random.randomBytes(HOOK_SECRET_BYTES).pipe(
+    Effect.map((bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")),
+    Effect.orDie,
+  );
+
+  const setupOf = (
+    botThreadId: ThreadId,
+    task: ScheduledTask,
+    secret: string | undefined,
+    created: boolean,
+  ): Effect.Effect<BotMailHookSetup, BotMailError> =>
+    task.webhook === undefined
+      ? Effect.fail(invalid(botThreadId, "The mail hook has no address yet."))
+      : Effect.succeed({
+          taskId: task.id,
+          url: task.webhook.url,
+          path: task.webhook.path,
+          signatureHeader: HOOK_SIGNATURE.header,
+          signaturePrefix: HOOK_SIGNATURE.prefix,
+          ...(secret === undefined ? {} : { secret }),
+          created,
+        });
+
+  /**
+   * Saves the hook with this secret: a new task, or the existing one with everything else kept.
+   * The hook never runs a prompt (`sink`), so the thread's own project and modes only satisfy
+   * what a task has to carry.
+   */
+  const saveHook = Effect.fn("BotMailService.saveHook")(function* (
+    botThreadId: ThreadId,
+    existing: MailHook | undefined,
+    secret: string,
+  ) {
+    const shell = yield* threads
+      .getThreadShell(botThreadId)
+      .pipe(Effect.mapError(ioError(botThreadId)));
+    if (shell === null)
+      return yield* new BotMailError({ threadId: botThreadId, reason: "not_a_bot" });
+    const signature = { ...HOOK_SIGNATURE, secret };
+    const saved = yield* tasks
+      .upsert(
+        existing === undefined
+          ? {
+              id: ScheduledTaskId.make(
+                `scheduled-task:bot-mail:${yield* random.uuidV4().pipe(Effect.orDie)}`,
+              ),
+              title: "Bot mail",
+              prompt: "Keeps each forwarded email in this Bot's mail store. No run starts.",
+              enabled: true,
+              schedule: { type: "webhook", signature, sink: "bot-mail" },
+              projectId: shell.projectId,
+              threadId: botThreadId,
+              threadMode: "continue",
+              workspaceStrategy: { type: "root" },
+              modelSelection: shell.modelSelection,
+              runtimeMode: shell.runtimeMode,
+              interactionMode: shell.interactionMode,
+            }
+          : {
+              id: existing.id,
+              requireExisting: true,
+              title: existing.title,
+              prompt: existing.prompt,
+              enabled: existing.enabled,
+              schedule: {
+                type: "webhook",
+                signature,
+                maxDeliveryAgeMinutes: existing.schedule.maxDeliveryAgeMinutes ?? null,
+                sink: "bot-mail",
+              },
+              projectId: existing.projectId,
+              threadId: botThreadId,
+              threadMode: "continue",
+              workspaceStrategy: existing.workspaceStrategy,
+              modelSelection: existing.modelSelection,
+              runtimeMode: existing.runtimeMode,
+              interactionMode: existing.interactionMode,
+            },
+      )
+      .pipe(Effect.mapError(scheduledTaskFailure(botThreadId)));
+    return saved.task;
+  });
+
+  const createHook: BotMailService["Service"]["createHook"] = Effect.fn(
+    "BotMailService.createHook",
+  )(function* ({ botThreadId }) {
+    yield* requireBot(botThreadId);
+    return yield* Effect.gen(function* () {
+      const existing = yield* findHook(botThreadId);
+      // The secret was shown when it was made. A hook with none is one made by hand, trusting its
+      // URL alone, so it gets one now.
+      if (existing?.webhook?.hasSecret === true) {
+        return yield* setupOf(botThreadId, existing, undefined, false);
+      }
+      const secret = yield* newSecret;
+      const task = yield* saveHook(botThreadId, existing, secret);
+      yield* Effect.logInfo("Bot mail hook saved.", { created: existing === undefined });
+      return yield* setupOf(botThreadId, task, secret, existing === undefined);
+    }).pipe(hookLock.withPermits(1));
+  });
+
+  const rotateHook: BotMailService["Service"]["rotateHook"] = Effect.fn(
+    "BotMailService.rotateHook",
+  )(function* ({ botThreadId }) {
+    yield* requireBot(botThreadId);
+    return yield* Effect.gen(function* () {
+      const existing = yield* findHook(botThreadId);
+      if (existing === undefined) {
+        return yield* invalid(botThreadId, "This Bot has no mail hook yet. Create one first.");
+      }
+      const secret = yield* newSecret;
+      const task = yield* saveHook(botThreadId, existing, secret);
+      yield* Effect.logInfo("Bot mail hook secret rotated.");
+      return yield* setupOf(botThreadId, task, secret, false);
+    }).pipe(hookLock.withPermits(1));
+  });
+
   const status: BotMailService["Service"]["status"] = Effect.fn("BotMailService.status")(
     function* ({ botThreadId }) {
       const folder = yield* requireBot(botThreadId);
-      return yield* statusOf(folder).pipe(Effect.mapError(ioError(botThreadId)));
+      const base = yield* statusOf(folder).pipe(Effect.mapError(ioError(botThreadId)));
+      return yield* withHook(botThreadId, base);
     },
   );
 
@@ -515,7 +716,8 @@ const make = Effect.gen(function* () {
         }),
       )
       .pipe(Effect.mapError(ioError(botThreadId)));
-    return yield* statusOf(folder).pipe(Effect.mapError(ioError(botThreadId)));
+    const base = yield* statusOf(folder).pipe(Effect.mapError(ioError(botThreadId)));
+    return yield* withHook(botThreadId, base);
   });
 
   const sweep: BotMailService["Service"]["sweep"] = Effect.gen(function* () {
@@ -847,6 +1049,8 @@ const make = Effect.gen(function* () {
     search,
     read,
     forget,
+    createHook,
+    rotateHook,
     status,
     setMailboxes,
     backfill,

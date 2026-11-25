@@ -2718,6 +2718,10 @@ export const layerWsRpc = (
         [WS_METHODS.botMailForget]: ({ threadId, id }) =>
           botMail.forget({ botThreadId: threadId, id, by: "user" }),
         [WS_METHODS.botMailBackfill]: (input) => botMail.backfill(input),
+        [WS_METHODS.botMailCreateHook]: ({ threadId }) =>
+          botMail.createHook({ botThreadId: threadId }),
+        [WS_METHODS.botMailRotateHook]: ({ threadId }) =>
+          botMail.rotateHook({ botThreadId: threadId }),
         [WS_METHODS.botWatcherList]: ({ threadId }) => botWatchers.list(threadId),
         [WS_METHODS.botWatcherDryRun]: (input) =>
           botWatchers.dryRun({

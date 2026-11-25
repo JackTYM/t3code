@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { EnvironmentId, IsoDateTime, ThreadId } from "./baseSchemas.ts";
+import { EnvironmentId, IsoDateTime, ScheduledTaskId, ThreadId } from "./baseSchemas.ts";
 import { BotMailOrigin } from "./botMail.ts";
 
 /** The Bot's mail store keeps an email this long unless the user sets another. */
@@ -45,6 +45,20 @@ export const BotMailBackfillStatus = Schema.Struct({
 });
 export type BotMailBackfillStatus = typeof BotMailBackfillStatus.Type;
 
+/**
+ * The webhook that carries forwarded mail to the Bot. Its URL and secret are never in a status,
+ * which any reader can fetch; only creating or rotating shows them.
+ */
+const BotMailHookState = Schema.Struct({
+  taskId: ScheduledTaskId,
+  enabled: Schema.Boolean,
+  /** Whether deliveries are checked against a signing secret. A hook without one trusts its URL alone. */
+  signed: Schema.Boolean,
+  lastDeliveryAt: Schema.optional(IsoDateTime),
+  /** How the last delivery ended, such as `accepted` or `rejected_signature`. */
+  lastOutcome: Schema.optional(Schema.String),
+});
+
 export const BotMailStatusInput = Schema.Struct({ threadId: ThreadId });
 export type BotMailStatusInput = typeof BotMailStatusInput.Type;
 
@@ -64,6 +78,8 @@ export const BotMailStatus = Schema.Struct({
   unknownAccounts: Schema.optional(
     Schema.Array(Schema.Struct({ ...BotMailUnknownAccount.fields, label: Schema.String })),
   ),
+  /** Absent until a hook exists for this Bot. */
+  hook: Schema.optional(BotMailHookState),
 });
 export type BotMailStatus = typeof BotMailStatus.Type;
 
@@ -79,6 +95,28 @@ export const BotMailSetMailboxesInput = Schema.Struct({
   ),
 });
 export type BotMailSetMailboxesInput = typeof BotMailSetMailboxesInput.Type;
+
+/** For `botMail.createHook` and `botMail.rotateHook`. */
+export const BotMailHookInput = Schema.Struct({ threadId: ThreadId });
+export type BotMailHookInput = typeof BotMailHookInput.Type;
+
+export const BotMailHookSetup = Schema.Struct({
+  taskId: ScheduledTaskId,
+  /** Where the Worker posts. Null when this environment has no public address (T3 Connect off). */
+  url: Schema.NullOr(Schema.String),
+  /** The same route relative to this server, for an address of the user's own. */
+  path: Schema.String,
+  /** The Worker signs the raw body with HMAC-SHA256 into this header, as `prefix` + lowercase hex. */
+  signatureHeader: Schema.String,
+  signaturePrefix: Schema.String,
+  /**
+   * The signing secret, shown once: on creating the hook, or on rotating it. A second create for
+   * the same Bot returns the hook without it.
+   */
+  secret: Schema.optional(Schema.String),
+  created: Schema.Boolean,
+});
+export type BotMailHookSetup = typeof BotMailHookSetup.Type;
 
 export const BotMailForgetInput = Schema.Struct({
   threadId: ThreadId,

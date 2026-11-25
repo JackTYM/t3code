@@ -68,6 +68,10 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.botMailSetMailboxes]: AuthOrchestrationOperateScope,
   [WS_METHODS.botMailForget]: AuthOrchestrationOperateScope,
   [WS_METHODS.botMailBackfill]: AuthOrchestrationOperateScope,
+  // Makes the webhook mail arrives through, as saving a scheduled task does, and shows its secret
+  // to the caller once; the hook runs nothing.
+  [WS_METHODS.botMailCreateHook]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botMailRotateHook]: AuthOrchestrationOperateScope,
   [WS_METHODS.botWatcherDryRun]: AuthTerminalOperateScope,
   [WS_METHODS.botWatcherApprove]: AuthTerminalOperateScope,
   [WS_METHODS.botWatcherSetRunsOn]: AuthTerminalOperateScope,
