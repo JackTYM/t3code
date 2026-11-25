@@ -24,6 +24,13 @@ in the same project with a summary of the thread, and that thread becomes its fi
 - The **Bot** button in its header shows its notes and preferences, which you can edit, and can mute
   crew notifications other than requests for input. Its **Tasks** tab lists what the Bot is
   tracking and which threads work on each. Tick a task to mark it done and untick it to reopen it;
-  the Bot reads your change on its next turn.
+  the Bot reads your change on its next turn. Its **Watchers** tab lists the scripts the Bot
+  writes to watch things for free and wake it when something changes. Nothing runs until you
+  approve: read the source (and the diff from the version you approved), choose where it runs, press
+  **Run once** to see its output, then **Approve this version**. If the Bot changes a script it stops
+  until you approve the new version or reject it, which keeps the approved one. To change a script,
+  use **Ask the Bot to revise**; you cannot edit it yourself. **Pause**, **Resume** and **Remove**
+  work any time. A watcher on a linked environment shows **waiting** while that environment does
+  not answer, and moving one needs a **Run once** there first.
 - Settle or archive a Bot when you are done: its crew go back to the top of the sidebar and it stops
   being woken. Reopen it to take them back.

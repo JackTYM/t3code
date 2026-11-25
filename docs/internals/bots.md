@@ -96,7 +96,7 @@ with the `Scheduler`.
   remove tools are also refused to a turn that did not begin with the user typing, which
   `BotService.startedByWake` decides from the run's first message: a `bot-wake:` message, another
   agent's, a scheduled task's, or one that cannot be found all count as not typed. A user who
-  steers a wake turn does not change that: the turn stays refused.
+  steers a wake turn does not change that: the turn stays refused. The web "Ask the Bot to revise" therefore sends its message queued behind any active run, so the proposal comes from a new turn that begins with the user's text.
 - **Running.** The verified bytes are read once, hashed, written to a fresh 0700 scratch directory
   and executed from that copy, never from the stored path, so a rewrite after the check changes
   nothing. Watchers are trusted code, not sandboxed: the scratch directory is the cwd and
