@@ -24,6 +24,7 @@ import {
   type ScheduledTaskSetEnabledInput,
   type ScheduledTaskThreadMode,
   type ScheduledTaskUpsertInput,
+  type ScheduledTaskWebhookSink,
   managedPolicyDeniedMessage,
   scheduledTaskThreadMode,
   managedRuntimeModeDenial,
@@ -46,6 +47,7 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -156,6 +158,17 @@ export interface WebhookTriggerRequest extends WebhookRequest {
   readonly relayDeliveryId?: string;
   readonly receivedAt?: string;
 }
+
+/** A verified delivery for a task whose `sink` is not a run: the Bot mail store, for one. */
+export interface WebhookSinkDelivery {
+  readonly task: ScheduledTask;
+  readonly deliveryId: string;
+  readonly bodyText: string;
+}
+
+export type WebhookSinkHandler = (
+  delivery: WebhookSinkDelivery,
+) => Effect.Effect<void, ScheduledTaskError>;
 
 export type WebhookDeliveryOutcome =
   | "accepted"
@@ -307,6 +320,15 @@ export class ScheduledTaskService extends Context.Service<
     readonly triggerWebhook: (
       request: WebhookTriggerRequest,
     ) => Effect.Effect<WebhookTriggerResult, ScheduledTaskError>;
+    /**
+     * Where deliveries to tasks with this `sink` go instead of starting a run. The service that
+     * owns the sink registers it, which keeps this module free of what sits above it. A delivery
+     * that finds none registered fails like a run that could not start, so a relay sends it again.
+     */
+    readonly registerWebhookSink: (
+      sink: ScheduledTaskWebhookSink,
+      handler: WebhookSinkHandler,
+    ) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/scheduledTasks/ScheduledTaskService") {}
 
@@ -525,6 +547,9 @@ export const layer = Layer.effect(
       ReadonlyMap<ScheduledTaskId, ReadonlyArray<number>>
     >(new Map());
     const activeRuns = yield* Ref.make<ReadonlySet<ScheduledTaskId>>(new Set());
+    const webhookSinks = yield* Ref.make<ReadonlyMap<ScheduledTaskWebhookSink, WebhookSinkHandler>>(
+      new Map(),
+    );
     // Notifications re-emit the full list; slow subscribers need only the newest dirty signal.
     const changesPubSub = yield* PubSub.sliding<void>(1);
     const dueTasks = DueHint.make();
@@ -978,6 +1003,7 @@ export const layer = Layer.effect(
       webhook?: {
         readonly deliveryId: string;
         readonly prompt: string;
+        readonly bodyText: string;
         readonly dispatched: Ref.Ref<boolean>;
       },
     ) {
@@ -1119,42 +1145,67 @@ export const layer = Layer.effect(
               }),
             );
 
+        const sink =
+          webhook !== undefined && active.schedule.type === "webhook"
+            ? active.schedule.sink
+            : undefined;
         // Capture defects and interrupts too so dispatch failures still reach markCompleted.
         const result =
-          active.threadId === null
+          sink !== undefined && webhook !== undefined
             ? yield* Effect.exit(
-                threadLaunch
-                  .launch({
-                    commandId,
-                    projectId: active.projectId,
-                    title: active.title,
-                    modelSelection: active.modelSelection,
-                    runtimeMode: active.runtimeMode,
-                    interactionMode: active.interactionMode,
-                    workspaceStrategy: active.workspaceStrategy,
-                    initialMessage: {
-                      messageId,
-                      scheduledTaskId: active.id,
-                      text: prompt,
-                      attachments: [],
-                    },
-                    createdBy: active.createdBy,
-                    creationSource: active.creationSource,
-                  })
-                  .pipe(
-                    Effect.map((launched) => launched.threadId),
-                    Effect.tap((threadId) =>
-                      threadMode === "new_thread" ? Effect.void : bindThread(active, threadId),
-                    ),
-                  ),
-              )
-            : yield* Effect.exit(
-                // The stored selection only seeds fresh threads. A bound run
-                // follows the thread's current provider, so it passes none.
-                sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
-                  Effect.as(ThreadId.make(active.threadId)),
+                Ref.get(webhookSinks).pipe(
+                  Effect.flatMap((sinks) => {
+                    const handler = sinks.get(sink);
+                    return handler === undefined
+                      ? Effect.fail(
+                          taskError("This server is not keeping that sink yet.", {
+                            taskId: task.id,
+                          }),
+                        )
+                      : handler({
+                          task: active,
+                          deliveryId: webhook.deliveryId,
+                          bodyText: webhook.bodyText,
+                        });
+                  }),
+                  // No thread ran, so there is no run outcome to follow.
+                  Effect.as(null),
                 ),
-              );
+              )
+            : active.threadId === null
+              ? yield* Effect.exit(
+                  threadLaunch
+                    .launch({
+                      commandId,
+                      projectId: active.projectId,
+                      title: active.title,
+                      modelSelection: active.modelSelection,
+                      runtimeMode: active.runtimeMode,
+                      interactionMode: active.interactionMode,
+                      workspaceStrategy: active.workspaceStrategy,
+                      initialMessage: {
+                        messageId,
+                        scheduledTaskId: active.id,
+                        text: prompt,
+                        attachments: [],
+                      },
+                      createdBy: active.createdBy,
+                      creationSource: active.creationSource,
+                    })
+                    .pipe(
+                      Effect.map((launched) => launched.threadId),
+                      Effect.tap((threadId) =>
+                        threadMode === "new_thread" ? Effect.void : bindThread(active, threadId),
+                      ),
+                    ),
+                )
+              : yield* Effect.exit(
+                  // The stored selection only seeds fresh threads. A bound run
+                  // follows the thread's current provider, so it passes none.
+                  sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
+                    Effect.as(ThreadId.make(active.threadId)),
+                  ),
+                );
 
         const runSucceeded = result._tag === "Success";
         if (webhook !== undefined && runSucceeded) yield* Ref.set(webhook.dispatched, true);
@@ -1516,6 +1567,14 @@ export const layer = Layer.effect(
       // Keep the existing next_run_at when the schedule itself is untouched:
       // editing a title or prompt must not postpone (or resurrect) a due
       // run — only schedule/enabled changes restart the clock.
+      const storedSink =
+        input.schedule.type !== "webhook"
+          ? undefined
+          : input.schedule.sink === undefined
+            ? existingTask?.schedule.type === "webhook"
+              ? existingTask.schedule.sink
+              : undefined
+            : (input.schedule.sink ?? undefined);
       const schedule: ScheduledTask["schedule"] =
         input.schedule.type === "webhook"
           ? {
@@ -1543,6 +1602,8 @@ export const layer = Layer.effect(
                     ? existingTask.schedule.filters
                     : undefined),
               ),
+              // Omitted keeps the stored sink for the same reason; null clears it.
+              ...(storedSink === undefined ? {} : { sink: storedSink }),
             }
           : input.schedule.type === "once"
             ? { type: "once", runAt: iso(DateTime.makeUnsafe(input.schedule.runAt)) }
@@ -1583,6 +1644,17 @@ export const layer = Layer.effect(
               return { token, secret, secretChanged };
             })
           : { token: null, secret: null, secretChanged: true };
+      if (schedule.type === "webhook" && schedule.sink !== undefined) {
+        // The Bot is the task's thread, and a coalescing window would keep the email in its own table.
+        if (threadId === null) {
+          return yield* taskError("A mail hook has to be bound to a Bot thread.", { taskId: id });
+        }
+        if (schedule.dedupe !== undefined) {
+          return yield* taskError("A mail hook cannot use dedupe: the mail store dedupes.", {
+            taskId: id,
+          });
+        }
+      }
       // A folder that is not a Git repository, Scratch included, cannot hold a worktree.
       const workspaceStrategy: ScheduledTask["workspaceStrategy"] =
         input.workspaceStrategy.type === "worktree" &&
@@ -2086,6 +2158,7 @@ export const layer = Layer.effect(
       task: ScheduledTask,
       deliveryId: string,
       prompt: string,
+      bodyText: string,
     ) {
       const runOutcome = (outcome: "started" | "skipped" | "failed") =>
         Effect.all([
@@ -2093,7 +2166,7 @@ export const layer = Layer.effect(
           Metrics.increment(Metrics.webhookRunsTotal, { outcome }),
         ]);
       const dispatched = yield* Ref.make(false);
-      return yield* runTask(task, "webhook", { deliveryId, prompt, dispatched }).pipe(
+      return yield* runTask(task, "webhook", { deliveryId, prompt, bodyText, dispatched }).pipe(
         Effect.flatMap(({ dispatchFailed }) =>
           dispatchFailed
             ? runOutcome("failed").pipe(
@@ -2293,7 +2366,11 @@ export const layer = Layer.effect(
               id: deliveryId,
               taskId: task.id,
               receivedAt: iso(receivedAt),
-              request,
+              // A sink keeps the body where its owner can retain and forget it; the log is not that.
+              request:
+                schedule.sink === undefined
+                  ? request
+                  : { ...request, body: new Uint8Array(0), bodyText: "" },
               outcome,
               signatureVerified: details.signatureVerified ?? false,
               missing: details.missing ?? [],
@@ -2550,7 +2627,7 @@ export const layer = Layer.effect(
           }
           yield* observe("accepted");
           const permit = yield* webhookPermit(task.id);
-          yield* runWebhookDelivery(task, deliveryId, rendered.prompt).pipe(
+          yield* runWebhookDelivery(task, deliveryId, rendered.prompt, request.bodyText).pipe(
             permit.withPermits(1),
             Effect.ensuring(release),
             Effect.forkIn(serviceScope),
@@ -2626,6 +2703,7 @@ export const layer = Layer.effect(
                 const frameId = Buffer.from(yield* random.randomBytes(6)).toString("hex");
                 return {
                   task,
+                  request,
                   taskJson: task === snapshot ? null : yield* encodePendingTask(task),
                   rendered: renderWebhookPrompt(task.prompt, request, frameId),
                 };
@@ -2641,7 +2719,7 @@ export const layer = Layer.effect(
                 yield* remove;
                 continue;
               }
-              const { task, taskJson, rendered } = prepared.value;
+              const { task, request, taskJson, rendered } = prepared.value;
               if (rendered.prompt.trim().length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
                 yield* markDeliveryFailed(entry.delivery_id, PROMPT_TOO_LONG);
                 yield* releaseFailedDelivery(entry.delivery_id);
@@ -2649,7 +2727,15 @@ export const layer = Layer.effect(
                 if (taskJson !== null)
                   yield* sql`UPDATE scheduled_task_webhook_pending SET task_json = ${taskJson} WHERE delivery_id = ${entry.delivery_id}`;
                 yield* sql`UPDATE scheduled_task_webhook_deliveries SET outcome = 'accepted', error = NULL, rendered_prompt = ${loggedWebhookPrompt(rendered.prompt)}, missing_fields_json = ${encodeMissingFieldsJson(rendered.missing)} WHERE delivery_id = ${entry.delivery_id}`;
-                if (!(yield* runWebhookDelivery(task, entry.delivery_id, rendered.prompt))) return;
+                if (
+                  !(yield* runWebhookDelivery(
+                    task,
+                    entry.delivery_id,
+                    rendered.prompt,
+                    request.bodyText,
+                  ))
+                )
+                  return;
               }
               yield* remove;
             }
@@ -2688,6 +2774,21 @@ export const layer = Layer.effect(
     });
     yield* scheduler.register("webhook-coalescing", dispatchPending());
 
+    const registerWebhookSink: ScheduledTaskService["Service"]["registerWebhookSink"] = (
+      sink,
+      handler,
+    ) =>
+      Effect.acquireRelease(
+        Ref.update(webhookSinks, (sinks) => new Map(sinks).set(sink, handler)),
+        () =>
+          Ref.update(webhookSinks, (sinks) => {
+            if (sinks.get(sink) !== handler) return sinks;
+            const next = new Map(sinks);
+            next.delete(sink);
+            return next;
+          }),
+      );
+
     return ScheduledTaskService.of({
       list,
       subscribeList,
@@ -2701,6 +2802,7 @@ export const layer = Layer.effect(
       listWebhookDeliveries,
       getWebhookDelivery,
       triggerWebhook,
+      registerWebhookSink,
     });
   }),
 );

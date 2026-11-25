@@ -151,6 +151,17 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("lets readers see a Bot's mail status, but choosing mailboxes, forgetting or pulling takes operate", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.botMailStatus)).toBe(AuthOrchestrationReadScope);
+    for (const method of [
+      WS_METHODS.botMailSetMailboxes,
+      WS_METHODS.botMailForget,
+      WS_METHODS.botMailBackfill,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
   it("lets readers list a Bot's watchers, but running or approving one takes terminal access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.botWatcherList)).toBe(AuthOrchestrationReadScope);
     // A watcher is a script this server runs: approving, dry-running, or moving it is running code.

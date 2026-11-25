@@ -50,6 +50,7 @@ export * from "./threadPullRequest.ts";
 export * from "./threadSearch.ts";
 export * from "./threadTags.ts";
 export * from "./botMail.ts";
+export * from "./botMailInbox.ts";
 export * from "./botWatchers.ts";
 export * from "./bots.ts";
 export * from "./threadTitle.ts";

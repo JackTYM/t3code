@@ -241,7 +241,14 @@ const withService = <A, E>(
         homeRoot: "/unused-home",
         isScratchProject: () => Effect.succeed(false),
       }),
-      Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+      Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadShell: () =>
+          Effect.succeed({
+            projectId: "project-webhook",
+            deletedAt: null,
+            archivedAt: null,
+          } as never),
+      }),
       Layer.mock(SecretRequests.SecretRequests)({
         consume: ({ ref }) => {
           const value = secretsByRef.get(ref);
@@ -2221,3 +2228,138 @@ it.effect("filters run before replay and coalescing without claiming ignored del
     { workers },
   );
 });
+
+const mailHookInput = (overrides: Record<string, unknown> = {}) =>
+  webhookTaskInput({
+    id: "scheduled-task:mail",
+    threadId: "thread-bot",
+    prompt: "Email arrived.",
+    schedule: {
+      type: "webhook",
+      sink: "bot-mail",
+      signature: {
+        header: "x-t3-signature",
+        encoding: "hex",
+        prefix: "sha256=",
+        secret: "mail-secret",
+      },
+    },
+    ...overrides,
+  });
+
+const signedMail = (
+  task: { readonly id: string; readonly webhook?: { readonly path: string } | undefined },
+  bodyText: string,
+  relayDeliveryId?: string,
+) =>
+  requestFor(task, {
+    body: new TextEncoder().encode(bodyText),
+    bodyText,
+    headers: {
+      "content-type": "application/json",
+      "x-t3-signature": `sha256=${NodeCrypto.createHmac("sha256", "mail-secret").update(bodyText).digest("hex")}`,
+    },
+    ...(relayDeliveryId === undefined ? {} : { relayDeliveryId }),
+  });
+
+it.effect("hands a signed delivery to the task's sink instead of starting a run", () =>
+  withService(({ service, launches, sql }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const received = yield* Queue.unbounded<{ taskThread: string | null; bodyText: string }>();
+        yield* service.registerWebhookSink("bot-mail", ({ task, bodyText }) =>
+          Queue.offer(received, { taskThread: task.threadId, bodyText }).pipe(Effect.asVoid),
+        );
+        const { task } = yield* service.upsert(yield* mailHookInput());
+        assert.deepEqual(task.schedule.type === "webhook" && task.schedule.sink, "bot-mail");
+
+        // The same route checks the signature first.
+        assert.equal((yield* service.triggerWebhook(requestFor(task)))._tag, "rejected_signature");
+
+        const body = JSON.stringify({ subject: "Private subject", bodyText: "Private body" });
+        const result = yield* service.triggerWebhook(signedMail(task, body, "relay-1"));
+        assert.equal(result._tag, "accepted");
+        assert.deepEqual(yield* Queue.take(received), { taskThread: "thread-bot", bodyText: body });
+        assert.equal(yield* Queue.size(launches), 0);
+
+        // The delivery log shows that it was verified and accepted, and keeps none of the mail.
+        const { deliveries } = yield* service.listWebhookDeliveries({
+          id: task.id,
+          acceptAnyOutcome: true,
+        });
+        const accepted = deliveries.find((delivery) => delivery.outcome === "accepted");
+        assert.isDefined(accepted);
+        const { delivery } = yield* service.getWebhookDelivery({
+          id: task.id,
+          deliveryId: accepted!.id,
+        });
+        assert.equal(delivery.signatureVerified, true);
+        assert.equal(delivery.body, "");
+        const stored = yield* sql<{
+          body: string;
+        }>`SELECT body FROM scheduled_task_webhook_deliveries`;
+        assert.isTrue(stored.every((row) => !row.body.includes("Private")));
+
+        // A repeat from the relay is the relay's duplicate, not a second email.
+        const again = yield* service.triggerWebhook(signedMail(task, body, "relay-1"));
+        assert.equal(again._tag === "accepted" && again.outcome, "duplicate");
+        assert.equal(yield* Queue.size(received), 0);
+      }),
+    ),
+  ),
+);
+
+it.effect("fails a sink delivery that finds no sink, so the sender tries again", () =>
+  withService(({ service, launches }) =>
+    Effect.gen(function* () {
+      const { task } = yield* service.upsert(yield* mailHookInput());
+      const result = yield* service.triggerWebhook(signedMail(task, "{}"));
+      assert.equal(result._tag, "accepted");
+      yield* TestClock.adjust(1);
+      const { deliveries } = yield* service.listWebhookDeliveries({
+        id: task.id,
+        acceptAnyOutcome: true,
+      });
+      assert.equal(deliveries[0]?.outcome, "dispatch_failed");
+      assert.equal(yield* Queue.size(launches), 0);
+    }),
+  ),
+);
+
+it.effect(
+  "keeps a mail hook bound to a thread, without dedupe, and keeps its sink on re-save",
+  () =>
+    withService(({ service }) =>
+      Effect.gen(function* () {
+        const unbound = yield* service
+          .upsert(yield* mailHookInput({ threadId: null }))
+          .pipe(Effect.flip);
+        assert.include(unbound.message, "bound to a Bot");
+        const deduped = yield* service
+          .upsert(
+            yield* mailHookInput({
+              schedule: { type: "webhook", sink: "bot-mail", dedupe: { replayKey: "{{body}}" } },
+            }),
+          )
+          .pipe(Effect.flip);
+        assert.include(deduped.message, "dedupe");
+
+        yield* service.upsert(yield* mailHookInput());
+        // A client that does not know the field re-saves without it: the sink stays.
+        const resaved = yield* service.upsert(
+          yield* mailHookInput({ schedule: { type: "webhook" } }),
+        );
+        assert.equal(
+          resaved.task.schedule.type === "webhook" && resaved.task.schedule.sink,
+          "bot-mail",
+        );
+        const cleared = yield* service.upsert(
+          yield* mailHookInput({ schedule: { type: "webhook", sink: null } }),
+        );
+        assert.equal(
+          cleared.task.schedule.type === "webhook" && cleared.task.schedule.sink,
+          undefined,
+        );
+      }),
+    ),
+);

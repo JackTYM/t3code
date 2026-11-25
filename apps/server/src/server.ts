@@ -9,6 +9,7 @@ import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
+import * as BotMailService from "./bots/BotMailService.ts";
 import * as BotService from "./bots/BotService.ts";
 import * as BotWakeReactor from "./bots/BotWakeReactor.ts";
 import * as WatcherService from "./bots/WatcherService.ts";
@@ -801,6 +802,13 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.effectDiscard(
     WatcherService.WatcherService.pipe(Effect.flatMap((watchers) => watchers.start())),
   ),
+  // Mail forwarded to the Bot's webhook lands in its mail store, and the digest wakes it.
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      yield* (yield* BotMailService.BotMailService).start();
+      yield* BotMailService.registerDeliveryHook;
+    }),
+  ),
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,
   ProviderInstallation.layer,
@@ -813,6 +821,12 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
     HomeService.layer.pipe(
       // The watchers' own service, so WebSocket and MCP reach what the loop above runs. It sits
       // below the Bot service it needs.
+      Layer.provideMerge(
+        BotMailService.layer.pipe(
+          Layer.provide(Scheduler.layer),
+          Layer.provide(PeerMcpClient.layer.pipe(Layer.provide(PeerLinks.layer))),
+        ),
+      ),
       Layer.provideMerge(
         WatcherService.layer.pipe(
           Layer.provide(Scheduler.layer),

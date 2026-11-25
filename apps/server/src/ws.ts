@@ -133,6 +133,7 @@ import * as SessionMcpServers from "./mcpServers/SessionMcpServers.ts";
 import * as UiBundleService from "./uiBundles/UiBundleService.ts";
 import * as McpSignIn from "./mcpApps/McpSignIn.ts";
 import * as BotService from "./bots/BotService.ts";
+import * as BotMailService from "./bots/BotMailService.ts";
 import * as WatcherService from "./bots/WatcherService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
@@ -1503,6 +1504,7 @@ export const layerWsRpc = (
       const mcpSignIn = yield* McpSignIn.McpSignIn;
       const bots = yield* BotService.BotService;
       const botWatchers = yield* WatcherService.WatcherService;
+      const botMail = yield* BotMailService.BotMailService;
       const analytics = yield* AnalyticsService.AnalyticsService;
       const originProps = clientAnalyticsProps;
       const recordClientCommandAnalytics = (command: OrchestrationV2Command) => {
@@ -2711,6 +2713,11 @@ export const layerWsRpc = (
         [WS_METHODS.botTasksRead]: (input) => bots.readTasks(input),
         [WS_METHODS.botTasksSetStatus]: (input) => bots.setTaskStatus(input),
         [WS_METHODS.botStart]: (input) => bots.start(input),
+        [WS_METHODS.botMailStatus]: ({ threadId }) => botMail.status({ botThreadId: threadId }),
+        [WS_METHODS.botMailSetMailboxes]: (input) => botMail.setMailboxes(input),
+        [WS_METHODS.botMailForget]: ({ threadId, id }) =>
+          botMail.forget({ botThreadId: threadId, id, by: "user" }),
+        [WS_METHODS.botMailBackfill]: (input) => botMail.backfill(input),
         [WS_METHODS.botWatcherList]: ({ threadId }) => botWatchers.list(threadId),
         [WS_METHODS.botWatcherDryRun]: (input) =>
           botWatchers.dryRun({

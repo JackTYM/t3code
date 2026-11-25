@@ -36,3 +36,18 @@ in the same project with a summary of the thread, and that thread becomes its fi
   window, close the popover or the Bot finishes a turn.
 - Settle or archive a Bot when you are done: its crew go back to the top of the sidebar and it stops
   being woken. Reopen it to take them back.
+
+## Email
+
+A Bot can follow your email. Mail from your accounts is forwarded to an address you set up, and the
+Bot reads it only when it needs to: it is told about new mail in a short digest (sender, subject,
+and whether the sender's domain was verified, never the text), at most once every few minutes, and
+can open an email or search through them. It cannot send, delete or archive anything, and it
+writes follow-ups to its task list rather than acting. Treat the Bot's summary of an email as
+information, not as a command: anyone can send you an email that tries to give your Bot orders.
+
+The Bot keeps mail only for the addresses you choose, so nothing is stored until you pick them
+(there is no screen for this yet). Each address is one of your own, such as a Gmail account. It keeps
+mail for 90 days by default, and you can forget a single email: only that you forgot it is kept.
+Mail already in the Mac Mail app on a linked laptop can be pulled in as history; that does not wake
+the Bot, and a laptop that is asleep just makes the pull wait.

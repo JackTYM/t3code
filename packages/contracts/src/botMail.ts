@@ -53,3 +53,15 @@ export const BotMailMessage = Schema.Struct({
   origin: BotMailOrigin,
 });
 export type BotMailMessage = typeof BotMailMessage.Type;
+
+export const BotMailBackfillInput = Schema.Struct({
+  sinceDays: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 90 })),
+  cursor: Schema.optional(Schema.String),
+  limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
+});
+
+export const BotMailBackfillPage = Schema.Struct({
+  messages: Schema.Array(BotMailMessage),
+  nextCursor: Schema.optional(Schema.String),
+  accounts: Schema.Array(Schema.String),
+});
