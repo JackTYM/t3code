@@ -203,6 +203,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.attachmentsDelete]: AuthOrchestrationOperateScope,
   [WS_METHODS.providerUploadFeedback]: AuthOrchestrationOperateScope,
   [WS_METHODS.botFilesRead]: AuthOrchestrationReadScope,
+  [WS_METHODS.botTasksRead]: AuthOrchestrationReadScope,
   [WS_METHODS.botWatcherList]: AuthOrchestrationReadScope,
   [WS_METHODS.mcpAppsCallTool]: AuthOrchestrationOperateScope,
   [WS_METHODS.mcpAppsToolInfo]: AuthOrchestrationReadScope,

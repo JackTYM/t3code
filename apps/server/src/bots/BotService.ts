@@ -4,6 +4,8 @@ import {
   type BotFileKind,
   type BotFilesReadResult,
   type BotStartResult,
+  type BotTaskStatus,
+  type BotTasksReadResult,
   type BotWatch,
   type BotWatchReason,
   type BotWatchTarget,
@@ -38,6 +40,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { parseBotTasks, setBotTaskStatus } from "./botTasks.ts";
 
 export interface BotWake {
   readonly botThreadId: ThreadId;
@@ -56,10 +59,27 @@ export class BotService extends Context.Service<
      * active Home, so a Home that was started fresh loses its Bot tools and memory at once.
      */
     readonly isBot: (threadId: ThreadId) => Effect.Effect<boolean>;
-    /** Both memory files, empty when not written yet. */
+    /** The notes and preferences files, empty when not written yet. */
     readonly readFiles: (input: {
       readonly threadId: ThreadId;
     }) => Effect.Effect<BotFilesReadResult, BotError>;
+    /** tasks.md as written, for the Bot to read back. */
+    readonly readTasksFile: (input: {
+      readonly threadId: ThreadId;
+    }) => Effect.Effect<string, BotError>;
+    /** tasks.md parsed for display; lines that are not tasks come back raw, in file order. */
+    readonly readTasks: (input: {
+      readonly threadId: ThreadId;
+    }) => Effect.Effect<BotTasksReadResult, BotError>;
+    /**
+     * Changes one task's status in place, leaving every other line as it is. Done and reopened are
+     * both just a status, so the user can undo a mark.
+     */
+    readonly setTaskStatus: (input: {
+      readonly threadId: ThreadId;
+      readonly taskId: string;
+      readonly status: BotTaskStatus;
+    }) => Effect.Effect<void, BotError>;
     /** Replaces one memory file. Only a live Bot's files can change. */
     readonly writeFile: (input: {
       readonly threadId: ThreadId;
@@ -319,12 +339,33 @@ const make = Effect.gen(function* () {
     },
   );
 
+  // Under the lock with `setTaskStatus`, whose read-modify-write would otherwise undo a save
+  // that landed between its read and its write.
   const writeFile: BotService["Service"]["writeFile"] = Effect.fn("BotService.writeFile")(
     function* ({ threadId, file, contents }) {
       yield* requireBot(threadId);
       yield* store(threadId, file, contents);
     },
+    locked,
   );
+
+  const readTasksFile: BotService["Service"]["readTasksFile"] = ({ threadId }) =>
+    readFile(threadId, "tasks");
+
+  const readTasks: BotService["Service"]["readTasks"] = Effect.fn("BotService.readTasks")(
+    function* ({ threadId }) {
+      return { entries: parseBotTasks(yield* readFile(threadId, "tasks")) };
+    },
+  );
+
+  const setTaskStatus: BotService["Service"]["setTaskStatus"] = Effect.fn(
+    "BotService.setTaskStatus",
+  )(function* ({ threadId, taskId, status }) {
+    yield* requireBot(threadId);
+    const next = setBotTaskStatus(yield* readFile(threadId, "tasks"), taskId, status);
+    if (next === undefined) return yield* new BotError({ threadId, reason: "task_not_found" });
+    yield* store(threadId, "tasks", next);
+  }, locked);
 
   const appendPreference: BotService["Service"]["appendPreference"] = Effect.fn(
     "BotService.appendPreference",
@@ -602,6 +643,9 @@ const make = Effect.gen(function* () {
   return BotService.of({
     isBot,
     readFiles,
+    readTasksFile,
+    readTasks,
+    setTaskStatus,
     writeFile,
     appendPreference,
     watches,

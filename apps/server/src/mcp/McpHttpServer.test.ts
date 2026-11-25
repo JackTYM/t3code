@@ -2274,6 +2274,7 @@ it.effect("lists and runs Bot tools only for a Bot thread, deferred or not", () 
           Layer.mock(BotService.BotService)({
             isBot: (threadId) => Effect.succeed(threadId.startsWith("thread-bot")),
             readFiles: () => Effect.succeed({ notes: "Ship on Fridays.", preferences: "" }),
+            readTasksFile: () => Effect.succeed("- [ ] t1 | Ship | open"),
             watches: () => Effect.succeed([]),
           }),
         ),
@@ -2364,6 +2365,7 @@ it.effect("lists and runs Bot tools only for a Bot thread, deferred or not", () 
         "t3_bot_memory_read",
         "t3_bot_notes_write",
         "t3_bot_preferences_append",
+        "t3_bot_tasks_write",
         "t3_bot_watch_add",
         "t3_bot_watch_remove",
         "t3_bot_watcher_list",
@@ -2386,6 +2388,7 @@ it.effect("lists and runs Bot tools only for a Bot thread, deferred or not", () 
       expect((yield* bot.call("t3_bot_memory_read", {})).result?.structuredContent).toEqual({
         notes: "Ship on Fridays.",
         preferences: "",
+        tasks: "- [ ] t1 | Ship | open",
         watches: [],
       });
       const refused = yield* plain.call("t3_bot_memory_read", {});

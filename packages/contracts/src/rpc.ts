@@ -208,6 +208,9 @@ import {
   BotFileWriteInput,
   BotStartInput,
   BotStartResult,
+  BotTaskSetStatusInput,
+  BotTasksReadInput,
+  BotTasksReadResult,
 } from "./bots.ts";
 import {
   BotWatcherApproveInput,
@@ -562,6 +565,8 @@ export const WS_METHODS = {
 
   botFilesRead: "bot.files.read",
   botFilesWrite: "bot.files.write",
+  botTasksRead: "bot.tasks.read",
+  botTasksSetStatus: "bot.tasks.setStatus",
   botStart: "bot.start",
   botWatcherList: "botWatcher.list",
   botWatcherDryRun: "botWatcher.dryRun",
@@ -1920,6 +1925,17 @@ const WsBotFilesWriteRpc = Rpc.make(WS_METHODS.botFilesWrite, {
   error: Schema.Union([BotError, EnvironmentAuthorizationError]),
 });
 
+const WsBotTasksReadRpc = Rpc.make(WS_METHODS.botTasksRead, {
+  payload: BotTasksReadInput,
+  success: BotTasksReadResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotTasksSetStatusRpc = Rpc.make(WS_METHODS.botTasksSetStatus, {
+  payload: BotTaskSetStatusInput,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
 const WsBotStartRpc = Rpc.make(WS_METHODS.botStart, {
   payload: BotStartInput,
   success: BotStartResult,
@@ -2859,6 +2875,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsUiBundlesConfirmBootRpc,
   WsBotFilesReadRpc,
   WsBotFilesWriteRpc,
+  WsBotTasksReadRpc,
+  WsBotTasksSetStatusRpc,
   WsBotStartRpc,
   WsBotWatcherListRpc,
   WsBotWatcherDryRunRpc,
