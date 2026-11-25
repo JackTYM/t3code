@@ -27,9 +27,12 @@ type BotWatcherDecisionTag =
   | typeof WS_METHODS.botWatcherResume
   | typeof WS_METHODS.botWatcherRemove;
 
+type BotHoldDecisionTag = typeof WS_METHODS.botHoldAllow | typeof WS_METHODS.botHoldReject;
+
 /**
  * A Bot's notes.md and preferences.md (a save refreshes the read), its tasks.md as a task list,
- * starting a Bot, and the watchers it proposes: the user reads each version here and decides on it.
+ * starting a Bot, the watchers it proposes (the user reads each version here and decides on it),
+ * and the calls it held because email influenced its turn.
  */
 export function createBotFilesEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | Persistence.EnvironmentCacheStore | R, E>,
@@ -80,10 +83,32 @@ export function createBotFilesEnvironmentAtoms<R, E>(
           registry.refresh(watchers({ environmentId, input: { threadId: input.threadId } })),
         ),
     });
+  const holds = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:bot-holds:list",
+    tag: WS_METHODS.botHoldList,
+  });
+  // A decision removes the held action, so it takes turns per Bot with the list it changes.
+  const holdDecision = <TTag extends BotHoldDecisionTag>(label: string, tag: TTag) =>
+    createEnvironmentRpcCommand(runtime, {
+      label: `environment-data:bot-holds:${label}`,
+      tag,
+      scheduler: createAtomCommandScheduler(),
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.threadId]),
+      },
+      onSettled: ({ environmentId, input }, registry) =>
+        Effect.sync(() =>
+          registry.refresh(holds({ environmentId, input: { threadId: input.threadId } })),
+        ),
+    });
   return {
     files,
     tasks,
     watchers,
+    holds,
+    holdAllow: holdDecision("allow", WS_METHODS.botHoldAllow),
+    holdReject: holdDecision("reject", WS_METHODS.botHoldReject),
     mailStatus,
     mailSetMailboxes: mailCommand("set-mailboxes", WS_METHODS.botMailSetMailboxes),
     mailForget: mailCommand("forget", WS_METHODS.botMailForget),

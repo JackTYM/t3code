@@ -83,6 +83,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.botWatcherReject]: AuthOrchestrationOperateScope,
   [WS_METHODS.botWatcherPause]: AuthOrchestrationOperateScope,
   [WS_METHODS.botWatcherRemove]: AuthOrchestrationOperateScope,
+  // Allowing lets a call run that can start code, as approving a watcher does; rejecting runs nothing.
+  [WS_METHODS.botHoldAllow]: AuthTerminalOperateScope,
+  [WS_METHODS.botHoldReject]: AuthOrchestrationOperateScope,
   [WS_METHODS.sourceControlCloneRepository]: AuthSourceControlWriteScope,
   [WS_METHODS.sourceControlPublishRepository]: AuthSourceControlWriteScope,
   [WS_METHODS.sourceControlStar]: AuthSourceControlWriteScope,

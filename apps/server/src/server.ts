@@ -9,6 +9,7 @@ import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
+import * as BotHoldService from "./bots/BotHoldService.ts";
 import * as BotMailService from "./bots/BotMailService.ts";
 import * as BotService from "./bots/BotService.ts";
 import * as BotWakeReactor from "./bots/BotWakeReactor.ts";
@@ -836,6 +837,8 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
           Layer.provide(PeerMcpClient.layer.pipe(Layer.provide(PeerLinks.layer))),
         ),
       ),
+      // Holds a Bot's consequential calls while email influences its turn; WebSocket lists them.
+      Layer.provideMerge(BotHoldService.layer),
       Layer.provideMerge(BotService.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
       Layer.provideMerge(layerOrchestrationApplication),
     ),

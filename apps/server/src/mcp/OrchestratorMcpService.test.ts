@@ -2776,6 +2776,79 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
+  it.effect.each([
+    { botConfig: { enabled: true, muteChildren: false } },
+    { botConfig: null },
+  ] as const)(
+    "starts a mail reader only for a Bot, and always as a marked, supervised child (parent botConfig: $botConfig)",
+    ({ botConfig }) =>
+      Effect.gen(function* () {
+        const dispatched: Array<{ readonly mailReader?: boolean; readonly runtimeMode?: string }> =
+          [];
+        const layerDependencies = Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            getThreadRecords: () =>
+              Effect.succeed({
+                ...parentProjection([]),
+                thread: { ...parentProjection([]).thread, botConfig },
+              } as unknown as OrchestrationV2ThreadProjection),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatched.push(command as never);
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new OrchestratorDispatchError({
+                      commandId: command.commandId,
+                      commandType: command.type,
+                      cause: new Error("stop here"),
+                    }) as never,
+                  ),
+                ),
+              ),
+          }),
+          ServerSettings.layerTest(),
+          providerRegistryLayer([
+            providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: "gpt-5.4",
+            }),
+          ]),
+          adapterRegistryLayer([codexInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+        const error = yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          return yield* service
+            .delegateTask(scope, {
+              task: "Read #7.",
+              role: "mail-reader",
+              // A reader is supervised whatever the Bot asks for, and the parent here is full access.
+              runtimeMode: "full-access",
+              mode: "async",
+              clientRequestId: "delegate-mail-reader",
+            })
+            .pipe(Effect.flip);
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+        if (botConfig === null) {
+          assert.equal(error.code, "capability_denied");
+          assert.deepEqual(dispatched, []);
+          return;
+        }
+        assert.equal(error.code, "orchestration_error");
+        assert.equal(dispatched.length, 1);
+        assert.equal(dispatched[0]?.mailReader, true);
+        assert.equal(dispatched[0]?.runtimeMode, "approval-required");
+      }),
+  );
+
   it.effect("reports the dispatch cause instead of the generic wrapper when delegating fails", () =>
     Effect.gen(function* () {
       const layerDependencies = Layer.mergeAll(

@@ -65,11 +65,17 @@ mail (judged from the sender's own headers) are still stored and searchable, but
 a digest only says how many were stored, and the Bot looks for them when asked. It cannot send,
 delete or archive anything.
 
-The Bot never reads an email's text itself. When it needs one, it hands the reading to a helper that
-cannot run a command or change a file without asking you, and acts only on the short summary that
-comes back, by adding to its task list. Even so, treat that summary as information, not as a
-command: anyone can send you an email that tries to give your Bot orders, and a helper can be steered
-too. If you see an approval request from such a helper that you did not expect, decline it.
+The Bot never reads an email's text itself. When it needs one, it starts a mail reader: a helper
+that can only read, with no way to run a command, change a file or reach anything else, so it
+starts without asking you. The Bot acts only on the short summary that comes back, by adding to its
+task list. Even so, treat that summary as information, not as a command: anyone can send you an
+email that tries to give your Bot orders, and the reader's summary can be steered too.
+
+When an email started or shaped what the Bot is doing, it can still read, take notes and add tasks,
+but anything that could act on the world waits for you: starting a thread or helper, messaging a
+thread that is not its own crew, scheduling something or touching a linked environment. Those
+appear at the top of the **Bot** popover with what the Bot asked for; **Allow** lets the Bot do
+exactly that, **Reject** tells it not to. Held requests are kept only until the server restarts.
 
 The Bot keeps mail only for the addresses you list in the **Mail** tab, so nothing is stored until
 you add them. Each address is one of your own, such as a Gmail account. It keeps mail for 90 days by

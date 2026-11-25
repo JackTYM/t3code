@@ -158,9 +158,9 @@ it.effect.each([
   { caller: "an outside client", thread: undefined, listed: false },
   { caller: "a plain thread", thread: {}, listed: false },
   { caller: "a plain delegated child", thread: { subagent: true }, listed: false },
-  { caller: "a Bot", thread: { bot: true }, listed: true },
-  { caller: "a Bot's delegated child", thread: { subagent: true, botCrew: true }, listed: true },
-] as const)("lists the mail tools to $caller: $listed", ({ thread, listed }) => {
+  { caller: "a Bot", thread: { bot: true }, listed: false },
+  { caller: "a Bot's mail reader", thread: { subagent: true, mailReader: true }, listed: true },
+] as const)("lists the mail body tool to $caller: $listed", ({ thread, listed }) => {
   const invocation: McpInvocationContext.McpInvocationScope = {
     environmentId: EnvironmentId.make("environment-1"),
     requestNamespace: "provider-session-1",

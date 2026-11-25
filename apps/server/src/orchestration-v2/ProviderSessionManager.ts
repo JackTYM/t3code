@@ -101,8 +101,6 @@ const isOwnBusyTurn = (turnKey: string, own: OwnBusyTurns) =>
     );
   });
 const UNLOAD_THREAD_TIMEOUT_MS = 10 * 1000;
-// Delegation nests a few levels at most; this bounds the walk up to a Bot.
-const MAX_BOT_CREW_DEPTH = 8;
 // Providers can announce a retry and never resume. Longer than any adapter's own stall handling.
 const PROVIDER_RETRY_STALL_TIMEOUT = Duration.minutes(15);
 type ProviderErrorItem = Extract<OrchestrationV2TurnItem, { readonly type: "error" }>;
@@ -613,25 +611,6 @@ export const layerWithOptions = (
       const isMcpCredentialReserved = (threadId: ThreadId, mcpCredentialId: string) =>
         (mcpCredentialReservations.get(mcpReservationKey(threadId, mcpCredentialId)) ?? 0) > 0;
       const mcpPrepareLock = yield* KeyedLock.make<ThreadId>();
-      /**
-       * Whether a delegated child's parent chain, through delegated children only, reaches a Bot.
-       * Capped, so a corrupt chain cannot loop. Tool discovery only: the mail tools resolve the
-       * Bot again on every call.
-       */
-      const isBotCrewLineage = Effect.fn("ProviderSessionManager.isBotCrewLineage")(function* (
-        parentThreadId: ThreadId | null,
-      ) {
-        let next = parentThreadId;
-        for (let depth = 0; depth < MAX_BOT_CREW_DEPTH && next !== null; depth += 1) {
-          const parent = yield* projectionStore.getThread(next);
-          if (parent.botConfig != null) return true;
-          next =
-            parent.lineage.relationshipToParent === "subagent"
-              ? parent.lineage.parentThreadId
-              : null;
-        }
-        return false;
-      });
       /** Serialize prepares per thread so concurrent rotations cannot revoke each other's credentials. */
       const prepareMcpSession = (
         threadId: ThreadId,
@@ -660,23 +639,20 @@ export const layerWithOptions = (
                 if (Option.getOrElse(backgroundWait, () => false)) {
                   capabilities.add("background-wait");
                 }
-                const { subagent, bot, botCrew } = yield* projectionStore.getThread(threadId).pipe(
-                  Effect.flatMap((thread) =>
-                    Effect.map(
-                      thread.lineage.relationshipToParent === "subagent"
-                        ? isBotCrewLineage(thread.lineage.parentThreadId).pipe(
-                            Effect.orElseSucceed(() => false),
-                          )
-                        : Effect.succeed(false),
-                      (botCrew) => ({
-                        subagent: thread.lineage.relationshipToParent === "subagent",
-                        bot: thread.botConfig != null,
-                        botCrew,
-                      }),
-                    ),
-                  ),
-                  Effect.orElseSucceed(() => ({ subagent: false, bot: false, botCrew: false })),
-                );
+                const { subagent, bot, mailReader } = yield* projectionStore
+                  .getThread(threadId)
+                  .pipe(
+                    Effect.map((thread) => ({
+                      subagent: thread.lineage.relationshipToParent === "subagent",
+                      bot: thread.botConfig != null,
+                      mailReader: thread.mailReader === true,
+                    })),
+                    Effect.orElseSucceed(() => ({
+                      subagent: false,
+                      bot: false,
+                      mailReader: false,
+                    })),
+                  );
                 const existing = yield* mcpSessions.read(threadId);
                 if (existing !== undefined) {
                   // Reserve before async validation so release cannot revoke between validation and reservation.
@@ -704,7 +680,7 @@ export const layerWithOptions = (
                     // A credential issued while the lineage read failed is replaced once it works.
                     (resolved.thread.subagent === true) === subagent &&
                     (resolved.thread.bot === true) === bot &&
-                    (resolved.thread.botCrew === true) === botCrew
+                    (resolved.thread.mailReader === true) === mailReader
                   ) {
                     return { mcpCredentialId: existing.providerSessionId, issued: false };
                   }
@@ -718,7 +694,7 @@ export const layerWithOptions = (
                   capabilities,
                   subagent,
                   bot,
-                  botCrew,
+                  mailReader,
                 });
                 yield* mcpSessions.set({
                   ...credential.config,

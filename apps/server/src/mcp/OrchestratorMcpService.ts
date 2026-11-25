@@ -2910,11 +2910,18 @@ const make = Effect.gen(function* () {
       };
     }),
     delegateTask: Effect.fn("OrchestratorMcpService.delegateTask")(function* (callerScope, input) {
+      const mailReader = input.role === "mail-reader";
       const environmentId =
         input.target === undefined
           ? undefined
           : PeerForwarding.remoteTarget(callerScope, input.target.environmentId);
       if (input.target !== undefined && environmentId !== undefined) {
+        if (mailReader) {
+          return yield* failure(
+            "invalid_request",
+            "A mail reader runs in this environment, where the mail is. Omit target.environmentId.",
+          );
+        }
         yield* requireCapability(callerScope);
         const scope = yield* requireThreadScope(callerScope, "delegate_task");
         // The task's child runs as an ordinary thread there; this thread keeps the task.
@@ -2927,6 +2934,12 @@ const make = Effect.gen(function* () {
           : readTask(scope, taskId, false, true);
       }
       const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
+      if (mailReader && parent.thread.botConfig == null) {
+        return yield* failure(
+          "capability_denied",
+          'Only a Bot starts a mail reader: role "mail-reader" is for reading the user\'s forwarded email.',
+        );
+      }
       if (
         input.target?.projectId !== undefined &&
         input.target.projectId !== parent.thread.projectId
@@ -2964,9 +2977,10 @@ const make = Effect.gen(function* () {
         cwd: yield* parentWorkspaceCwd(parent),
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
       });
+      // A reader pauses for approval whatever was asked; the sandbox below it is the real limit.
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,
-        input.runtimeMode,
+        mailReader ? "approval-required" : input.runtimeMode,
         target,
       );
       const interactionMode = yield* resolveInteractionMode(
@@ -3025,6 +3039,7 @@ const make = Effect.gen(function* () {
               modelSelection: target.modelSelection,
               runtimeMode,
               interactionMode,
+              ...(mailReader ? { mailReader: true } : {}),
               ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
               // Async delegations wake the parent on every child terminal; wait
               // delegations deliver through the blocking tool call until `awaitTask`

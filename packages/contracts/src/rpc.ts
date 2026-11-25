@@ -224,6 +224,12 @@ import {
   BotWatcherTargetInput,
 } from "./botWatchers.ts";
 import {
+  BotHoldDecisionInput,
+  BotHoldError,
+  BotHoldListInput,
+  BotHoldListResult,
+} from "./botHolds.ts";
+import {
   BotMailBackfillRequest,
   BotMailBackfillStatus,
   BotMailClearDroppedInput,
@@ -596,6 +602,9 @@ export const WS_METHODS = {
   botWatcherPause: "botWatcher.pause",
   botWatcherResume: "botWatcher.resume",
   botWatcherRemove: "botWatcher.remove",
+  botHoldList: "botHold.list",
+  botHoldAllow: "botHold.allow",
+  botHoldReject: "botHold.reject",
 
   providerUploadFeedback: "provider.uploadFeedback",
   providerMcpSignInStart: "provider.mcpSignIn.start",
@@ -2052,6 +2061,24 @@ const WsBotWatcherRemoveRpc = Rpc.make(WS_METHODS.botWatcherRemove, {
   error: botWatcherFailure,
 });
 
+const botHoldFailure = Schema.Union([BotHoldError, EnvironmentAuthorizationError]);
+
+const WsBotHoldListRpc = Rpc.make(WS_METHODS.botHoldList, {
+  payload: BotHoldListInput,
+  success: BotHoldListResult,
+  error: botHoldFailure,
+});
+
+const WsBotHoldAllowRpc = Rpc.make(WS_METHODS.botHoldAllow, {
+  payload: BotHoldDecisionInput,
+  error: botHoldFailure,
+});
+
+const WsBotHoldRejectRpc = Rpc.make(WS_METHODS.botHoldReject, {
+  payload: BotHoldDecisionInput,
+  error: botHoldFailure,
+});
+
 const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
   payload: ProviderUploadFeedbackInput,
   success: ProviderUploadFeedbackResult,
@@ -2974,6 +3001,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotWatcherPauseRpc,
   WsBotWatcherResumeRpc,
   WsBotWatcherRemoveRpc,
+  WsBotHoldListRpc,
+  WsBotHoldAllowRpc,
+  WsBotHoldRejectRpc,
   WsProviderUploadFeedbackRpc,
   WsProviderMcpSignInStartRpc,
   WsProviderMcpSignInCompleteRpc,

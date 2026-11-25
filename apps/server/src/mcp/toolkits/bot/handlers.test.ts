@@ -42,6 +42,8 @@ const shellOf = (
 interface Fixture {
   readonly caller: ThreadId;
   readonly subagent?: boolean;
+  /** Whether the subagent's credential was issued as a mail reader. */
+  readonly mailReader?: boolean;
   /** What each thread's shell says its mode is at each lookup, last one repeating. */
   readonly shells: Readonly<Record<string, ReadonlyArray<OrchestrationV2ThreadShell>>>;
 }
@@ -66,7 +68,9 @@ const run = (fixture: Fixture, tool: "t3_bot_mail_read" | "t3_bot_mail_search", 
           threadId: fixture.caller,
           providerSessionId: "provider:mail",
           providerInstanceId: ProviderInstanceId.make("codex"),
-          ...(fixture.subagent === true ? { subagent: true, botCrew: true } : { bot: true }),
+          ...(fixture.subagent === true
+            ? { subagent: true, mailReader: fixture.mailReader === true }
+            : { bot: true }),
         },
         client: undefined,
         capabilities: new Set(["orchestration" as const]),
@@ -141,20 +145,15 @@ const run = (fixture: Fixture, tool: "t3_bot_mail_read" | "t3_bot_mail_search", 
 const mode = (mode: RuntimeMode, ...later: ReadonlyArray<RuntimeMode>) =>
   [mode, ...later].map((runtimeMode) => shellOf(BOT, runtimeMode));
 
-it.effect("a Bot in approval-required mode reads its own mail", () =>
-  Effect.gen(function* () {
-    const result = yield* run(
-      { caller: BOT, shells: { [BOT]: mode("approval-required") } },
-      "t3_bot_mail_read",
-      { id: 7 },
-    );
-    expect(result).toMatchObject({ id: 7 });
-    expect(mailCalls.read).toEqual([BOT]);
-  }),
-);
+const reader = (caller: ThreadId, shells: Fixture["shells"]): Fixture => ({
+  caller,
+  subagent: true,
+  mailReader: true,
+  shells,
+});
 
-it.effect.each(["full-access", "auto", "auto-accept-edits"] as const)(
-  "a Bot in %s mode is refused the body and told to delegate",
+it.effect.each(["approval-required", "full-access", "auto", "auto-accept-edits"] as const)(
+  "a Bot in %s mode is refused the body and told to start a mail reader",
   (runtimeMode) =>
     Effect.gen(function* () {
       const result = yield* run(
@@ -164,46 +163,24 @@ it.effect.each(["full-access", "auto", "auto-accept-edits"] as const)(
       );
       expect(result.code).toBe("capability_denied");
       expect(result.message).toContain("delegate_task");
-      expect(result.message).toContain('runtimeMode "approval-required"');
+      expect(result.message).toContain('role "mail-reader"');
       expect(mailCalls.read).toEqual([]);
     }),
 );
 
-it.effect("checks the mode on every call and again before the body is handed over", () =>
-  Effect.gen(function* () {
-    // Allowed when the call starts; the user raises the thread while the read runs.
-    const raised = yield* run(
-      { caller: BOT, shells: { [BOT]: mode("approval-required", "full-access") } },
-      "t3_bot_mail_read",
-      { id: 7 },
-    );
-    expect(raised.code).toBe("capability_denied");
-    expect(mailCalls.read).toEqual([BOT]);
-    // The next call sees the mode as it is then, not as it was at listing time.
-    const later = yield* run(
-      { caller: BOT, shells: { [BOT]: mode("full-access", "approval-required") } },
-      "t3_bot_mail_read",
-      { id: 7 },
-    );
-    expect(later.code).toBe("capability_denied");
-  }),
-);
-
-it.effect("a child a Bot delegated to reads that Bot's mail, never another's", () =>
+it.effect("the mail reader a Bot started reads that Bot's mail, never another's", () =>
   Effect.gen(function* () {
     const shells = {
       [CHILD]: [shellOf(CHILD, "approval-required", { id: BOT, relationship: "subagent" })],
       [BOT]: mode("full-access"),
     };
-    const result = yield* run({ caller: CHILD, subagent: true, shells }, "t3_bot_mail_read", {
-      id: 7,
-    });
+    const result = yield* run(reader(CHILD, shells), "t3_bot_mail_read", { id: 7 });
     expect(result).toMatchObject({ id: 7 });
     expect(mailCalls.read).toEqual([BOT]);
   }),
 );
 
-it.effect("a grandchild reaches the Bot through delegated links", () =>
+it.effect("a reader reaches the Bot through delegated links", () =>
   Effect.gen(function* () {
     const shells = {
       [GRANDCHILD]: [
@@ -212,17 +189,36 @@ it.effect("a grandchild reaches the Bot through delegated links", () =>
       [CHILD]: [shellOf(CHILD, "approval-required", { id: BOT, relationship: "subagent" })],
       [BOT]: mode("full-access"),
     };
-    const result = yield* run({ caller: GRANDCHILD, subagent: true, shells }, "t3_bot_mail_read", {
-      id: 7,
-    });
+    const result = yield* run(reader(GRANDCHILD, shells), "t3_bot_mail_read", { id: 7 });
     expect(result).toMatchObject({ id: 7 });
     expect(mailCalls.read).toEqual([BOT]);
   }),
 );
 
+it.effect.each(["approval-required", "full-access"] as const)(
+  "a delegated child that is not a mail reader is refused the body, even in %s mode",
+  (runtimeMode) =>
+    Effect.gen(function* () {
+      const result = yield* run(
+        {
+          caller: CHILD,
+          subagent: true,
+          shells: {
+            [CHILD]: [shellOf(CHILD, runtimeMode, { id: BOT, relationship: "subagent" })],
+            [BOT]: mode("full-access"),
+          },
+        },
+        "t3_bot_mail_read",
+        { id: 7 },
+      );
+      expect(result.code).toBe("capability_denied");
+      expect(mailCalls.read).toEqual([]);
+    }),
+);
+
 it.effect.each([
   {
-    name: "a child of a thread that is not a Bot",
+    name: "a reader under a thread that is not a Bot",
     shells: {
       [CHILD]: [shellOf(CHILD, "approval-required", { id: STRANGER, relationship: "subagent" })],
       [STRANGER]: [shellOf(STRANGER, "full-access")],
@@ -237,30 +233,23 @@ it.effect.each([
   },
 ] as const)("refuses $name", ({ shells }) =>
   Effect.gen(function* () {
-    const result = yield* run({ caller: CHILD, subagent: true, shells }, "t3_bot_mail_read", {
-      id: 7,
-    });
+    const result = yield* run(reader(CHILD, shells), "t3_bot_mail_read", { id: 7 });
     expect(result.code).toBe("capability_denied");
     expect(mailCalls.read).toEqual([]);
   }),
 );
 
-it.effect("a child the user raised to full access is refused the body", () =>
+it.effect("search is the Bot's alone: a mail reader or other child is refused", () =>
   Effect.gen(function* () {
-    const result = yield* run(
-      {
-        caller: CHILD,
-        subagent: true,
-        shells: {
-          [CHILD]: [shellOf(CHILD, "full-access", { id: BOT, relationship: "subagent" })],
-          [BOT]: mode("full-access"),
-        },
-      },
-      "t3_bot_mail_read",
-      { id: 7 },
-    );
-    expect(result.code).toBe("capability_denied");
-    expect(mailCalls.read).toEqual([]);
+    const shells = {
+      [CHILD]: [shellOf(CHILD, "approval-required", { id: BOT, relationship: "subagent" })],
+      [BOT]: mode("full-access"),
+    };
+    for (const fixture of [reader(CHILD, shells), { caller: CHILD, subagent: true, shells }]) {
+      const result = yield* run(fixture, "t3_bot_mail_search", { query: "hi" });
+      expect(result.code).toBe("capability_denied");
+    }
+    expect(mailCalls.search).toEqual([]);
   }),
 );
 

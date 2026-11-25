@@ -29,6 +29,7 @@ import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
+import { BotHeldActions } from "./BotHeldActions";
 import { BotMailView } from "./BotMailView";
 import { BotTasksView } from "./BotTasksView";
 import { BotWatchersView } from "./BotWatchersView";
@@ -139,9 +140,21 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
   const watchersData = useEnvironmentQuerySelector(watchersAtom, selectEnvironmentQueryData);
   const { refresh: refreshWatchers, isPending: watchersPending } =
     useEnvironmentQueryRefresh(watchersAtom);
-  const needYou = watchersData === null ? 0 : botWatchersNeedingYou(watchersData.watchers);
+  // Calls the Bot held because email influenced its turn; they wait for the user like a watcher.
+  const heldAtom =
+    botConfig == null
+      ? null
+      : botFilesEnvironment.holds({
+          environmentId: props.threadRef.environmentId,
+          input: { threadId: props.threadRef.threadId },
+        });
+  const held = useEnvironmentQuerySelector(heldAtom, selectEnvironmentQueryData)?.held ?? [];
+  const { refresh: refreshHeld } = useEnvironmentQueryRefresh(heldAtom);
+  const needYou =
+    (watchersData === null ? 0 : botWatchersNeedingYou(watchersData.watchers)) + held.length;
   // A refresh restarts a read in flight, so one already running stands for this one.
   const refreshWatchersIfIdle = () => {
+    refreshHeld();
     if (!watchersPending()) refreshWatchers();
   };
   useLiveRefresh(refreshWatchersIfIdle, {
@@ -177,8 +190,8 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
               needYou === 0
                 ? gt("Bot notes")
                 : needYou === 1
-                  ? gt("Bot notes, 1 watcher needs you")
-                  : gt("Bot notes, {count} watchers need you", { count: needYou })
+                  ? gt("Bot notes, 1 item needs you")
+                  : gt("Bot notes, {count} items need you", { count: needYou })
             }
           />
         }
@@ -216,6 +229,7 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
               onCheckedChange={(checked) => void setMuteCrew(props.threadRef, checked)}
             />
           </div>
+          {held.length === 0 ? null : <BotHeldActions threadRef={props.threadRef} held={held} />}
           <ToggleGroup
             aria-label={gt("Bot view")}
             className="w-full *:flex-1"
