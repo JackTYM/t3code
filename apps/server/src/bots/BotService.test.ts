@@ -100,6 +100,52 @@ it.effect("keeps a Bot's memory in its own folder and refuses writes from other 
   }).pipe(provideBots(orchestration));
 });
 
+it.effect("lists tasks.md and lets the user mark a task done and reopen it", () => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  const written = [
+    "# School",
+    "- [ ] t1 | Write draft | in_progress | due Dec 6 | thread:a thread:b",
+    "  - [ ] t2 | Cite sources | waiting | on the user",
+    "scribbled by hand",
+  ].join("\n");
+  return Effect.gen(function* () {
+    const bots = yield* BotService.BotService;
+    const threadId = botThread.id;
+    assert.deepStrictEqual(yield* bots.readTasks({ threadId }), { entries: [] });
+
+    yield* bots.writeFile({ threadId, file: "tasks", contents: written });
+    assert.strictEqual(yield* bots.readTasksFile({ threadId }), written);
+    const { entries } = yield* bots.readTasks({ threadId });
+    assert.deepStrictEqual(
+      entries.map((entry) => (entry.kind === "raw" ? entry.text : `${entry.id}:${entry.status}`)),
+      ["# School", "t1:in_progress", "t2:waiting", "scribbled by hand"],
+    );
+
+    yield* bots.setTaskStatus({ threadId, taskId: "t2", status: "done" });
+    assert.strictEqual(
+      yield* bots.readTasksFile({ threadId }),
+      written.replace("[ ] t2 | Cite sources | waiting", "[x] t2 | Cite sources | done"),
+    );
+    yield* bots.setTaskStatus({ threadId, taskId: "t2", status: "open" });
+    const reopened = yield* bots.readTasks({ threadId });
+    assert.strictEqual(
+      reopened.entries.find((entry) => entry.kind === "task" && entry.id === "t2")?.kind,
+      "task",
+    );
+    assert.include(yield* bots.readTasksFile({ threadId }), "- [ ] t2 | Cite sources | open |");
+
+    const missing = yield* bots
+      .setTaskStatus({ threadId, taskId: "nope", status: "done" })
+      .pipe(Effect.flip);
+    assert.strictEqual(missing.reason, "task_not_found");
+    const refused = yield* bots
+      .setTaskStatus({ threadId: ThreadId.make("thread:plain"), taskId: "t1", status: "done" })
+      .pipe(Effect.flip);
+    assert.strictEqual(refused.reason, "not_a_bot");
+  }).pipe(provideBots(orchestration));
+});
+
 it.effect(
   "wakes a Bot when its crew or a watched run reaches a milestone, and not once it is settled",
   () => {

@@ -45,12 +45,13 @@ const WatchTargetInput = Schema.Struct({
 const MemoryRead = Tool.make("t3_bot_memory_read", {
   ...shared,
   description:
-    "Read your memory: notes.md (your working notes), preferences.md (what the user wants you to keep doing), and the threads and workflow runs you watch beyond your crew.",
+    "Read your memory: notes.md (your working notes), preferences.md (what the user wants you to keep doing), tasks.md (your task list), and the threads and workflow runs you watch beyond your crew.",
   // No `parameters`: an explicit Schema.Struct({}) advertises `anyOf: [object, array]`,
   // which MCP clients reject. The default EmptyParams advertises `type: "object"`.
   success: Schema.Struct({
     notes: Schema.String,
     preferences: Schema.String,
+    tasks: Schema.String,
     watches: Schema.Array(BotWatch),
   }),
 })
@@ -73,6 +74,24 @@ const NotesWrite = Tool.make("t3_bot_notes_write", {
   success: Saved,
 })
   .annotate(Tool.Title, "Write Bot notes")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromNonBots);
+
+const TasksWrite = Tool.make("t3_bot_tasks_write", {
+  ...shared,
+  description:
+    "Replace your tasks.md, the task list the user sees, in the line format your Bot instructions give. Read it first with t3_bot_memory_read: the user may have marked tasks done.",
+  parameters: Schema.Struct({
+    contents: Schema.String.check(Schema.isMaxLength(BOT_FILE_MAX_CHARS)).annotate({
+      description: "The whole new Markdown file.",
+    }),
+  }),
+  success: Saved,
+})
+  .annotate(Tool.Title, "Write Bot tasks")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, true)
   .annotate(Tool.Idempotent, true)
@@ -215,6 +234,7 @@ const WatcherList = Tool.make("t3_bot_watcher_list", {
 export const BotToolkit = Toolkit.make(
   MemoryRead,
   NotesWrite,
+  TasksWrite,
   PreferencesAppend,
   WatchAdd,
   WatchRemove,

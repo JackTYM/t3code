@@ -137,8 +137,10 @@ describe("RPC authorization scopes", () => {
 
   it("lets readers see a Bot's memory but only operators change it, start Bots, or steer Home", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.botFilesRead)).toBe(AuthOrchestrationReadScope);
+    expect(requiredScopeForRpcMethod(WS_METHODS.botTasksRead)).toBe(AuthOrchestrationReadScope);
     for (const method of [
       WS_METHODS.botFilesWrite,
+      WS_METHODS.botTasksSetStatus,
       WS_METHODS.botStart,
       WS_METHODS.homeEnable,
       WS_METHODS.homeDisable,

@@ -15,9 +15,18 @@ environment. User guide: [Bots and Home](../user/bots.md).
 - Crew is `groupedUnderThreadId`, one level deep. Threads a thread launches join its group, so a
   Bot's launches become its crew. A Bot's crew may sit in any project, which is what lets Home's
   crew work in real projects.
-- Memory is `<base>/bots/<folder>/notes.md` and `preferences.md`. Every Home shares the `home`
-  folder, so its memory survives Start fresh; other Bots own theirs. These files are user-owned and
-  never rewritten by the server.
+- Memory is `<base>/bots/<folder>/notes.md`, `preferences.md` and `tasks.md`. Every Home shares the
+  `home` folder, so its memory survives Start fresh; other Bots own theirs. These files are
+  user-owned. The server rewrites one only to mark a task done or reopened.
+- `tasks.md` is the task list clients show. It is Markdown the Bot and the user both edit, one task
+  per line, `- [ ] id | title | status | note | threadId threadId`, indented two spaces per level.
+  `status` (open, in_progress, waiting, done) decides and the checkbox only mirrors it. A thread
+  field needs the note field before it, empty if need be. A file is never trusted to be well
+  formed ([`botTasks.ts`](../../apps/server/src/bots/botTasks.ts)): any line that does not parse,
+  or repeats an earlier id, comes back as a raw line in its place and is never dropped, since a
+  client acts on an id. Marking done or reopening rewrites that one line, under the same lock as
+  the Bot's own writes. A Bot that saves a whole file from a stale read can still undo a mark, so
+  its instructions tell it to read first.
 - Explicit watches (threads outside the crew, workflow runs) live in `<base>/bots/watches.json`,
   read once and matched in memory against every milestone.
 

@@ -66,7 +66,8 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
     Effect.gen(function* () {
       const { bots, threadId } = yield* callerBot;
       const files = yield* bots.readFiles({ threadId }).pipe(Effect.mapError(botFailure));
-      return { ...files, watches: yield* bots.watches(threadId) };
+      const tasks = yield* bots.readTasksFile({ threadId }).pipe(Effect.mapError(botFailure));
+      return { ...files, tasks, watches: yield* bots.watches(threadId) };
     }),
   ),
   t3_bot_notes_write: McpToolAccess.actsAsCaller(({ contents }) =>
@@ -74,6 +75,15 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
       const { bots, threadId } = yield* callerBot;
       yield* bots
         .writeFile({ threadId, file: "notes", contents })
+        .pipe(Effect.mapError(botFailure));
+      return { saved: true };
+    }),
+  ),
+  t3_bot_tasks_write: McpToolAccess.actsAsCaller(({ contents }) =>
+    Effect.gen(function* () {
+      const { bots, threadId } = yield* callerBot;
+      yield* bots
+        .writeFile({ threadId, file: "tasks", contents })
         .pipe(Effect.mapError(botFailure));
       return { saved: true };
     }),

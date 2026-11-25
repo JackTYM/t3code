@@ -1,6 +1,12 @@
 import * as Schema from "effect/Schema";
 
-import { EnvironmentId, IsoDateTime, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  EnvironmentId,
+  IsoDateTime,
+  NonNegativeInt,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 
 /**
  * A Bot is a coordinator thread: it keeps notes, leads the crew grouped under it, and is woken
@@ -14,7 +20,7 @@ export const ThreadBotConfig = Schema.Struct({
 });
 export type ThreadBotConfig = typeof ThreadBotConfig.Type;
 
-export const BotFileKind = Schema.Literals(["notes", "preferences"]);
+export const BotFileKind = Schema.Literals(["notes", "preferences", "tasks"]);
 export type BotFileKind = typeof BotFileKind.Type;
 
 export const BOT_FILE_MAX_CHARS = 64_000;
@@ -27,6 +33,47 @@ export const BotFilesReadResult = Schema.Struct({
   preferences: Schema.String,
 });
 export type BotFilesReadResult = typeof BotFilesReadResult.Type;
+
+/**
+ * `waiting` is blocked on the user or on something outside the Bot's control; the task's note says
+ * which.
+ */
+export const BotTaskStatus = Schema.Literals(["open", "in_progress", "waiting", "done"]);
+export type BotTaskStatus = typeof BotTaskStatus.Type;
+
+export const BotTask = Schema.Struct({
+  kind: Schema.Literal("task"),
+  id: TrimmedNonEmptyString,
+  title: Schema.String,
+  status: BotTaskStatus,
+  /** Free text: a due date, or what a waiting task waits on. */
+  note: Schema.optionalKey(Schema.String),
+  /** Threads working on the task, in this environment. */
+  threadIds: Schema.Array(ThreadId),
+  /** Nesting level, 0 for a top-level task. */
+  depth: NonNegativeInt,
+});
+export type BotTask = typeof BotTask.Type;
+
+/** A line of tasks.md that is not a task, kept so the file is shown as written. */
+export const BotTaskRawLine = Schema.Struct({ kind: Schema.Literal("raw"), text: Schema.String });
+export type BotTaskRawLine = typeof BotTaskRawLine.Type;
+
+export const BotTasksReadInput = Schema.Struct({ threadId: ThreadId });
+export type BotTasksReadInput = typeof BotTasksReadInput.Type;
+
+/** tasks.md in file order; a task's subtasks are the entries after it with a greater `depth`. */
+export const BotTasksReadResult = Schema.Struct({
+  entries: Schema.Array(Schema.Union([BotTask, BotTaskRawLine])),
+});
+export type BotTasksReadResult = typeof BotTasksReadResult.Type;
+
+export const BotTaskSetStatusInput = Schema.Struct({
+  threadId: ThreadId,
+  taskId: TrimmedNonEmptyString,
+  status: BotTaskStatus,
+});
+export type BotTaskSetStatusInput = typeof BotTaskSetStatusInput.Type;
 
 export const BotFileWriteInput = Schema.Struct({
   threadId: ThreadId,
@@ -77,7 +124,14 @@ export const botWatchKey = (target: BotWatchTarget): string =>
 
 export class BotError extends Schema.TaggedError<BotError>()("BotError", {
   threadId: ThreadId,
-  reason: Schema.Literals(["not_a_bot", "too_large", "io", "cannot_start", "launch_failed"]),
+  reason: Schema.Literals([
+    "not_a_bot",
+    "too_large",
+    "io",
+    "cannot_start",
+    "launch_failed",
+    "task_not_found",
+  ]),
   /** Why a Bot cannot start from the thread; safe to show. */
   detail: Schema.optional(Schema.String),
   cause: Schema.optional(Schema.Defect()),
@@ -94,6 +148,8 @@ export class BotError extends Schema.TaggedError<BotError>()("BotError", {
         return this.detail ?? `A Bot cannot start from thread ${this.threadId}.`;
       case "launch_failed":
         return `The Bot for thread ${this.threadId} could not be started.`;
+      case "task_not_found":
+        return `The Bot for thread ${this.threadId} no longer lists that task.`;
     }
   }
 }

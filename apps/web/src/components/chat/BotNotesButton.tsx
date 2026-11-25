@@ -21,8 +21,11 @@ import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "../ui/popov
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
+import { Toggle, ToggleGroup } from "../ui/toggle-group";
+import { BotTasksView } from "./BotTasksView";
 
-const FILES: ReadonlyArray<BotFileKind> = ["notes", "preferences"];
+// tasks.md is edited as a list in the Tasks view, not as text.
+const FILES: ReadonlyArray<Exclude<BotFileKind, "tasks">> = ["notes", "preferences"];
 
 function BotFilesForm(props: {
   threadRef: ScopedThreadRef;
@@ -97,12 +100,13 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
   const gt = useGT();
   const thread = useThreadShell(props.threadRef);
   const [open, setOpen] = useState(false);
+  const [view, setView] = useState<"notes" | "tasks">("notes");
   const canWrite = useAtomValue(
     botFilesEnvironment.write.permissionAtom(props.threadRef.environmentId),
   );
   const { setMuteCrew } = useThreadGroupingActions();
   const files = useEnvironmentQuery(
-    open
+    open && view === "notes"
       ? botFilesEnvironment.files({
           environmentId: props.threadRef.environmentId,
           input: { threadId: props.threadRef.threadId },
@@ -134,7 +138,25 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
               onCheckedChange={(checked) => void setMuteCrew(props.threadRef, checked)}
             />
           </div>
-          {files.data === null ? (
+          <ToggleGroup
+            aria-label={gt("Bot view")}
+            className="w-full *:flex-1"
+            value={[view]}
+            onValueChange={(next) => {
+              const value = next[0];
+              if (value === "notes" || value === "tasks") setView(value);
+            }}
+          >
+            <Toggle value="notes">
+              <T>Notes</T>
+            </Toggle>
+            <Toggle value="tasks">
+              <T>Tasks</T>
+            </Toggle>
+          </ToggleGroup>
+          {view === "tasks" ? (
+            <BotTasksView threadRef={props.threadRef} />
+          ) : files.data === null ? (
             <p className="text-muted-foreground text-sm">{files.error ?? <T>Loading…</T>}</p>
           ) : (
             <BotFilesForm

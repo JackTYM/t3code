@@ -222,6 +222,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.providerUploadFeedback]: "provider",
   [WS_METHODS.botFilesRead]: "orchestration",
   [WS_METHODS.botFilesWrite]: "orchestration",
+  [WS_METHODS.botTasksRead]: "orchestration",
+  [WS_METHODS.botTasksSetStatus]: "orchestration",
   [WS_METHODS.botStart]: "orchestration",
   [WS_METHODS.botWatcherList]: "orchestration",
   [WS_METHODS.botWatcherDryRun]: "orchestration",

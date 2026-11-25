@@ -58,6 +58,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.projectsCreateFromThread]: AuthOrchestrationOperateScope,
   // A Bot's notes steer its later turns, as a message to it does.
   [WS_METHODS.botFilesWrite]: AuthOrchestrationOperateScope,
+  // The mark is written into the Bot's own file, which steers its later turns like its notes.
+  [WS_METHODS.botTasksSetStatus]: AuthOrchestrationOperateScope,
   [WS_METHODS.botStart]: AuthOrchestrationOperateScope,
   // The server runs an approved watcher on a schedule, and a dry run runs it now: this is running
   // code there, as saving a workflow file is, so operating threads does not cover it.
