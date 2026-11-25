@@ -10,6 +10,11 @@ import {
   createEnvironmentRpcQueryAtomFamily,
 } from "./runtime.ts";
 
+type BotMailCommandTag =
+  | typeof WS_METHODS.botMailSetMailboxes
+  | typeof WS_METHODS.botMailForget
+  | typeof WS_METHODS.botMailBackfill;
+
 type BotWatcherDecisionTag =
   | typeof WS_METHODS.botWatcherDryRun
   | typeof WS_METHODS.botWatcherApprove
@@ -34,6 +39,24 @@ export function createBotFilesEnvironmentAtoms<R, E>(
     label: "environment-data:bot-tasks:read",
     tag: WS_METHODS.botTasksRead,
   });
+  const mailStatus = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:bot-mail:status",
+    tag: WS_METHODS.botMailStatus,
+  });
+  // Each of these changes what the status shows.
+  const mailCommand = <TTag extends BotMailCommandTag>(label: string, tag: TTag) =>
+    createEnvironmentRpcCommand(runtime, {
+      label: `environment-data:bot-mail:${label}`,
+      tag,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.threadId]),
+      },
+      onSettled: ({ environmentId, input }, registry) =>
+        Effect.sync(() =>
+          registry.refresh(mailStatus({ environmentId, input: { threadId: input.threadId } })),
+        ),
+    });
   const watchers = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:bot-watchers:list",
     tag: WS_METHODS.botWatcherList,
@@ -58,6 +81,10 @@ export function createBotFilesEnvironmentAtoms<R, E>(
     files,
     tasks,
     watchers,
+    mailStatus,
+    mailSetMailboxes: mailCommand("set-mailboxes", WS_METHODS.botMailSetMailboxes),
+    mailForget: mailCommand("forget", WS_METHODS.botMailForget),
+    mailBackfill: mailCommand("backfill", WS_METHODS.botMailBackfill),
     watcherDryRun: watcherDecision("dry-run", WS_METHODS.botWatcherDryRun),
     watcherApprove: watcherDecision("approve", WS_METHODS.botWatcherApprove),
     watcherReject: watcherDecision("reject", WS_METHODS.botWatcherReject),

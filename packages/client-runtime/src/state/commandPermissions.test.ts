@@ -258,6 +258,9 @@ describe("command permissions", () => {
     WS_METHODS.botWatcherReject,
     WS_METHODS.botWatcherPause,
     WS_METHODS.botWatcherRemove,
+    WS_METHODS.botMailSetMailboxes,
+    WS_METHODS.botMailForget,
+    WS_METHODS.botMailBackfill,
   ])("uses the target grant for both availability and execution of %s", (method) =>
     Effect.gen(function* () {
       const registry = yield* setup;

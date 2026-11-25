@@ -223,6 +223,15 @@ import {
   BotWatcherSetRunsOnInput,
   BotWatcherTargetInput,
 } from "./botWatchers.ts";
+import {
+  BotMailBackfillRequest,
+  BotMailBackfillStatus,
+  BotMailError,
+  BotMailForgetInput,
+  BotMailSetMailboxesInput,
+  BotMailStatus,
+  BotMailStatusInput,
+} from "./botMailInbox.ts";
 import { ProviderInstanceId, ProviderInstanceMutation } from "./providerInstance.ts";
 import {
   IssueCandidates,
@@ -569,6 +578,10 @@ export const WS_METHODS = {
   botTasksRead: "bot.tasks.read",
   botTasksSetStatus: "bot.tasks.setStatus",
   botStart: "bot.start",
+  botMailStatus: "botMail.status",
+  botMailSetMailboxes: "botMail.setMailboxes",
+  botMailForget: "botMail.forget",
+  botMailBackfill: "botMail.backfill",
   botWatcherList: "botWatcher.list",
   botWatcherDryRun: "botWatcher.dryRun",
   botWatcherApprove: "botWatcher.approve",
@@ -1946,6 +1959,31 @@ const WsBotStartRpc = Rpc.make(WS_METHODS.botStart, {
   error: Schema.Union([BotError, EnvironmentAuthorizationError]),
 });
 
+const botMailFailure = Schema.Union([BotMailError, EnvironmentAuthorizationError]);
+
+const WsBotMailStatusRpc = Rpc.make(WS_METHODS.botMailStatus, {
+  payload: BotMailStatusInput,
+  success: BotMailStatus,
+  error: botMailFailure,
+});
+
+const WsBotMailSetMailboxesRpc = Rpc.make(WS_METHODS.botMailSetMailboxes, {
+  payload: BotMailSetMailboxesInput,
+  success: BotMailStatus,
+  error: botMailFailure,
+});
+
+const WsBotMailForgetRpc = Rpc.make(WS_METHODS.botMailForget, {
+  payload: BotMailForgetInput,
+  error: botMailFailure,
+});
+
+const WsBotMailBackfillRpc = Rpc.make(WS_METHODS.botMailBackfill, {
+  payload: BotMailBackfillRequest,
+  success: BotMailBackfillStatus,
+  error: botMailFailure,
+});
+
 const botWatcherFailure = Schema.Union([BotWatcherError, EnvironmentAuthorizationError]);
 
 const WsBotWatcherListRpc = Rpc.make(WS_METHODS.botWatcherList, {
@@ -2897,6 +2935,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotTasksReadRpc,
   WsBotTasksSetStatusRpc,
   WsBotStartRpc,
+  WsBotMailStatusRpc,
+  WsBotMailSetMailboxesRpc,
+  WsBotMailForgetRpc,
+  WsBotMailBackfillRpc,
   WsBotWatcherListRpc,
   WsBotWatcherDryRunRpc,
   WsBotWatcherApproveRpc,

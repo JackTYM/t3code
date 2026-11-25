@@ -63,6 +63,11 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.botStart]: AuthOrchestrationOperateScope,
   // The server runs an approved watcher on a schedule, and a dry run runs it now: this is running
   // code there, as saving a workflow file is, so operating threads does not cover it.
+  // Which mailboxes a Bot keeps mail for decides what strangers' text reaches it, as its notes
+  // steer it; forgetting and pulling history change what it can read, nothing runs.
+  [WS_METHODS.botMailSetMailboxes]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botMailForget]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botMailBackfill]: AuthOrchestrationOperateScope,
   [WS_METHODS.botWatcherDryRun]: AuthTerminalOperateScope,
   [WS_METHODS.botWatcherApprove]: AuthTerminalOperateScope,
   [WS_METHODS.botWatcherSetRunsOn]: AuthTerminalOperateScope,

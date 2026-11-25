@@ -64,6 +64,49 @@ which `workflow.run_ended` reports for the run. A thread watch ends when the thr
 and a run watch when the run ends; crew are never unwatched. Milestones are local, so wakes cover
 this environment's threads and runs only.
 
+## Mail
+
+A Bot can know about the user's email. A Cloudflare Worker turns each forwarded email into a
+[`BotMailMessage`](../../packages/contracts/src/botMail.ts) and posts it, HMAC-signed, to a webhook
+task; the Mac Mail reader on a linked laptop supplies history. Everything in an email is text from a
+stranger, so [`BotMailService`](../../apps/server/src/bots/BotMailService.ts) treats the sender as
+no signal at all.
+
+- **Ingest reuses the webhook route.** A webhook task whose schedule has `sink: "bot-mail"` keeps
+  each verified delivery's body in the mail store of the Bot the task is bound to, instead of
+  starting a run. Token URL, `x-t3-signature` check, rate limit, relay forwarding, held-offline
+  deliveries and the managed policy switch are the task's own. Two things differ, both because the
+  store is where mail is retained and forgotten: the delivery log keeps no body, and the task
+  cannot use `dedupe`, whose coalescing windows persist the request. `ScheduledTaskService` does not
+  know Bots; the service above it registers the sink (`registerWebhookSink`), and a delivery with
+  none registered fails like a run that could not start, so the relay sends it again.
+- **Only mailboxes the user allowed.** `mailbox` is the user's own To address. The allowlist is
+  Bot configuration the user sets over `botMail.setMailboxes`; the Bot has no tool for it. Mail to
+  any other mailbox is dropped and logged, never stored. Empty by default.
+- **Store.** SQLite (`bot_mail_messages`), keyed by the Bot's memory folder so a Home started fresh
+  keeps its mail, deduped on (mailbox, Message-ID). Retention (default 90 days, per Bot) counts from
+  the earlier of the sender's date and arrival, so dating mail ahead keeps nothing. A Bot holds at
+  most 20,000 emails; the oldest go first, so spam cannot fill the disk. Forgetting clears the
+  email in place and keeps its address, when and by whom, so forwarding it again does not bring it
+  back; tombstones outlive the mail by one retention period.
+- **The Bot hears a digest, not mail.** At most one wake per window (default 5 minutes, per Bot),
+  through `BotService.wakeWith`, so the turn it starts counts as a wake turn for `startedByWake` and
+  cannot propose or remove watchers. One line per new email (#number, mailbox, sender, subject,
+  authenticated or unverified from DMARC), never bodies, framed as untrusted data. Backfilled mail
+  is history and never wakes. The Bot reads with `t3_bot_mail_read` (body inside the frame) and
+  `t3_bot_mail_search`, and writes follow-ups to `tasks.md` itself. There is no send, delete or
+  archive tool.
+- **Backfill** is pulled by the box: it asks the laptop's peer-only `t3_mail_backfill` through
+  `PeerMcpClient` page by page, stores each page as `backfill`, and resumes from its saved cursor.
+  A laptop that does not answer leaves it `waiting`, not failed.
+- **Containment is not done.** A mail-woken turn runs in the Bot thread's own runtime mode, which
+  is full access for Home. A turn's mode is the thread's, read when the turn starts; a message
+  carries none, and the dispatch mode limit only refuses commands against a thread above it. Lowering
+  one wake would mean lowering the thread and restoring it afterwards, which also changes what the
+  user's own turns in that window may do. Until that is built, the Bot instructions (never run
+  shell commands or edit files) and the user approving every watcher are what stand between a
+  hostile email and a command.
+
 ## Watchers
 
 A watcher is a script that polls for free and wakes the Bot, a model call, only when it trips.
