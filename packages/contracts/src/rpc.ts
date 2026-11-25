@@ -218,6 +218,7 @@ import {
   BotWatcherRejectInput,
   BotWatcherRun,
   BotWatcherSetRunsOnInput,
+  BotWatcherTargetInput,
 } from "./botWatchers.ts";
 import { ProviderInstanceId, ProviderInstanceMutation } from "./providerInstance.ts";
 import {
@@ -568,6 +569,9 @@ export const WS_METHODS = {
   botWatcherApprove: "botWatcher.approve",
   botWatcherReject: "botWatcher.reject",
   botWatcherSetRunsOn: "botWatcher.setRunsOn",
+  botWatcherPause: "botWatcher.pause",
+  botWatcherResume: "botWatcher.resume",
+  botWatcherRemove: "botWatcher.remove",
 
   providerUploadFeedback: "provider.uploadFeedback",
   providerMcpSignInStart: "provider.mcpSignIn.start",
@@ -1955,6 +1959,21 @@ const WsBotWatcherSetRunsOnRpc = Rpc.make(WS_METHODS.botWatcherSetRunsOn, {
   error: botWatcherFailure,
 });
 
+const WsBotWatcherPauseRpc = Rpc.make(WS_METHODS.botWatcherPause, {
+  payload: BotWatcherTargetInput,
+  error: botWatcherFailure,
+});
+
+const WsBotWatcherResumeRpc = Rpc.make(WS_METHODS.botWatcherResume, {
+  payload: BotWatcherTargetInput,
+  error: botWatcherFailure,
+});
+
+const WsBotWatcherRemoveRpc = Rpc.make(WS_METHODS.botWatcherRemove, {
+  payload: BotWatcherTargetInput,
+  error: botWatcherFailure,
+});
+
 const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
   payload: ProviderUploadFeedbackInput,
   success: ProviderUploadFeedbackResult,
@@ -2865,6 +2884,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotWatcherApproveRpc,
   WsBotWatcherRejectRpc,
   WsBotWatcherSetRunsOnRpc,
+  WsBotWatcherPauseRpc,
+  WsBotWatcherResumeRpc,
+  WsBotWatcherRemoveRpc,
   WsProviderUploadFeedbackRpc,
   WsProviderMcpSignInStartRpc,
   WsProviderMcpSignInCompleteRpc,

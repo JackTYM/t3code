@@ -14,7 +14,10 @@ type BotWatcherDecisionTag =
   | typeof WS_METHODS.botWatcherDryRun
   | typeof WS_METHODS.botWatcherApprove
   | typeof WS_METHODS.botWatcherReject
-  | typeof WS_METHODS.botWatcherSetRunsOn;
+  | typeof WS_METHODS.botWatcherSetRunsOn
+  | typeof WS_METHODS.botWatcherPause
+  | typeof WS_METHODS.botWatcherResume
+  | typeof WS_METHODS.botWatcherRemove;
 
 /**
  * A Bot's notes.md and preferences.md (a save refreshes the read), starting a Bot, and the
@@ -54,6 +57,9 @@ export function createBotFilesEnvironmentAtoms<R, E>(
     watcherApprove: watcherDecision("approve", WS_METHODS.botWatcherApprove),
     watcherReject: watcherDecision("reject", WS_METHODS.botWatcherReject),
     watcherSetRunsOn: watcherDecision("set-runs-on", WS_METHODS.botWatcherSetRunsOn),
+    watcherPause: watcherDecision("pause", WS_METHODS.botWatcherPause),
+    watcherResume: watcherDecision("resume", WS_METHODS.botWatcherResume),
+    watcherRemove: watcherDecision("remove", WS_METHODS.botWatcherRemove),
     write: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:bot-files:write",
       tag: WS_METHODS.botFilesWrite,

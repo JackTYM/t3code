@@ -256,6 +256,8 @@ describe("command permissions", () => {
     WS_METHODS.homeReset,
     WS_METHODS.homeSetModel,
     WS_METHODS.botWatcherReject,
+    WS_METHODS.botWatcherPause,
+    WS_METHODS.botWatcherRemove,
   ])("uses the target grant for both availability and execution of %s", (method) =>
     Effect.gen(function* () {
       const registry = yield* setup;
@@ -292,6 +294,7 @@ describe("command permissions", () => {
     WS_METHODS.botWatcherDryRun,
     WS_METHODS.botWatcherApprove,
     WS_METHODS.botWatcherSetRunsOn,
+    WS_METHODS.botWatcherResume,
   ])("running a Bot's watcher script (%s) takes more than operating threads", (method) =>
     Effect.gen(function* () {
       const registry = yield* setup;

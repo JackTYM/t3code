@@ -2729,6 +2729,12 @@ export const layerWsRpc = (
             name: input.name,
             runsOn: input.runsOn,
           }),
+        [WS_METHODS.botWatcherPause]: (input) =>
+          botWatchers.pause({ botThreadId: input.threadId, name: input.name }),
+        [WS_METHODS.botWatcherResume]: (input) =>
+          botWatchers.resume({ botThreadId: input.threadId, name: input.name }),
+        [WS_METHODS.botWatcherRemove]: (input) =>
+          botWatchers.removeByUser({ botThreadId: input.threadId, name: input.name }),
         [WS_METHODS.providerMcpSignInStart]: (input) => mcpSignIn.start(input),
         [WS_METHODS.providerMcpSignInComplete]: (input) => mcpSignIn.complete(input),
         [WS_METHODS.providerUploadFeedback]:

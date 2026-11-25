@@ -156,13 +156,18 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.botWatcherDryRun,
       WS_METHODS.botWatcherApprove,
       WS_METHODS.botWatcherSetRunsOn,
+      WS_METHODS.botWatcherResume,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthTerminalOperateScope);
     }
-    // Discarding a proposal runs nothing new.
-    expect(requiredScopeForRpcMethod(WS_METHODS.botWatcherReject)).toBe(
-      AuthOrchestrationOperateScope,
-    );
+    // Discarding a proposal, pausing or removing a watcher runs nothing new.
+    for (const method of [
+      WS_METHODS.botWatcherReject,
+      WS_METHODS.botWatcherPause,
+      WS_METHODS.botWatcherRemove,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
   });
 
   it("still lets readers load settings the way installed Swift clients ask", () => {

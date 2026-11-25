@@ -64,8 +64,13 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.botWatcherDryRun]: AuthTerminalOperateScope,
   [WS_METHODS.botWatcherApprove]: AuthTerminalOperateScope,
   [WS_METHODS.botWatcherSetRunsOn]: AuthTerminalOperateScope,
-  // Discarding a proposal runs nothing new; the approved version it resumes was approved already.
+  // Starting an approved watcher again is running code here, as approving it was.
+  [WS_METHODS.botWatcherResume]: AuthTerminalOperateScope,
+  // These stop code or discard a proposal, and run nothing new; the approved version a rejection
+  // resumes was approved already.
   [WS_METHODS.botWatcherReject]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botWatcherPause]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botWatcherRemove]: AuthOrchestrationOperateScope,
   [WS_METHODS.sourceControlCloneRepository]: AuthSourceControlWriteScope,
   [WS_METHODS.sourceControlPublishRepository]: AuthSourceControlWriteScope,
   [WS_METHODS.sourceControlStar]: AuthSourceControlWriteScope,

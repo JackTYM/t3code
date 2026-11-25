@@ -82,6 +82,8 @@ const WatcherRecord = Schema.Struct({
   /** The newest proposal. While it is set the approved version does not run. */
   pendingHash: Schema.optional(Sha256Hex),
   runsOn: BotWatcherRunsOn,
+  /** The user stopped its runs. Kept across new versions: approving one does not resume it. */
+  paused: Schema.optional(Schema.Boolean),
   history: Schema.Array(BotWatcherHistoryEntry),
   lastDryRun: Schema.optional(BotWatcherRun),
 });
@@ -223,6 +225,23 @@ export class WatcherService extends Context.Service<
     }) => Effect.Effect<{ readonly hash: string; readonly pending: boolean }, BotWatcherError>;
     /** Deletes a watcher and every version of it. Refused like `propose`. */
     readonly remove: (input: {
+      readonly botThreadId: ThreadId;
+      readonly name: string;
+    }) => Effect.Effect<void, BotWatcherError>;
+    /**
+     * The user's removal: the same deletion without `remove`'s Bot checks, so it works whatever
+     * woke the Bot, and after the Bot is settled or gone.
+     */
+    readonly removeByUser: (input: {
+      readonly botThreadId: ThreadId;
+      readonly name: string;
+    }) => Effect.Effect<void, BotWatcherError>;
+    /** Stops a watcher's runs and keeps its approval. */
+    readonly pause: (input: {
+      readonly botThreadId: ThreadId;
+      readonly name: string;
+    }) => Effect.Effect<void, BotWatcherError>;
+    readonly resume: (input: {
       readonly botThreadId: ThreadId;
       readonly name: string;
     }) => Effect.Effect<void, BotWatcherError>;
@@ -554,10 +573,11 @@ const make = Effect.gen(function* () {
     Effect.orElseSucceed(() => undefined),
   );
 
-  /** Whether the record's approved version is the one that runs: nothing pending, and here. */
+  /** Whether the record's approved version is the one that runs: nothing pending, not paused, and here. */
   const runsHere = (record: WatcherRecord) =>
     record.approvedHash !== undefined &&
     record.pendingHash === undefined &&
+    record.paused !== true &&
     record.runsOn === "local"
       ? record.approvedHash
       : undefined;
@@ -620,11 +640,13 @@ const make = Effect.gen(function* () {
         ? "invalid"
         : record.pendingHash !== undefined || record.approvedHash === undefined
           ? "needs_approval"
-          : record.runsOn !== "local"
-            ? "elsewhere"
-            : state?.failing === undefined
-              ? "healthy"
-              : "tripped";
+          : record.paused === true
+            ? "paused"
+            : record.runsOn !== "local"
+              ? "elsewhere"
+              : state?.failing === undefined
+                ? "healthy"
+                : "tripped";
     return {
       name,
       status,
@@ -641,6 +663,7 @@ const make = Effect.gen(function* () {
             requestedRunsOn: shown.config.runsOn,
           }),
       runsOn: record.runsOn,
+      paused: record.paused === true,
       ...(shown === undefined || approved === undefined
         ? {}
         : {
@@ -788,6 +811,7 @@ const make = Effect.gen(function* () {
       yield* commit(folder, name, {
         ...(existing?.approvedHash === undefined ? {} : { approvedHash: existing.approvedHash }),
         runsOn: existing?.runsOn ?? "local",
+        ...(existing?.paused === true ? { paused: true } : {}),
         pendingHash: hash,
         history: [...(existing?.history ?? []), { hash, proposedAt }].slice(-HISTORY_MAX),
       }).pipe(Effect.mapError(ioError(botThreadId, name)));
@@ -800,15 +824,43 @@ const make = Effect.gen(function* () {
     lock,
   );
 
+  const deleteWatcher = Effect.fn("WatcherService.deleteWatcher")(function* (
+    botThreadId: ThreadId,
+    name: string,
+  ) {
+    const { folder } = yield* requireRecord(botThreadId, name);
+    yield* commit(folder, name, undefined).pipe(Effect.mapError(ioError(botThreadId, name)));
+    yield* removeQuietly(watcherDir(folder, name));
+  });
+
   const remove: WatcherService["Service"]["remove"] = Effect.fn("WatcherService.remove")(
     function* ({ botThreadId, name }) {
       yield* requireUserStartedBot(botThreadId, name);
-      const { folder } = yield* requireRecord(botThreadId, name);
-      yield* commit(folder, name, undefined).pipe(Effect.mapError(ioError(botThreadId, name)));
-      yield* removeQuietly(watcherDir(folder, name));
+      yield* deleteWatcher(botThreadId, name);
     },
     lock,
   );
+
+  const removeByUser: WatcherService["Service"]["removeByUser"] = Effect.fn(
+    "WatcherService.removeByUser",
+  )(function* ({ botThreadId, name }) {
+    yield* deleteWatcher(botThreadId, name);
+  }, lock);
+
+  const setPaused = (paused: boolean) =>
+    Effect.fn("WatcherService.setPaused")(function* ({
+      botThreadId,
+      name,
+    }: {
+      readonly botThreadId: ThreadId;
+      readonly name: string;
+    }) {
+      const { folder, record } = yield* requireRecord(botThreadId, name);
+      const { paused: _previous, ...rest } = record;
+      yield* commit(folder, name, paused ? { ...rest, paused } : rest).pipe(
+        Effect.mapError(ioError(botThreadId, name)),
+      );
+    }, lock);
 
   const recordDryRun = Effect.fn("WatcherService.recordDryRun")(function* (
     botThreadId: ThreadId,
@@ -916,6 +968,9 @@ const make = Effect.gen(function* () {
     list,
     propose,
     remove,
+    removeByUser,
+    pause: setPaused(true),
+    resume: setPaused(false),
     dryRun,
     approve,
     reject,

@@ -2288,6 +2288,7 @@ it.effect("lists and runs Bot tools only for a Bot thread, deferred or not", () 
                   runtime: "sh",
                   source: "df",
                   runsOn: "local",
+                  paused: false,
                   history: [],
                 },
               ]),

@@ -24,11 +24,13 @@ export type BotWatcherRunsOn = typeof BotWatcherRunsOn.Type;
 
 /**
  * `needs_approval`: the newest version is not approved, so nothing of the watcher runs.
+ * `paused`: the user stopped its runs; the approval is kept.
  * `elsewhere`: approved to run on another environment, which this server does not do yet.
  */
 export const BotWatcherStatus = Schema.Literals([
   "needs_approval",
   "invalid",
+  "paused",
   "elsewhere",
   "healthy",
   "tripped",
@@ -69,6 +71,8 @@ export const BotWatcher = Schema.Struct({
   /** Where the Bot asked it to run. The user's choice is `runsOn`. */
   requestedRunsOn: Schema.optional(BotWatcherRunsOn),
   runsOn: BotWatcherRunsOn,
+  /** The user paused it. Shown even while a newer version waits, when `status` says that instead. */
+  paused: Schema.Boolean,
   /** Unified diff from the approved version to the pending one, when there are both. */
   diff: Schema.optional(Schema.String),
   lastDryRun: Schema.optional(BotWatcherRun),
@@ -105,6 +109,10 @@ export type BotWatcherApproveInput = typeof BotWatcherApproveInput.Type;
 /** Discards the pending version and resumes the approved one, if there is one. */
 export const BotWatcherRejectInput = Schema.Struct({ threadId: ThreadId, name: BotWatcherName });
 export type BotWatcherRejectInput = typeof BotWatcherRejectInput.Type;
+
+/** Pauses, resumes or removes a watcher; the user's, so none of them depends on the Bot's state. */
+export const BotWatcherTargetInput = Schema.Struct({ threadId: ThreadId, name: BotWatcherName });
+export type BotWatcherTargetInput = typeof BotWatcherTargetInput.Type;
 
 export const BotWatcherSetRunsOnInput = Schema.Struct({
   threadId: ThreadId,

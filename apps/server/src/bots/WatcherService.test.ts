@@ -682,3 +682,64 @@ it.effect("approves only a version whose own dry run completed, whatever that ru
     assert.strictEqual((yield* approve(second.hash)).reason, "dry_run_required");
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
+
+it.effect("lets the user pause, resume and remove a watcher whatever woke the Bot", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  runner.state.result = { code: ExitCode(1), stdout: "down", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const target = { botThreadId: botThread.id, name: "api" };
+    const hash = yield* installWatcher(botThread.id, "api");
+    // The Bot is mid-way through a turn a wake started, which refuses it every change of its own.
+    orchestration.startRun(botThread, { id: "bot-wake:watcher:api:1", createdBy: "system" });
+
+    yield* watchers.pause(target);
+    const paused = (yield* watchers.list(botThread.id))[0]!;
+    assert.deepStrictEqual(
+      [paused.status, paused.paused, paused.approvedHash],
+      ["paused", true, hash],
+    );
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 0);
+
+    // A newer version needs approval as usual, and approving it does not undo the user's pause.
+    const next = yield* proposeWatcher(botThread.id, "api", { run: "#!/bin/sh\nexit 2\n" }).pipe(
+      Effect.flip,
+    );
+    assert.strictEqual(next.reason, "started_by_wake");
+    orchestration.startRun(botThread, userMessage);
+    const proposed = yield* proposeWatcher(botThread.id, "api", { run: "#!/bin/sh\nexit 2\n" });
+    yield* watchers.dryRun({ ...target, hash: proposed.hash });
+    yield* watchers.approve({
+      ...target,
+      hash: proposed.hash,
+      runsOn: "local",
+      approvedBy: "owner",
+    });
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 0);
+    assert.strictEqual((yield* watchers.list(botThread.id))[0]?.paused, true);
+
+    yield* watchers.resume(target);
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 1);
+    assert.strictEqual((yield* watchers.list(botThread.id))[0]?.paused, false);
+
+    // The Bot itself cannot remove it in such a turn, but the user can.
+    orchestration.startRun(botThread, { id: "bot-wake:watcher:api:2", createdBy: "system" });
+    assert.strictEqual(
+      (yield* watchers.remove(target).pipe(Effect.flip)).reason,
+      "started_by_wake",
+    );
+    yield* watchers.removeByUser(target);
+    assert.deepStrictEqual(yield* statuses(botThread.id), []);
+    assert.strictEqual((yield* watchers.pause(target).pipe(Effect.flip)).reason, "not_found");
+    assert.strictEqual(
+      (yield* watchers.removeByUser(target).pipe(Effect.flip)).reason,
+      "not_found",
+    );
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
