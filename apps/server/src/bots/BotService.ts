@@ -600,9 +600,12 @@ const make = Effect.gen(function* () {
     const items =
       lastRun === undefined
         ? []
-        : yield* readForkHistoryItems(projectionStore, source, lastRun).pipe(
-            Effect.mapError(ioError(threadId)),
-          );
+        : // The Bot is not a fork: it reads the whole thread, so claim side-chat lineage, which is
+          // the one that filters no source runs out.
+          yield* readForkHistoryItems(projectionStore, source, lastRun, {
+            ...thread,
+            lineage: { ...thread.lineage, sideChat: true },
+          }).pipe(Effect.mapError(ioError(threadId)));
     const environmentId = yield* environment.getEnvironmentId;
     const text = [
       `You are the new Bot for ${formatThreadLink({ environmentId, threadId }, thread.title)} (threadId ${threadId}). That thread is now your first crew member: it keeps its work, and you are woken when it finishes or needs input.`,
