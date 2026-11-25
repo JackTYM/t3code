@@ -2391,10 +2391,17 @@ it.effect("lists and runs Bot tools only for a Bot thread, deferred or not", () 
       const refused = yield* plain.call("t3_bot_memory_read", {});
       expect(refused.result?.structuredContent).toBeUndefined();
 
-      // A listing says where each watcher stands, not what its script says.
+      // A listing says where each watcher stands, and returns the Bot's own source to re-read.
       expect((yield* bot.call("t3_bot_watcher_list", {})).result?.structuredContent).toEqual({
         watchers: [
-          { name: "disk", status: "needs_approval", hash: "abc", runsOn: "local", runtime: "sh" },
+          {
+            name: "disk",
+            status: "needs_approval",
+            hash: "abc",
+            runsOn: "local",
+            runtime: "sh",
+            source: "df",
+          },
         ],
       });
     }),

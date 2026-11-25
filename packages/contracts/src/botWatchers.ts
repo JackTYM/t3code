@@ -124,6 +124,7 @@ export class BotWatcherError extends Schema.TaggedError<BotWatcherError>()("BotW
     "not_found",
     "no_pending",
     "stale_hash",
+    "dry_run_required",
     "io",
   ]),
   /** Why a proposal is invalid; safe to show. */
@@ -144,6 +145,8 @@ export class BotWatcherError extends Schema.TaggedError<BotWatcherError>()("BotW
         return `Watcher ${this.watcher ?? ""} has no version waiting for approval.`;
       case "stale_hash":
         return `Watcher ${this.watcher ?? ""} changed since that version was shown. Review the new version first.`;
+      case "dry_run_required":
+        return `Run watcher ${this.watcher ?? ""} once before approving it: the server approves only a version whose dry run has completed.`;
       case "io":
         return `Failed to read or save the watchers for thread ${this.threadId}.`;
     }

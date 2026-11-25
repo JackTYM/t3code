@@ -188,7 +188,7 @@ const WatcherRemove = Tool.make("t3_bot_watcher_remove", {
 const WatcherList = Tool.make("t3_bot_watcher_list", {
   ...shared,
   description:
-    "List your watchers and where each stands. `needs_approval` means the newest version waits for the user and nothing of the watcher runs.",
+    "List your watchers and where each stands, with the source of the version shown so you can re-read what you wrote. `needs_approval` means the newest version waits for the user and nothing of the watcher runs.",
   success: Schema.Struct({
     watchers: Schema.Array(
       Schema.Struct({
@@ -196,6 +196,8 @@ const WatcherList = Tool.make("t3_bot_watcher_list", {
         status: BotWatcherStatus,
         hash: Schema.String,
         runtime: Schema.optional(BotWatcherRuntime),
+        /** The pending version while there is one, else the approved one. */
+        source: Schema.optional(Schema.String),
         intervalSeconds: Schema.optional(Schema.Int),
         expect: Schema.optional(Schema.String),
         runsOn: BotWatcherRunsOn,

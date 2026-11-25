@@ -846,6 +846,11 @@ const make = Effect.gen(function* () {
   const approve: WatcherService["Service"]["approve"] = Effect.fn("WatcherService.approve")(
     function* ({ botThreadId, name, hash, runsOn, approvedBy }) {
       const { folder, record } = yield* requirePending(botThreadId, name, hash);
+      // The user is asked to read the source and see it run; the server insists on the second,
+      // because a client that skips it would approve a script nobody has seen behave.
+      if (record.lastDryRun?.hash !== hash) {
+        return yield* failure(botThreadId, name, "dry_run_required");
+      }
       // The files must still be the ones the user was shown; approving bytes that changed since
       // would approve something nobody saw.
       if ((yield* readVersion(folder, name, hash)) === undefined) {

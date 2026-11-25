@@ -26,24 +26,33 @@ const userMessage = { id: "message:user", createdBy: "user" } as const;
 
 type Scripted = Pick<ProcessRunner.ProcessRunOutput, "code" | "stdout" | "timedOut">;
 
-/** A ProcessRunner that answers with whatever the test last set, counting and recording its runs. */
+/**
+ * A ProcessRunner that answers with whatever the test last set, counting and recording its runs.
+ * Dry runs, which every approval now needs first, are recorded apart so run counts stay about
+ * the scheduled runs.
+ */
 const makeScriptedRunner = () => {
   const state: {
     result: Scripted | ProcessRunner.ProcessRunError;
     runs: number;
     inputs: Array<ProcessRunner.ProcessRunInput>;
+    dryInputs: Array<ProcessRunner.ProcessRunInput>;
     /** Runs while the script would be running, for a test that acts mid-run. */
     onRun: (input: ProcessRunner.ProcessRunInput) => Effect.Effect<void>;
   } = {
     result: { code: ExitCode(0), stdout: "", timedOut: false },
     runs: 0,
     inputs: [],
+    dryInputs: [],
     onRun: () => Effect.void,
   };
   const layer = Layer.mock(ProcessRunner.ProcessRunner)({
     run: (input) => {
-      state.runs += 1;
-      state.inputs.push(input);
+      if (input.env?.T3_WATCHER_DRY_RUN === "1") state.dryInputs.push(input);
+      else {
+        state.runs += 1;
+        state.inputs.push(input);
+      }
       const { result } = state;
       return state.onRun(input).pipe(
         Effect.andThen(
@@ -110,7 +119,7 @@ const proposeWatcher = (
     });
   });
 
-/** Proposes a watcher and, unless told not to, approves that exact version as the user. */
+/** Proposes a watcher and, unless told not to, dry-runs and approves that exact version as the user. */
 const installWatcher = Effect.fn("installWatcher")(function* (
   threadId: ThreadId,
   name: string,
@@ -124,6 +133,7 @@ const installWatcher = Effect.fn("installWatcher")(function* (
   const watchers = yield* WatcherService.WatcherService;
   const { hash } = yield* proposeWatcher(threadId, name, options);
   if (options.approve !== false) {
+    yield* watchers.dryRun({ botThreadId: threadId, name, hash });
     yield* watchers.approve({
       botThreadId: threadId,
       name,
@@ -336,7 +346,8 @@ it.effect("approves only the version that is still pending, and shows what chang
       [dry.exit, dry.stdout, dry.healthy, dry.hash],
       ["1", "boom", false, first.hash],
     );
-    assert.strictEqual(runner.state.inputs[0]?.env?.T3_WATCHER_DRY_RUN, "1");
+    assert.strictEqual(runner.state.dryInputs[0]?.env?.T3_WATCHER_DRY_RUN, "1");
+    assert.strictEqual(runner.state.runs, 0);
     assert.strictEqual(orchestration.sent.length, 0);
     assert.strictEqual((yield* watchers.list(botThread.id))[0]?.lastDryRun?.stdout, "boom");
 
@@ -350,6 +361,9 @@ it.effect("approves only the version that is still pending, and shows what chang
     // The new version has not been dry-run: the old result is not carried over.
     assert.isUndefined((yield* watchers.list(botThread.id))[0]?.lastDryRun);
 
+    // A dry run of the version the user saw says nothing about this one: the server wants its own.
+    assert.strictEqual((yield* approve(second.hash).pipe(Effect.flip)).reason, "dry_run_required");
+    yield* watchers.dryRun({ botThreadId: botThread.id, name: "disk", hash: second.hash });
     yield* approve(second.hash);
     assert.strictEqual((yield* approve(second.hash).pipe(Effect.flip)).reason, "no_pending");
     const approved = (yield* watchers.list(botThread.id))[0]!;
@@ -405,6 +419,7 @@ it.effect("runs a watcher only where the user approved it to run", () => {
   return Effect.gen(function* () {
     const watchers = yield* WatcherService.WatcherService;
     const { hash } = yield* proposeWatcher(botThread.id, "disk");
+    yield* watchers.dryRun({ botThreadId: botThread.id, name: "disk", hash });
     yield* watchers.approve({
       botThreadId: botThread.id,
       name: "disk",
@@ -618,28 +633,52 @@ it.effect("runs the script in its own folder with a scrubbed environment and cap
 it.effect("runs due watchers from the Scheduler", () => {
   const orchestration = makeOrchestration();
   const botThread = addBot(orchestration, "thread:bot");
-  const runs = Effect.runSync(Queue.unbounded<void>());
-  const layer = Layer.mock(ProcessRunner.ProcessRunner)({
-    run: () =>
-      Queue.offer(runs, undefined).pipe(
-        Effect.as({
-          stdout: "",
-          stderr: "",
-          code: ExitCode(0),
-          timedOut: false,
-          stdoutTruncated: false,
-          stderrTruncated: false,
-          stdoutInvalidUtf8: false,
-          stderrInvalidUtf8: false,
-        }),
-      ),
-  });
+  const runner = makeScriptedRunner();
   return Effect.gen(function* () {
+    const runs = yield* Queue.unbounded<void>();
     const watchers = yield* WatcherService.WatcherService;
     yield* installWatcher(botThread.id, "api");
+    runner.state.onRun = () => Queue.offer(runs, undefined).pipe(Effect.asVoid);
     yield* watchers.start();
     yield* Queue.take(runs);
     yield* TestClock.adjust(EVERY_MS);
     yield* Queue.take(runs);
-  }).pipe(provideWatchers(orchestration, layer));
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("approves only a version whose own dry run completed, whatever that run found", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  // A watcher that trips right now is still approvable: the user decides after seeing it run.
+  runner.state.result = { code: ExitCode(1), stdout: "disk 99%", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const approve = (hash: string) =>
+      watchers
+        .approve({
+          botThreadId: botThread.id,
+          name: "disk",
+          hash,
+          runsOn: "local",
+          approvedBy: "owner",
+        })
+        .pipe(Effect.flip);
+    const first = yield* proposeWatcher(botThread.id, "disk", { run: "echo one\n" });
+    assert.strictEqual((yield* approve(first.hash)).reason, "dry_run_required");
+    assert.strictEqual(runner.state.runs + runner.state.dryInputs.length, 0);
+
+    yield* watchers.dryRun({ botThreadId: botThread.id, name: "disk", hash: first.hash });
+    yield* watchers.approve({
+      botThreadId: botThread.id,
+      name: "disk",
+      hash: first.hash,
+      runsOn: "local",
+      approvedBy: "owner",
+    });
+
+    // A changed version starts over, even though an older one was dry-run and approved.
+    const second = yield* proposeWatcher(botThread.id, "disk", { run: "echo two\n" });
+    assert.strictEqual((yield* approve(second.hash)).reason, "dry_run_required");
+  }).pipe(provideWatchers(orchestration, runner.layer));
 });
