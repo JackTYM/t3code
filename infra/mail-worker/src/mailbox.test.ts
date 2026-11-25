@@ -30,14 +30,24 @@ describe("chooseMailbox", () => {
     ).toBe("other@icloud.com");
   });
 
-  it("does not treat Gmail dots or plus tags as the same address", () => {
+  it("folds Gmail dots, plus tags and googlemail.com into the listed spelling, and only for Gmail", () => {
+    const gmail = "me.name@gmail.com, other@icloud.com";
+    for (const to of ["mename@gmail.com", "Me.Name+shop@gmail.com", "mename@googlemail.com"]) {
+      expect(
+        chooseMailbox({
+          headers: [h("to", to)],
+          allowlist: gmail,
+          envelopeTo: "routing@mail.example.com",
+        }),
+      ).toBe("me.name@gmail.com");
+    }
     expect(
       chooseMailbox({
-        headers: [h("to", "m.e@gmail.com, me+shop@gmail.com")],
-        allowlist,
+        headers: [h("to", "o.ther@icloud.com")],
+        allowlist: gmail,
         envelopeTo: "routing@mail.example.com",
       }),
-    ).toBe("m.e@gmail.com");
+    ).toBe("o.ther@icloud.com");
   });
 
   it("falls back to the first To address when nothing matches, or no allowlist is set", () => {
