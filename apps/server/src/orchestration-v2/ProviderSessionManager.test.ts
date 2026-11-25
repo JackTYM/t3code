@@ -2801,6 +2801,70 @@ it.effect.each([
         );
         assert.isDefined(token);
         assert.equal((yield* registry.resolve(token!))?.thread.subagent, subagent);
+        // A parent that was never created is no Bot.
+        assert.equal((yield* registry.resolve(token!))?.thread.botCrew, false);
+        yield* manager.close(providerSessionId);
+      });
+
+      yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 1_000, mcpConfigs })));
+    }),
+);
+
+it.effect.each([
+  { parentIsBot: true, botCrew: true },
+  { parentIsBot: false, botCrew: false },
+] as const)(
+  "ProviderSessionManagerV2 lists Bot tools to a delegated child only under a Bot (parent is a Bot: $parentIsBot)",
+  ({ parentIsBot, botCrew }) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const mcpConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const registry = yield* McpSessionRegistry.McpSessionRegistry;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-crew-child");
+        const parentThreadId = ThreadId.make("thread-provider-session-manager-crew-parent");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        const parent = yield* makeThreadCreatedEvent({
+          idAllocator,
+          threadId: parentThreadId,
+          now,
+        });
+        const child = yield* makeThreadCreatedEvent({
+          idAllocator,
+          threadId,
+          now,
+          delegatedBy: parentThreadId,
+        });
+        yield* eventSink.write({
+          events: [
+            parentIsBot
+              ? {
+                  ...parent,
+                  payload: { ...parent.payload, botConfig: { enabled: true, muteChildren: false } },
+                }
+              : parent,
+            child,
+          ],
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const token = (yield* Ref.get(mcpConfigs))[0]?.authorizationHeader.replace(
+          /^Bearer\s+/,
+          "",
+        );
+        assert.isDefined(token);
+        const resolved = (yield* registry.resolve(token!))?.thread;
+        assert.equal(resolved?.subagent, true);
+        assert.equal(resolved?.bot, false);
+        assert.equal(resolved?.botCrew, botCrew);
         yield* manager.close(providerSessionId);
       });
 

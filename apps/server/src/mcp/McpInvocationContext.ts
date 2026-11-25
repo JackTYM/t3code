@@ -39,6 +39,11 @@ export interface McpThreadCaller {
    * listed; Bot tools still check on every call that it is a live Bot right now.
    */
   readonly bot?: boolean;
+  /**
+   * A delegated child, however deep, of a Bot. Fixed for its life like `bot`, so it decides which
+   * Bot tools are listed to it; each call still resolves the Bot and checks the caller's mode.
+   */
+  readonly botCrew?: boolean;
 }
 
 export interface McpClientCaller {
@@ -238,6 +243,16 @@ export const hiddenFromNonBots = (): boolean => {
   const fiber = Fiber.getCurrent();
   const scope = fiber && Context.getOrUndefined(fiber.context, McpInvocationContext);
   return isBotCaller(scope?.thread);
+};
+
+/**
+ * `McpSchema.EnabledWhen` for the Bot's mail tools: a Bot lists them, and so does a child it
+ * delegated to, which is where email bodies are read. No other thread pays for them.
+ */
+export const hiddenFromNonMailReaders = (): boolean => {
+  const fiber = Fiber.getCurrent();
+  const scope = fiber && Context.getOrUndefined(fiber.context, McpInvocationContext);
+  return isBotCaller(scope?.thread) || scope?.thread?.botCrew === true;
 };
 
 /**

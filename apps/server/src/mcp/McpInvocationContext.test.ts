@@ -153,3 +153,32 @@ it("acts at an administrator's ceiling for a client approved above it", () => {
     ).runtimeModeCeiling,
   ).toBe("auto");
 });
+
+it.effect.each([
+  { caller: "an outside client", thread: undefined, listed: false },
+  { caller: "a plain thread", thread: {}, listed: false },
+  { caller: "a plain delegated child", thread: { subagent: true }, listed: false },
+  { caller: "a Bot", thread: { bot: true }, listed: true },
+  { caller: "a Bot's delegated child", thread: { subagent: true, botCrew: true }, listed: true },
+] as const)("lists the mail tools to $caller: $listed", ({ thread, listed }) => {
+  const invocation: McpInvocationContext.McpInvocationScope = {
+    environmentId: EnvironmentId.make("environment-1"),
+    requestNamespace: "provider-session-1",
+    thread:
+      thread === undefined
+        ? undefined
+        : {
+            threadId: ThreadId.make("thread-1"),
+            providerSessionId: "provider-session-1",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            ...thread,
+          },
+    client: undefined,
+    capabilities: new Set(),
+    issuedAt: 1,
+  };
+  return Effect.sync(() => McpInvocationContext.hiddenFromNonMailReaders()).pipe(
+    Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+    Effect.map((visible) => expect(visible).toBe(listed)),
+  );
+});

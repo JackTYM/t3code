@@ -466,6 +466,7 @@ const THREAD_ONLY = new Set<unknown>([
   McpInvocationContext.hiddenFromOutsideClients,
   McpInvocationContext.hiddenWithoutBackgroundWait,
   McpInvocationContext.hiddenFromNonBots,
+  McpInvocationContext.hiddenFromNonMailReaders,
 ]);
 
 /**
