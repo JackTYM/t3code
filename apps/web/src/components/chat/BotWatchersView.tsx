@@ -122,18 +122,10 @@ function useBlockedReason() {
     switch (block) {
       case "needs_terminal_access":
         return gt("This connection cannot run code on this environment.");
-      case "needs_operate_access":
-        return gt("This connection cannot change threads on this environment.");
       case "no_source":
         return gt("The files for this version are missing or were changed on disk.");
       case "not_reviewed":
         return gt("The reviewer has not approved this version yet, so it cannot be run.");
-      case "run_once_there_first":
-        return gt("Run it once where it will run first.");
-      case "nothing_to_approve":
-        return gt("There is no new version waiting.");
-      case "already_there":
-        return gt("It already runs there.");
     }
   };
 }
@@ -240,7 +232,7 @@ function WatcherCard(props: {
   const dryRunShown = botWatcherDryRunOf(watcher);
   const verdict = latestReview(watcher);
   const runnableHash = watcher.pendingHash ?? watcher.approvedHash;
-  const showsMove = controls.move.enabled || (!controls.pending && target !== watcher.runsOn);
+  const showsMove = controls.move || (!controls.pending && target !== watcher.runsOn);
 
   const settle = async (
     action: Busy,
@@ -355,7 +347,7 @@ function WatcherCard(props: {
           <T>Runs on</T>
           <Select<BotWatcherRunsOn, false>
             value={target}
-            disabled={!props.grants.runCode || !idle}
+            disabled={!props.grants.runCode || controls.pending || !idle}
             onValueChange={(value) => {
               if (value !== null) setPicked(value);
             }}
@@ -435,20 +427,20 @@ function WatcherCard(props: {
             <span className="font-medium">
               <T>Reviewer</T>
             </span>
-            <Badge variant={verdict.review.verdict === "reject" ? "error" : "success"}>
-              {verdict.review.verdict === "reject" ? <T>rejected</T> : <T>approved</T>}
+            <Badge variant={verdict.verdict === "reject" ? "error" : "success"}>
+              {verdict.verdict === "reject" ? <T>rejected</T> : <T>approved</T>}
             </Badge>
             <span className="text-muted-foreground">
-              {gt("version {hash}", { hash: shortBotWatcherHash(verdict.review.hash) })}
+              {gt("version {hash}", { hash: shortBotWatcherHash(verdict.hash) })}
               {" · "}
-              {verdict.review.model}
+              {verdict.model}
               {" · "}
-              <RelativeTime timestamp={verdict.review.at} />
+              <RelativeTime timestamp={verdict.at} />
             </span>
           </div>
           {/* The reason is derived from a script the Bot wrote, so it is only ever plain text. */}
-          <p className="break-words whitespace-pre-wrap">{verdict.review.reason}</p>
-          {verdict.review.verdict === "reject" ? (
+          <p className="break-words whitespace-pre-wrap">{verdict.reason}</p>
+          {verdict.verdict === "reject" ? (
             <p className="text-muted-foreground">
               {watcher.approvedHash === undefined
                 ? gt("Nothing runs until the Bot proposes a new version.")
@@ -534,11 +526,7 @@ function WatcherCard(props: {
             >
               {busy === "run" ? <T>Running…</T> : <T>Run once there</T>}
             </Button>
-            <Button
-              size="xs"
-              disabled={!controls.move.enabled || !idle}
-              onClick={() => void moveWatcher()}
-            >
+            <Button size="xs" disabled={!controls.move || !idle} onClick={() => void moveWatcher()}>
               <T>Move</T>
             </Button>
             <Button size="xs" variant="ghost" disabled={!idle} onClick={() => setPicked(null)}>
@@ -561,7 +549,7 @@ function WatcherCard(props: {
             <Button
               size="xs"
               variant="outline"
-              disabled={!controls.resume.enabled || !idle}
+              disabled={!controls.resume || !idle}
               onClick={togglePaused}
             >
               <T>Resume</T>
@@ -570,7 +558,7 @@ function WatcherCard(props: {
             <Button
               size="xs"
               variant="outline"
-              disabled={!controls.pause.enabled || !idle}
+              disabled={!controls.pause || !idle}
               onClick={togglePaused}
             >
               <T>Pause</T>
@@ -587,6 +575,11 @@ function WatcherCard(props: {
         </div>
         {controls.pending && runOnceReason !== undefined ? (
           <p className="text-muted-foreground text-xs">{runOnceReason}</p>
+        ) : null}
+        {controls.pending ? (
+          <p className="text-muted-foreground text-xs">
+            <T>It can be moved once the new version has been reviewed.</T>
+          </p>
         ) : null}
       </div>
 
@@ -632,7 +625,7 @@ function WatcherCard(props: {
         <Button
           size="xs"
           variant="ghost-destructive"
-          disabled={!controls.remove.enabled || !idle}
+          disabled={!controls.remove || !idle}
           onClick={() => setConfirmingRemove(true)}
         >
           <T>Remove</T>

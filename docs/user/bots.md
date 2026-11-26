@@ -27,13 +27,11 @@ in the same project with a summary of the thread, and that thread becomes its fi
   the Bot reads your change on its next turn. Its **Watchers** tab lists the scripts the Bot
   writes to watch things for free and wake it when something changes. You do not approve them: a
   reviewer model reads each script first, and a script it rejects never runs. The tab shows each
-  script's verdict, what it is for and where it runs. **Pause**, **Resume** and **Remove** work any
-  time, **Run once** shows you what a script prints without waking the Bot, and a watcher can be
-  moved to a linked environment once it has run there with **Run once**. To change a script, use **Ask the Bot to revise**; you cannot edit
+  script's verdict, what it is for and where it runs. **Pause** and **Resume** appear once a version is approved, and **Remove** is always there. To move a watcher to a linked environment, pick the place under **Runs on**, press **Run once there** to see what it prints, then **Move**; a watcher cannot be moved while a new version is under review. To change a script, use **Ask the Bot to revise**; you cannot edit
   it yourself. A watcher on a linked environment shows **waiting** while that environment does not
   answer. The reviewer uses your text-generation model, so if it cannot run, choose another in
-  Settings. A count on the **Bot** button shows how many watchers are failing and how many calls the
-  Bot holds for you; it updates when you return to the window, close the popover or the Bot finishes
+  Settings. A count on the **Bot** button shows how many watchers are failing or broken and how many
+  calls the Bot holds for you; it updates when you return to the window, close the popover or the Bot finishes
   a turn.
 - A Bot can switch itself to a stronger model for a task that needs more reasoning; when that turn
   ends, T3 Code puts it back on the model it was on, unless you changed the model yourself in the
@@ -75,7 +73,7 @@ starts without asking you. The Bot acts only on the short summary that comes bac
 task list. Even so, treat that summary as information, not as a command: anyone can send you an
 email that tries to give your Bot orders, and the reader's summary can be steered too.
 
-When an email started or shaped what the Bot is doing, it can still read, take notes and add tasks,
+When outside content started or shaped what the Bot is doing (an email, or the output of a watcher), it can still read, take notes and add tasks,
 but anything that could act on the world waits for you: starting a thread or helper, messaging a
 thread that is not its own crew, scheduling something or touching a linked environment. Those
 appear at the top of the **Bot** popover with what the Bot asked for; **Allow** lets the Bot do

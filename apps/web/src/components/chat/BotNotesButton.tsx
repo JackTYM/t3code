@@ -33,7 +33,7 @@ import { BotHeldActions } from "./BotHeldActions";
 import { BotMailView } from "./BotMailView";
 import { BotTasksView } from "./BotTasksView";
 import { BotWatchersView } from "./BotWatchersView";
-import { botWatchersTripped } from "./BotWatchersView.logic";
+import { botWatchersNeedingYou, watchersRefreshIntervalMs } from "./BotWatchersView.logic";
 
 // tasks.md is edited as a list in the Tasks view, not as text.
 const FILES: ReadonlyArray<Exclude<BotFileKind, "tasks">> = ["notes", "preferences"];
@@ -129,7 +129,7 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
 
   // The list shares its atom with the Watchers tab, so mounting this fetches it once. The server
   // pushes no watcher changes, so it is refetched on window return, popover close and a settled
-  // run, never on a timer.
+  // run, and on a timer only while a version is under review (a review ends with no push).
   const watchersAtom =
     botConfig == null
       ? null
@@ -140,7 +140,7 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
   const watchersData = useEnvironmentQuerySelector(watchersAtom, selectEnvironmentQueryData);
   const { refresh: refreshWatchers, isPending: watchersPending } =
     useEnvironmentQueryRefresh(watchersAtom);
-  // Calls the Bot held because email influenced its turn; they wait for the user, like a failing watcher.
+  // Calls the Bot held because outside content influenced its turn; they wait for the user, like a failing watcher.
   const heldAtom =
     botConfig == null
       ? null
@@ -151,7 +151,7 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
   const held = useEnvironmentQuerySelector(heldAtom, selectEnvironmentQueryData)?.held ?? [];
   const { refresh: refreshHeld } = useEnvironmentQueryRefresh(heldAtom);
   const needYou =
-    (watchersData === null ? 0 : botWatchersTripped(watchersData.watchers)) + held.length;
+    (watchersData === null ? 0 : botWatchersNeedingYou(watchersData.watchers)) + held.length;
   // A refresh restarts a read in flight, so one already running stands for this one.
   const refreshWatchersIfIdle = () => {
     refreshHeld();
@@ -160,7 +160,7 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
   useLiveRefresh(refreshWatchersIfIdle, {
     enabled: botConfig != null,
     key: `bot-watchers:${props.threadRef.environmentId}:${props.threadRef.threadId}`,
-    intervalMs: null,
+    intervalMs: watchersData === null ? null : watchersRefreshIntervalMs(watchersData.watchers),
   });
   const runCompletedAt = thread?.latestRun?.completedAt ?? null;
   const seenRunCompletedAt = useRef(runCompletedAt);

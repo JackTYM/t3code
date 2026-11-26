@@ -63,27 +63,34 @@ export function groupBotWatchers(
 }
 
 /**
- * How many watchers are failing, which the Bot button badge counts. A version waiting on the
- * reviewer asks nothing of the user, so it does not count.
+ * How many watchers the Bot button badge counts: failing ones and invalid ones (files that no
+ * longer match what was reviewed). A version waiting on the reviewer asks nothing of the user.
  */
-export const botWatchersTripped = (watchers: ReadonlyArray<BotWatcher>): number =>
-  watchers.filter((watcher) => watcher.status === "tripped").length;
+export const botWatchersNeedingYou = (watchers: ReadonlyArray<BotWatcher>): number =>
+  watchers.filter((watcher) => watcher.status === "tripped" || watcher.status === "invalid").length;
+
+const REVIEW_REFRESH_MS = 5000;
 
 /**
- * The reviewer's newest verdict. `pending` says it judged the version still waiting, as opposed
- * to one that is gone (a rejected revision) or the one that runs.
+ * The server pushes nothing when a review ends, so a list with a version under review is
+ * refetched on a timer, and left alone otherwise.
  */
-export function latestReview(
-  watcher: BotWatcher,
-): { readonly review: BotWatcherReview; readonly pending: boolean } | undefined {
+export const watchersRefreshIntervalMs = (watchers: ReadonlyArray<BotWatcher>): number | null =>
+  watchers.some((watcher) => {
+    const state = botWatcherState(watcher);
+    return state === "reviewing" || state === "revising";
+  })
+    ? REVIEW_REFRESH_MS
+    : null;
+
+/** The reviewer's newest verdict. */
+export function latestReview(watcher: BotWatcher): BotWatcherReview | undefined {
   let newest: BotWatcherReview | undefined;
   for (const review of watcher.reviews) {
     // `>=` so that of two saved in the same instant the later one wins.
     if (newest === undefined || Date.parse(review.at) >= Date.parse(newest.at)) newest = review;
   }
-  return newest === undefined
-    ? undefined
-    : { review: newest, pending: newest.hash === watcher.pendingHash };
+  return newest;
 }
 
 /** The version `watcher.lastDryRun` describes, when it is the one on show. */
@@ -101,36 +108,28 @@ export type BotWatcherGrants = {
   readonly operate: boolean;
 };
 
-export type BotWatcherBlock =
-  | "needs_terminal_access"
-  | "needs_operate_access"
-  | "no_source"
-  | "not_reviewed"
-  | "run_once_there_first"
-  | "nothing_to_approve"
-  | "already_there";
+/** Why Run once is closed, which is the one control whose reason the view prints. */
+export type BotWatcherBlock = "needs_terminal_access" | "no_source" | "not_reviewed";
 
 export type BotWatcherControl =
   | { readonly enabled: true }
   | { readonly enabled: false; readonly reason: BotWatcherBlock };
 
-const allowed: BotWatcherControl = { enabled: true };
-const blocked = (reason: BotWatcherBlock): BotWatcherControl => ({ enabled: false, reason });
-
 export interface BotWatcherControls {
   readonly runOnce: BotWatcherControl;
-  readonly pause: BotWatcherControl;
-  readonly resume: BotWatcherControl;
-  readonly remove: BotWatcherControl;
+  readonly pause: boolean;
+  readonly resume: boolean;
+  readonly remove: boolean;
   /** Moving an approved watcher, which runs nothing until the move is made. */
-  readonly move: BotWatcherControl;
+  readonly move: boolean;
   /** Whether a version waits on the reviewer. */
   readonly pending: boolean;
 }
 
 /**
- * Which controls work for `watcher` when the user means it to run on `target`, and why not. The
- * server is the authority; this only keeps the UI from offering a call it would refuse.
+ * Which controls work for `watcher` when the user means it to run on `target`, and why Run once
+ * does not. The server is the authority; this only keeps the UI from offering a call it would
+ * refuse.
  */
 export function botWatcherControls(
   watcher: BotWatcher,
@@ -140,8 +139,6 @@ export function botWatcherControls(
   const pending = watcher.pendingHash !== undefined;
   // A new watcher has no approved version yet, so its pending one is the version on show.
   const runnableHash = watcher.pendingHash ?? watcher.approvedHash;
-  const needsCode = grants.runCode ? allowed : blocked("needs_terminal_access");
-  const needsOperate = grants.operate ? allowed : blocked("needs_operate_access");
 
   // The server runs a new version for nobody, the user included, until the reviewer approved it.
   const reviewed = watcher.reviews.some(
@@ -150,30 +147,25 @@ export function botWatcherControls(
       review.verdict === "approve" &&
       review.source === "model",
   );
-  const runOnce = !grants.runCode
-    ? blocked("needs_terminal_access")
+  const runOnce: BotWatcherControl = !grants.runCode
+    ? { enabled: false, reason: "needs_terminal_access" }
     : watcher.source === undefined || runnableHash === undefined
-      ? blocked("no_source")
+      ? { enabled: false, reason: "no_source" }
       : pending && !reviewed
-        ? blocked("not_reviewed")
-        : allowed;
-
-  const move = !grants.runCode
-    ? blocked("needs_terminal_access")
-    : watcher.approvedHash === undefined || pending
-      ? blocked("nothing_to_approve")
-      : target === watcher.runsOn
-        ? blocked("already_there")
-        : !botWatcherDryRunHolds(watcher, watcher.approvedHash, target)
-          ? blocked("run_once_there_first")
-          : allowed;
+        ? { enabled: false, reason: "not_reviewed" }
+        : { enabled: true };
 
   return {
     runOnce,
-    pause: needsOperate,
-    resume: needsCode,
-    remove: needsOperate,
-    move,
+    pause: grants.operate,
+    resume: grants.runCode,
+    remove: grants.operate,
+    move:
+      grants.runCode &&
+      watcher.approvedHash !== undefined &&
+      !pending &&
+      target !== watcher.runsOn &&
+      botWatcherDryRunHolds(watcher, watcher.approvedHash, target),
     pending,
   };
 }

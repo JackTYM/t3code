@@ -86,9 +86,10 @@ export class BotHoldService extends Context.Service<
   BotHoldService,
   {
     /**
-     * Whether a Bot's tool call goes ahead. In a turn email influenced, any call that is not
-     * read-only or the Bot's own memory is held instead of run: a hostile email can talk the
-     * Bot into asking, but not into acting. Reads, tasks, notes and the mail reader are free.
+     * Whether a Bot's tool call goes ahead. In a turn outside content (email or a watcher's
+     * output) influenced, any call that is not read-only or the Bot's own memory is held instead
+     * of run: hostile text can talk the Bot into asking, but not into acting. Reads, tasks, notes
+     * and the mail reader are free.
      */
     readonly check: (call: HoldCall) => Effect.Effect<HoldVerdict>;
     readonly list: (botThreadId: ThreadId) => Effect.Effect<BotHoldListResult>;

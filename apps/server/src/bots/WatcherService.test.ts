@@ -2080,6 +2080,37 @@ it.effect("does not approve a version that was replaced while its dry run was ru
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
 
+it.effect("keeps a move the user made while the reviewer's dry run was running", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  const peer = makeFakePeer();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const reviewer = yield* FakeReviewer;
+    const reached = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    runner.state.onRun = () =>
+      Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release)));
+
+    const { hash } = yield* proposeWatcher(botThread.id, "disk", {});
+    yield* reviewer.answer(matchName("disk"), APPROVES);
+    yield* Deferred.await(reached);
+    // The dry run here is under way when the user moves the watcher to the laptop.
+    yield* watchers.setRunsOn({ botThreadId: botThread.id, name: "disk", runsOn: LAPTOP });
+    yield* Deferred.succeed(release, undefined);
+    yield* watchers.drainReviews;
+
+    const [listed] = (yield* watchers.list(botThread.id)).watchers;
+    assert.deepStrictEqual(
+      [listed?.approvedHash, listed?.pendingHash, listed?.runsOn],
+      [hash, undefined, LAPTOP],
+    );
+    // What it approved had been run where it now lives.
+    assert.strictEqual(peer.state.calls.length, 1);
+  }).pipe(provideWatchers(orchestration, runner.layer, peer.layer));
+});
+
 it.effect("starts the review of a pending version again after a restart", () => {
   const orchestration = makeOrchestration();
   const botThread = addBot(orchestration, "thread:bot");

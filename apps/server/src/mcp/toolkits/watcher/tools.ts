@@ -11,7 +11,7 @@ import * as WatcherService from "../../../bots/WatcherService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 // Listed only to a linked environment's session, and checked on every call: the box attests that
-// the user approved this exact script, so nothing else may ask this environment to run one.
+// its reviewer approved this exact script, so nothing else may ask this environment to run one.
 const WatcherRun = Tool.make("t3_watcher_run", {
   description:
     "Run a watcher's script here for the linked environment that holds its approval. `hash` is the sha256 of the source's UTF-8 bytes; a source that does not match is refused. Runs from a private copy with no stdin and a minimal environment, and returns the exit and output. A `stateKey` (a sha256 hex) names the watcher's persistent state folder here; without one the script gets a throwaway.",

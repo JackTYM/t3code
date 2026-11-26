@@ -485,8 +485,8 @@ const make = Effect.gen(function* () {
     Effect.catch((cause): Effect.Effect<Loaded> =>
       Predicate.isTagged(cause, "PlatformError") && cause.reason._tag === "NotFound"
         ? Effect.succeed({ approved: {}, trust: "ok" })
-        : // Approvals that cannot be vouched for approve nothing: every watcher waits for the
-          // user again, and the list says why.
+        : // Approvals that cannot be vouched for approve nothing: they are dropped, so the Bot
+          // must propose each watcher again, and the list says why.
           Effect.logWarning(
             "Watcher approvals failed verification or could not be read; none are approved.",
             { cause },
@@ -1378,11 +1378,13 @@ const make = Effect.gen(function* () {
     readonly botThreadId: ThreadId;
     readonly name: string;
     readonly hash: string;
-    readonly runsOn: BotWatcherRunsOn;
     readonly approvedBy: string;
   }) {
-    const { botThreadId, name, hash, runsOn, approvedBy } = input;
+    const { botThreadId, name, hash, approvedBy } = input;
     const { folder, record } = yield* requirePending(botThreadId, name, hash);
+    // Read under the lock: the user may have moved the watcher while the dry run was running, and
+    // that move is not this approval's to undo.
+    const { runsOn } = record;
     if (!hasModelApproval(record, hash)) {
       return yield* failure(
         botThreadId,
@@ -1688,28 +1690,27 @@ const make = Effect.gen(function* () {
       const cause = verdict.source === "model" ? "rejected" : "unreviewed";
       return yield* discardPending(botThreadId, name, hash, verdict.reason, cause, verdict.at);
     }
-    const current = yield* recordOf(folder, name);
-    if (current?.pendingHash !== hash) return;
-    const dry = yield* runDry({ botThreadId, name, hash, runsOn: current.runsOn }).pipe(
-      Effect.option,
-    );
-    if (dry._tag === "None") {
-      return yield* failVersion(
-        botThreadId,
-        name,
-        hash,
-        "The first run could not complete where the watcher will run.",
+    const goLive = Effect.gen(function* () {
+      const current = yield* recordOf(folder, name);
+      if (current?.pendingHash !== hash) return;
+      const dry = yield* runDry({ botThreadId, name, hash, runsOn: current.runsOn }).pipe(
+        Effect.option,
       );
-    }
-    // The dry run took a while, and a newer proposal may have come in: that one needs its own review.
-    if ((yield* recordOf(folder, name))?.pendingHash !== hash) return;
-    yield* approve({
-      botThreadId,
-      name,
-      hash,
-      runsOn: current.runsOn,
-      approvedBy: "reviewer",
-    }).pipe(
+      if (dry._tag === "None") {
+        return yield* failVersion(
+          botThreadId,
+          name,
+          hash,
+          "The first run could not complete where the watcher will run.",
+        );
+      }
+      // The dry run took a while, and a newer proposal may have come in: that one needs its own review.
+      if ((yield* recordOf(folder, name))?.pendingHash !== hash) return;
+      yield* approve({ botThreadId, name, hash, approvedBy: "reviewer" });
+    });
+    yield* goLive.pipe(
+      // A move during the dry run leaves it covering the wrong place: run it where the watcher is now.
+      Effect.retry({ times: 1, while: (error) => error.reason === "dry_run_required" }),
       Effect.catchTags({
         BotWatcherError: (error) =>
           error.reason === "stale_hash" ||

@@ -115,7 +115,9 @@ export const BotWatcher = Schema.Struct({
   nextWakeAt: Schema.optional(Schema.Number),
   history: Schema.Array(BotWatcherHistoryEntry),
   /** The reviewer's verdicts, oldest first; the last 20. */
-  reviews: Schema.Array(BotWatcherReview),
+  reviews: Schema.Array(BotWatcherReview).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([] as ReadonlyArray<BotWatcherReview>)),
+  ),
 });
 export type BotWatcher = typeof BotWatcher.Type;
 
@@ -183,7 +185,7 @@ export class BotWatcherError extends Schema.TaggedError<BotWatcherError>()("BotW
       case "not_found":
         return `There is no watcher named ${this.watcher ?? ""}.`;
       case "no_pending":
-        return `Watcher ${this.watcher ?? ""} has no version waiting for approval.`;
+        return `Watcher ${this.watcher ?? ""} has no version under review.`;
       case "stale_hash":
         return `Watcher ${this.watcher ?? ""} changed since that version was shown. Review the new version first.`;
       case "dry_run_required":

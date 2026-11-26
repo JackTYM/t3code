@@ -13,10 +13,11 @@ import {
   botWatcherPlaces,
   botWatcherReviseMessage,
   botWatcherState,
-  botWatchersTripped,
+  botWatchersNeedingYou,
   groupBotWatchers,
   latestReview,
   parseBotWatcherDiff,
+  watchersRefreshIntervalMs,
 } from "./BotWatchersView.logic";
 
 const LAPTOP = "env-laptop" as EnvironmentId;
@@ -119,10 +120,10 @@ describe("groupBotWatchers", () => {
   });
 });
 
-describe("botWatchersTripped", () => {
-  it("counts only the watchers that are failing", () => {
+describe("botWatchersNeedingYou", () => {
+  it("counts the watchers that are failing or broken", () => {
     expect(
-      botWatchersTripped([
+      botWatchersNeedingYou([
         proposed({ name: "new-one" }),
         revising({ name: "changed-one" }),
         revising({ name: "paused-with-update", status: "paused", paused: true }),
@@ -133,12 +134,33 @@ describe("botWatchersTripped", () => {
         watcher({ name: "waiting-one", status: "waiting" }),
         watcher({ name: "stopped", status: "paused", paused: true }),
       ]),
-    ).toBe(2);
+    ).toBe(3);
   });
 
-  it("is zero with nothing failing", () => {
-    expect(botWatchersTripped([])).toBe(0);
-    expect(botWatchersTripped([watcher({ name: "fine" }), proposed()])).toBe(0);
+  it("is zero with nothing wrong", () => {
+    expect(botWatchersNeedingYou([])).toBe(0);
+    expect(botWatchersNeedingYou([watcher({ name: "fine" }), proposed()])).toBe(0);
+  });
+});
+
+describe("watchersRefreshIntervalMs", () => {
+  // The server pushes nothing when a review ends, so the list is polled while one is under way.
+  it("polls while a first version or a revision waits on the reviewer", () => {
+    expect(watchersRefreshIntervalMs([proposed({ name: "new-one" })])).toBe(5000);
+    expect(
+      watchersRefreshIntervalMs([watcher({ name: "fine" }), revising({ name: "changed-one" })]),
+    ).toBe(5000);
+  });
+
+  it("does not poll when nothing is under review", () => {
+    expect(watchersRefreshIntervalMs([])).toBeNull();
+    expect(
+      watchersRefreshIntervalMs([
+        watcher({ name: "fine" }),
+        watcher({ name: "failing-one", status: "tripped" }),
+        watcher({ name: "stopped", status: "paused", paused: true }),
+      ]),
+    ).toBeNull();
   });
 });
 
@@ -151,28 +173,7 @@ describe("latestReview", () => {
     const old = review({ hash: "a", at: "2026-11-25T09:00:00.000Z" as BotWatcherReview["at"] });
     const newest = review({ hash: "c", at: "2026-11-25T11:00:00.000Z" as BotWatcherReview["at"] });
     const middle = review({ hash: "b", at: "2026-11-25T10:00:00.000Z" as BotWatcherReview["at"] });
-    expect(latestReview(watcher({ name: "a", reviews: [old, newest, middle] }))?.review).toBe(
-      newest,
-    );
-  });
-
-  it("says whether the verdict is for the pending version", () => {
-    const verdict = review({ hash: "bbbbbbbbbbbbbbbbbbbb" });
-    expect(latestReview(revising({ reviews: [verdict] }))).toEqual({
-      review: verdict,
-      pending: true,
-    });
-  });
-
-  it("is not pending once the version it judged is gone", () => {
-    const rejected = review({ verdict: "reject", reason: "Sends mail." });
-    expect(latestReview(watcher({ name: "a", reviews: [rejected] }))).toEqual({
-      review: rejected,
-      pending: false,
-    });
-    expect(
-      latestReview(revising({ pendingHash: "cccccccccccccccccccc", reviews: [rejected] }))?.pending,
-    ).toBe(false);
+    expect(latestReview(watcher({ name: "a", reviews: [old, newest, middle] }))).toBe(newest);
   });
 });
 
@@ -237,36 +238,31 @@ describe("botWatcherControls", () => {
 
   it("lets operate access pause and remove, but not resume", () => {
     const controls = botWatcherControls(revising(), "local", { runCode: false, operate: true });
-    expect(controls.pause).toEqual({ enabled: true });
-    expect(controls.remove).toEqual({ enabled: true });
-    expect(controls.resume.enabled).toBe(false);
+    expect(controls.pause).toBe(true);
+    expect(controls.remove).toBe(true);
+    expect(controls.resume).toBe(false);
   });
 
   it("closes pause and remove for a connection with no grants", () => {
     const controls = botWatcherControls(revising(), "local", { runCode: false, operate: false });
-    expect(controls.pause).toEqual({ enabled: false, reason: "needs_operate_access" });
-    expect(controls.remove).toEqual({ enabled: false, reason: "needs_operate_access" });
+    expect(controls.pause).toBe(false);
+    expect(controls.remove).toBe(false);
   });
 
   it("moves an approved watcher only after it has run once in the new place", () => {
     const approved = watcher({ name: "a" });
-    expect(botWatcherControls(approved, "local", both).move).toEqual({
-      enabled: false,
-      reason: "already_there",
-    });
-    expect(botWatcherControls(approved, LAPTOP, both).move).toEqual({
-      enabled: false,
-      reason: "run_once_there_first",
-    });
+    expect(botWatcherControls(approved, "local", both).move).toBe(false);
+    expect(botWatcherControls(approved, LAPTOP, both).move).toBe(false);
     const tried = watcher({
       name: "a",
       lastDryRun: run({ hash: "aaaaaaaaaaaaaaaaaaaa", runsOn: LAPTOP }),
     });
-    expect(botWatcherControls(tried, LAPTOP, both).move).toEqual({ enabled: true });
+    expect(botWatcherControls(tried, LAPTOP, both).move).toBe(true);
+    expect(botWatcherControls(tried, LAPTOP, { runCode: false, operate: true }).move).toBe(false);
   });
 
   it("does not move a watcher while a revision is under review", () => {
-    expect(botWatcherControls(revising(), LAPTOP, both).move.enabled).toBe(false);
+    expect(botWatcherControls(revising(), LAPTOP, both).move).toBe(false);
   });
 });
 

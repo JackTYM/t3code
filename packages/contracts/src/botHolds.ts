@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import { IsoDateTime, ThreadId } from "./baseSchemas.ts";
 
 /**
- * A consequential call a Bot made in a turn that email influenced, held for the user. The Bot's
+ * A consequential call a Bot made in a turn that outside content (email or a watcher's output) influenced, held for the user. The Bot's
  * turn went on without it; allowing wakes the Bot to make the call again.
  */
 export const BotHeldAction = Schema.Struct({

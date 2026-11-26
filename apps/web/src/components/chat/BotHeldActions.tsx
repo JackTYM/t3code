@@ -42,7 +42,10 @@ function HeldAction(props: { threadRef: ScopedThreadRef; action: BotHeldAction }
       <AlertTitle>{props.action.summary}</AlertTitle>
       <AlertDescription>
         <p>
-          <T>An email influenced this turn, so the Bot waits for you before it does this.</T>
+          <T>
+            Outside content (an email, or a watcher's output) influenced this turn, so the Bot waits
+            for you before it does this.
+          </T>
         </p>
         <pre className="max-h-32 overflow-auto rounded-md bg-muted/50 p-2 text-xs whitespace-pre-wrap break-words">
           {props.action.input}

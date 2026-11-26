@@ -1586,7 +1586,7 @@ export const layerToolSearch = Layer.mergeAll(
 ).pipe(Layer.provide(layerToolExposure));
 
 /**
- * A Bot's consequential calls wait for the user in a turn email influenced. It wraps every
+ * A Bot's consequential calls wait for the user in a turn outside content (email or a watcher's output) influenced. It wraps every
  * `tools/call` on the server, since the held tools belong to other toolkits, and answers a held
  * call with an error result in place of running it.
  */
