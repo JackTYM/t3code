@@ -109,6 +109,24 @@ export const PROTECTED_PATHS = [
   "packages/shared/src/authScopeOptions*",
   "packages/shared/src/connectAuth*",
   "packages/shared/src/desktopBootstrapToken*",
+  // How the server starts, answers a request and trusts what it is sent, and what it runs or
+  // reaches: the CLI, the startup, CORS and request-URL handling, the secret providers, mail's
+  // sender checks, the folders, processes and terminals it runs in, and the links to other machines.
+  "apps/server/src/cli/**",
+  "apps/server/src/startupAccess*",
+  "apps/server/src/httpCors*",
+  "apps/server/src/requestUrl*",
+  "apps/server/src/bootstrap*",
+  "apps/server/src/settingsSecrets*",
+  "packages/secret-provider-*/**",
+  "apps/server/src/mail/MailAuthResults*",
+  "apps/server/src/mail/MailMessageParser*",
+  "apps/server/src/workspace/**",
+  "apps/server/src/process/**",
+  "apps/server/src/terminal/**",
+  "apps/server/src/milestones/**",
+  "packages/ssh/**",
+  "packages/tailscale/**",
   // CI, scripts, hooks and setup, which run on this machine or release from it.
   ".github/**",
   "scripts/**",
