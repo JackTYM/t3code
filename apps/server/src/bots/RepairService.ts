@@ -41,6 +41,11 @@ const MAX_MERGE_RESULTS = 8;
 const FIRST_BACKOFF_MS = 60 * 60_000;
 const MAX_BACKOFF_MS = 24 * 60 * 60_000;
 const MAX_EPISODES = 100;
+// A Bot hears at most this many health wakes, over all its episodes: a watcher that fails three
+// times, works once and fails again is a new episode each time, which no backoff would quiet.
+const MAX_HEALTH_WAKES_PER_HOUR = 4;
+const MAX_HEALTH_WAKES_PER_DAY = 12;
+const HOUR_MS = 60 * 60_000;
 // Where the newest state version is kept apart from the state file (see `State`).
 const STATE_VERSION_SECRET = "repair-state-version";
 // What a name may be, by kind. No whitespace, quotes, brackets or newlines: a name cannot carry a
@@ -206,6 +211,18 @@ export type MergeRefusalReason = typeof MergeRefusalReason.Type;
 const MergeReason = Schema.Literals([...MergeRefusalReason.literals, "merge_failed", "merged"]);
 type MergeReason = typeof MergeReason.Type;
 
+/** What one Bot has been woken for, kept so the cap holds across episodes and restarts. */
+const Limit = Schema.Struct({
+  /** Names this Bot in the key of its "too many" wake, which a thread id could not do plainly. */
+  id: Schema.String,
+  /** When its health wakes went out in the last day. */
+  wakes: Schema.Array(Schema.Number),
+  /** The UTC day (days since 1970) its "too many" wake last went out. */
+  toldDay: Schema.optional(Schema.Int),
+});
+type Limit = typeof Limit.Type;
+type Limits = Readonly<Record<string, Limit>>;
+
 /** One crew thread a repair started. Written before the launch, so a crash cannot lose it. */
 const Attempt = Schema.Struct({
   threadId: ThreadId,
@@ -254,6 +271,7 @@ type Repairs = Readonly<Record<string, Repair>>;
 const State = Schema.Struct({
   episodes: Schema.Record(Schema.String, Episode),
   repairs: Schema.optional(Schema.Record(Schema.String, Repair)),
+  limits: Schema.optional(Schema.Record(Schema.String, Limit)),
   /**
    * Counts saves, so a copy of the file older than the last save is noticed when the service
    * starts: the newest count is also kept in the secret store, outside this file.
@@ -263,6 +281,7 @@ const State = Schema.Struct({
 interface State {
   readonly episodes: Episodes;
   readonly repairs: Repairs;
+  readonly limits: Limits;
   readonly version: number;
 }
 const isState = Schema.is(State);
@@ -536,6 +555,15 @@ const briefText = (fields: {
   ].join("\n");
 };
 
+/** The wake that tells a Bot its signals are being dropped. Not a signal's id, so no repair starts from it. */
+const limitText = () =>
+  [
+    "Health signals are being dropped: this Bot has had too many health wakes.",
+    `limit: ${MAX_HEALTH_WAKES_PER_HOUR} an hour, ${MAX_HEALTH_WAKES_PER_DAY} a day`,
+    "Later failures are logged on the server and raise no wake and no repair until the count falls: something keeps failing and recovering.",
+    "This message was written by the server from fixed fields. It holds no output from any script, reviewer or outside source, and no name. Tell the user, in one line, that something keeps failing on and off. Do not start a repair: there is no signal to start one for.",
+  ].join("\n");
+
 /** The wake that ends a repair's tries. As fixed as `healthText`. */
 const gaveUpText = (signalId: string, repair: Repair) =>
   [
@@ -672,9 +700,10 @@ const make = Effect.gen(function* () {
         ? {
             episodes: decoded.episodes,
             repairs: decoded.repairs ?? {},
+            limits: decoded.limits ?? {},
             version: decoded.version ?? 0,
           }
-        : { episodes: decoded, repairs: {}, version: 0 },
+        : { episodes: decoded, repairs: {}, limits: {}, version: 0 },
     ),
     Effect.filterOrFail(
       (decoded) => decoded.version >= lastVersion,
@@ -683,7 +712,7 @@ const make = Effect.gen(function* () {
     // No file yet is the usual first run. A file that cannot be vouched for, or is older than the
     // last save, is dropped whole; the count goes on from the newest one, so later saves are newer.
     Effect.catch((cause): Effect.Effect<State> => {
-      const empty: State = { episodes: {}, repairs: {}, version: lastVersion };
+      const empty: State = { episodes: {}, repairs: {}, limits: {}, version: lastVersion };
       return Predicate.isTagged(cause, "PlatformError") && cause.reason._tag === "NotFound"
         ? Effect.succeed(empty)
         : Effect.logWarning(
@@ -728,6 +757,8 @@ const make = Effect.gen(function* () {
   );
   const saveEpisodes = (episodes: Episodes) =>
     Ref.get(state).pipe(Effect.flatMap((current) => save({ ...current, episodes })));
+  const saveEpisodesAndLimits = (episodes: Episodes, limits: Limits) =>
+    Ref.get(state).pipe(Effect.flatMap((current) => save({ ...current, episodes, limits })));
   const saveRepairs = (repairs: Repairs) =>
     Ref.get(state).pipe(Effect.flatMap((current) => save({ ...current, repairs })));
 
@@ -769,6 +800,39 @@ const make = Effect.gen(function* () {
     yield* saveEpisodes({ ...(yield* readEpisodes), [key]: settled });
   });
 
+  /** Without a Bot's wakes older than a day, and without a Bot with none left to count. */
+  const sweepLimits = (all: Limits, now: number): Limits =>
+    Object.fromEntries(
+      Object.entries(all).flatMap(([botThreadId, limit]) => {
+        const wakes = limit.wakes.filter((at) => at > now - DAY_MS);
+        const today = Math.floor(now / DAY_MS);
+        return wakes.length === 0 && (limit.toldDay === undefined || limit.toldDay < today - 1)
+          ? []
+          : [[botThreadId, { ...limit, wakes }]];
+      }),
+    );
+
+  /** Wakes the Bot once a day to say its signals are being dropped. Under the lock. */
+  const tellLimited = Effect.fn("RepairService.tellLimited")(function* (
+    botThreadId: ThreadId,
+    now: number,
+  ) {
+    const limits = (yield* Ref.get(state)).limits;
+    const held = Object.hasOwn(limits, botThreadId) ? limits[botThreadId] : undefined;
+    const day = Math.floor(now / DAY_MS);
+    if (held === undefined || held.toldDay === day || !SIGNAL_ID.test(held.id)) return;
+    // The day is in the key, so a crash between the send and the save replays the first send.
+    const woken = yield* bots.wakeHealth({
+      botThreadId,
+      key: `health:limit:${held.id}:${day}`,
+      text: limitText(),
+    });
+    if (woken) {
+      const current = yield* Ref.get(state);
+      yield* save({ ...current, limits: { ...limits, [botThreadId]: { ...held, toldDay: day } } });
+    }
+  });
+
   const signal: RepairService["Service"]["signal"] = Effect.fn("RepairService.signal")(function* (
     input,
   ) {
@@ -793,7 +857,13 @@ const make = Effect.gen(function* () {
     if (previous?.pending !== undefined) return yield* send(key, previous);
     if (previous !== undefined && now < previous.nextWakeAt) return;
     const step = previous === undefined ? 0 : previous.step + 1;
-    const wakes = (previous?.wakes ?? 0) + 1;
+    const limits = (yield* Ref.get(state)).limits;
+    const held = Object.hasOwn(limits, botThreadId) ? limits[botThreadId] : undefined;
+    const recent = (held?.wakes ?? []).filter((at) => at > now - DAY_MS);
+    const limited =
+      recent.length >= MAX_HEALTH_WAKES_PER_DAY ||
+      recent.filter((at) => at > now - HOUR_MS).length >= MAX_HEALTH_WAKES_PER_HOUR;
+    const wakes = (previous?.wakes ?? 0) + (limited ? 0 : 1);
     const id = previous?.id ?? (yield* newId);
     const episode: Episode = {
       id,
@@ -807,10 +877,30 @@ const make = Effect.gen(function* () {
       step,
       nextWakeAt: now + backoff(step),
     };
+    if (limited) {
+      yield* Effect.logWarning("A health signal was dropped: this Bot has had too many wakes.", {
+        kind,
+      });
+      // Recorded, so the failure is known and not judged again until its backoff is up, but no wake.
+      if (!(yield* saveEpisodes(sweep({ ...all, [key]: episode }, now)))) return;
+      return yield* tellLimited(botThreadId, now);
+    }
     const pending = { key: healthKey(episode) };
+    const counted: Limit = {
+      id: held?.id ?? (yield* newId),
+      wakes: [...recent, now],
+      ...(held?.toldDay === undefined ? {} : { toldDay: held.toldDay }),
+    };
     // Saved before the send: a wake that is not on disk could be lost by a crash, and one that
     // is gets resent under this key, which the Bot's idempotent command replays.
-    if (!(yield* saveEpisodes(sweep({ ...all, [key]: { ...episode, pending } }, now)))) return;
+    if (
+      !(yield* saveEpisodesAndLimits(
+        sweep({ ...all, [key]: { ...episode, pending } }, now),
+        sweepLimits({ ...limits, [botThreadId]: counted }, now),
+      ))
+    ) {
+      return;
+    }
     yield* send(key, { ...episode, pending });
   }, locked);
 

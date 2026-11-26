@@ -179,6 +179,168 @@ it.effect("wakes again after an hour, then after twice as long, up to a day", ()
   }).pipe(provideRepair(orchestration));
 });
 
+const MINUTE = 60_000;
+const episodeWakes = (
+  orchestration: ReturnType<typeof makeOrchestration>,
+  botThreadId?: ThreadId,
+) =>
+  orchestration.sent.filter(
+    (message) =>
+      wakeId(message.commandId) !== null &&
+      (botThreadId === undefined || message.threadId === botThreadId),
+  );
+const limitWakes = (orchestration: ReturnType<typeof makeOrchestration>) =>
+  orchestration.sent.filter(({ commandId }) => commandId.startsWith("bot-wake:health:limit:"));
+
+/** A watcher that fails three times, then once works: a new episode each time it is called. */
+const flap = (botThreadId: ThreadId, name = "disk") =>
+  Effect.gen(function* () {
+    const repair = yield* RepairService.RepairService;
+    yield* repair.signal(watcherSignal(botThreadId, { name }));
+    yield* repair.clear({ kind: "watcher", botThreadId, name });
+  });
+
+// A watcher that fails, recovers and fails again is a new episode each time, so the backoff that
+// quiets one failure never applies. The cap is on the Bot: four wakes an hour and twelve a day.
+it.effect("wakes a Bot for at most four failures an hour, however many episodes", () => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    for (let flaps = 0; flaps < 4; flaps += 1) {
+      yield* flap(botThread.id);
+      yield* TestClock.adjust(5 * MINUTE);
+    }
+    assert.lengthOf(episodeWakes(orchestration), 4);
+
+    // The fifth, twenty minutes in, is recorded and dropped.
+    yield* flap(botThread.id);
+    assert.lengthOf(episodeWakes(orchestration), 4);
+
+    // The first wake is an hour old once 60 minutes have passed since it: one more fits.
+    yield* TestClock.adjust(40 * MINUTE - 1);
+    yield* flap(botThread.id);
+    assert.lengthOf(episodeWakes(orchestration), 4);
+    yield* TestClock.adjust(1);
+    yield* flap(botThread.id);
+    assert.lengthOf(episodeWakes(orchestration), 5);
+  }).pipe(provideRepair(orchestration));
+});
+
+it.effect("wakes a Bot for at most twelve failures a day, however slowly they come", () => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    for (let flaps = 0; flaps < 12; flaps += 1) {
+      yield* flap(botThread.id);
+      yield* TestClock.adjust(90 * MINUTE);
+    }
+    assert.lengthOf(episodeWakes(orchestration), 12);
+
+    // Thirteenth, 18 hours in: the hour is quiet but the day is full.
+    yield* flap(botThread.id);
+    assert.lengthOf(episodeWakes(orchestration), 12);
+
+    // A day after the first, that one has left the window.
+    yield* TestClock.adjust(6 * HOUR - 1);
+    yield* flap(botThread.id);
+    assert.lengthOf(episodeWakes(orchestration), 12);
+    yield* TestClock.adjust(1);
+    yield* flap(botThread.id);
+    assert.lengthOf(episodeWakes(orchestration), 13);
+  }).pipe(provideRepair(orchestration));
+});
+
+it.effect("tells the Bot once a day, in fixed words, that signals are being dropped", () => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    for (let flaps = 0; flaps < 4; flaps += 1) yield* flap(botThread.id);
+    assert.lengthOf(limitWakes(orchestration), 0);
+
+    for (let dropped = 0; dropped < 3; dropped += 1) yield* flap(botThread.id);
+    assert.lengthOf(episodeWakes(orchestration), 4);
+    const [told, ...more] = limitWakes(orchestration);
+    assert.lengthOf(more, 0);
+    // Not a wake a repair can be started from, and nothing but fixed words.
+    assert.isNull(wakeId(told!.commandId));
+    assert.match(told!.commandId, /^bot-wake:health:limit:[0-9a-f]{12}:[0-9]+$/u);
+    assert.strictEqual(
+      told!.text,
+      [
+        "Health signals are being dropped: this Bot has had too many health wakes.",
+        "limit: 4 an hour, 12 a day",
+        "Later failures are logged on the server and raise no wake and no repair until the count falls: something keeps failing and recovering.",
+        "This message was written by the server from fixed fields. It holds no output from any script, reviewer or outside source, and no name. Tell the user, in one line, that something keeps failing on and off. Do not start a repair: there is no signal to start one for.",
+      ].join("\n"),
+    );
+
+    // The next day it fills again, and the Bot is told again.
+    yield* TestClock.adjust(24 * HOUR);
+    for (let flaps = 0; flaps < 5; flaps += 1) yield* flap(botThread.id);
+    assert.lengthOf(limitWakes(orchestration), 2);
+  }).pipe(provideRepair(orchestration));
+});
+
+it.effect("tells a Bot it could not hear on the next dropped signal, and not before", () => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    for (let flaps = 0; flaps < 4; flaps += 1) yield* flap(botThread.id);
+    botThread.settledOverride = "settled";
+    yield* flap(botThread.id);
+    assert.lengthOf(limitWakes(orchestration), 0);
+    botThread.settledOverride = null;
+    yield* flap(botThread.id);
+    assert.lengthOf(limitWakes(orchestration), 1);
+    yield* flap(botThread.id);
+    assert.lengthOf(limitWakes(orchestration), 1);
+  }).pipe(provideRepair(orchestration));
+});
+
+it.effect("counts each Bot's wakes apart", () => {
+  const orchestration = makeOrchestration();
+  const first = orchestration.addThread("thread:bot", { botConfig: bot });
+  const second = orchestration.addThread("thread:other-bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    for (let flaps = 0; flaps < 6; flaps += 1) yield* flap(first.id);
+    assert.lengthOf(episodeWakes(orchestration, first.id), 4);
+    yield* flap(second.id);
+    assert.lengthOf(episodeWakes(orchestration, second.id), 1);
+    // And they are named apart, so one Bot's notice is not the other's replay.
+    yield* flap(second.id, "mail");
+    for (let flaps = 0; flaps < 5; flaps += 1) yield* flap(second.id, "mail");
+    assert.lengthOf(limitWakes(orchestration), 2);
+    assert.strictEqual(
+      new Set(limitWakes(orchestration).map(({ commandId }) => commandId)).size,
+      2,
+    );
+  }).pipe(provideRepair(orchestration));
+});
+
+it.effect("keeps the count across a restart, in the signed state", () => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    const { boot } = yield* makeRestarts(orchestration);
+    yield* TestClock.setTime(START);
+    const first = yield* boot;
+    yield* Effect.gen(function* () {
+      for (let flaps = 0; flaps < 4; flaps += 1) yield* flap(botThread.id);
+    }).pipe(first);
+    assert.lengthOf(episodeWakes(orchestration), 4);
+
+    const second = yield* boot;
+    yield* flap(botThread.id).pipe(second);
+    assert.lengthOf(episodeWakes(orchestration), 4);
+    assert.lengthOf(limitWakes(orchestration), 1);
+  }).pipe(Effect.provide(NodeServices.layer));
+});
+
 it.effect("keeps separate episodes apart and starts a new one after recovery", () => {
   const orchestration = makeOrchestration();
   const botThread = orchestration.addThread("thread:bot", { botConfig: bot });

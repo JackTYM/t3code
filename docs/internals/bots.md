@@ -88,6 +88,12 @@ episode. The wake id is `bot-wake:health:<signalId>:<n>`.
   `t3_bot_mail_search`, so its consequential calls are held from then on. The set is "every
   read-only tool that is not a `t3_bot_*` tool", not a list of names, so a later tool is covered.
   In other turns reading is not a taint.
+- **A Bot hears a bounded number of them.** Backoff quiets one failure, but a watcher that fails
+  three times, works once and fails again is a new episode each time. So each Bot gets a fixed cap
+  of health wakes an hour and a day across all its episodes, counted in the signed state. Over it,
+  a signal is recorded and dropped with a log line, and the Bot is told once a day, in fixed words
+  (`bot-wake:health:limit:<id>:<day>`, not a signal id, so no repair starts from it), to tell the
+  user. The give-up and merge wakes are bounded separately, by repair.
 - **A health turn's own failure is not a signal.** A failed run that began with a health wake would
   wake the Bot into the same failure again, so `handleMilestone` skips it, and a failed run it
   cannot find.
