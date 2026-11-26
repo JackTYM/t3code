@@ -25,15 +25,16 @@ in the same project with a summary of the thread, and that thread becomes its fi
   crew notifications other than requests for input. Its **Tasks** tab lists what the Bot is
   tracking and which threads work on each. Tick a task to mark it done and untick it to reopen it;
   the Bot reads your change on its next turn. Its **Watchers** tab lists the scripts the Bot
-  writes to watch things for free and wake it when something changes. Nothing runs until you
-  approve: read the source (and the diff from the version you approved), choose where it runs, press
-  **Run once** to see its output, then **Approve this version**. If the Bot changes a script it stops
-  until you approve the new version or reject it, which keeps the approved one. To change a script,
-  use **Ask the Bot to revise**; you cannot edit it yourself. **Pause**, **Resume** and **Remove**
-  work any time. A watcher on a linked environment shows **waiting** while that environment does
-  not answer, and moving one needs a **Run once** there first.
-  A count on the **Bot** button shows how many watchers need you; it updates when you return to the
-  window, close the popover or the Bot finishes a turn.
+  writes to watch things for free and wake it when something changes. You do not approve them: a
+  reviewer model reads each script first, and a script it rejects never runs. The tab shows each
+  script's verdict, what it is for and where it runs. **Pause**, **Resume** and **Remove** work any
+  time, **Run once** shows you what a script prints without waking the Bot, and a watcher can be
+  moved to a linked environment once it has run there with **Run once**. To change a script, use **Ask the Bot to revise**; you cannot edit
+  it yourself. A watcher on a linked environment shows **waiting** while that environment does not
+  answer. The reviewer uses your text-generation model, so if it cannot run, choose another in
+  Settings. A count on the **Bot** button shows how many watchers are failing and how many calls the
+  Bot holds for you; it updates when you return to the window, close the popover or the Bot finishes
+  a turn.
 - A Bot can switch itself to a stronger model for a task that needs more reasoning; when that turn
   ends, T3 Code puts it back on the model it was on, unless you changed the model yourself in the
   meantime. A server restart in between leaves it on the stronger one.

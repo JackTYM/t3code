@@ -121,7 +121,7 @@ no signal at all.
   back; tombstones outlive the mail by one retention period.
 - **The Bot hears a digest, not mail.** At most one wake per window (default 5 minutes, per Bot),
   through `BotService.wakeWith`, so the turn it starts counts as a wake turn for `startedByWake` and
-  cannot propose or remove watchers. One line per new email (#number, mailbox, sender capped at 100
+  cannot add or remove watchers. One line per new email (#number, mailbox, sender capped at 100
   characters, subject capped at 200, authenticated or unverified from DMARC), never bodies, framed
   as untrusted data. Control and bidi characters are stripped from what a sender wrote, and `|` in
   it is replaced, so a subject cannot forge the line's own fields. Backfilled mail is history and
@@ -168,7 +168,8 @@ no signal at all.
 - **Mail-influenced turns hold consequential calls.** The reader is not the only way a hostile
   email reaches the Bot: the digest names senders and subjects, and the reader's report is shaped
   by the body. [`BotHoldService`](../../apps/server/src/bots/BotHoldService.ts) calls a Bot's turn
-  influenced when its run began with a mail digest (a `bot-wake:mail:` message), began with a mail
+  influenced when its run began with a mail digest (a `bot-wake:mail:` message) or a watcher wake
+  (`bot-wake:watcher`), began with a mail
   reader's report (the run's first message is the completion delivery of a task whose child is a
   `mailReader`), or has since searched mail or started a reader. Starting a reader taints the run that did
   it, so a Bot cannot read the child's thread or poll its task from a turn the user typed. In an
@@ -180,10 +181,11 @@ no signal at all.
   launches, other delegations, messages outside the crew, schedules and project changes therefore
   wait for the user. A held call is stored in memory with its arguments (a restart drops it, and
   the Bot asks again), listed by `botHold.list` and shown on the Bot popover. Allowing needs
-  terminal access, as approving a watcher does, and wakes the Bot with the call as the user saw
+  terminal access, as starting a watcher does, and wakes the Bot with the call as the user saw
   it; the wake is not a mail message, so that turn is not itself held. A hostile context can still
-  steer that turn, which is why the user reads the arguments first. Watchers keep their own,
-  stricter rule: propose and remove are refused in any turn the user did not type.
+  steer that turn, which is why the user reads the arguments first. A turn a watcher woke is held
+  the same way (see Watchers), and adding or removing a watcher is refused in any turn the user did
+  not type.
 - **Hook setup.** `botMail.createHook` makes the webhook task (`sink: "bot-mail"`, signature header
   `x-t3-signature`, `sha256=` prefix, hex, a generated secret, no dedupe) through
   `ScheduledTaskService`, bound to the Bot's thread, and returns its address and secret once; a
@@ -229,37 +231,71 @@ maps to a file, while the files and their headers do not.
 
 ## Watchers
 
-A watcher is a script that polls for free and wakes the Bot, a model call, only when it trips.
-The Bot proposes them, and a Bot reads untrusted email and chat, so a proposal is never trusted:
-a watcher runs only as the exact version the user approved after reading its source and a dry run.
+A watcher is a script that polls for free and wakes the Bot, a model call, only when something
+happens. The Bot writes them, and a Bot reads untrusted email and chat, so a script is never
+trusted on the Bot's word: a reviewer model reads it before it first runs.
 [`WatcherService`](../../apps/server/src/bots/WatcherService.ts) owns this and registers one pass
 with the `Scheduler`.
 
 - **Versions.** A proposal is stored as `<base>/bots/<folder>/watchers/<name>/<sha256>/` holding
-  `run` (node or sh source) and `watcher.json`; the hash covers both. Which hash is approved, who
+  `run` (node or sh source) and `watcher.json`; the hash covers both. Which hash is live, who
   approved it and where it runs live in `<stateDir>/watcher-approvals.json`, which only the service
   writes. A directory the Bot writes under `bots/` approves nothing, and the loop runs what that
   file lists, not what it finds on disk. The file carries an HMAC kept with the server's other
   secrets, which a Bot cannot read: one that fails the check, or has no signature, approves
-  nothing, so every watcher waits for the user again, a warning is logged and `botWatcher.list`
+  nothing, so every watcher goes back to the reviewer, a warning is logged and `botWatcher.list`
   reports `approvals: unverified`.
-- **Any change stops it.** A different version becomes the pending one and the approved version
-  stops until the user approves the new one or rejects it, which resumes the old. The user's
-  actions are protected RPCs (`botWatcher.*`) that need terminal access, as saving a workflow
-  file does, because each runs code. Approval must name the current pending hash, and the
-  server refuses it unless a dry run of exactly that hash has completed where the watcher will
-  run, whatever the run found: a client that skips "Run once" cannot approve what nobody saw
-  behave. Moving an approved watcher (`setRunsOn`) needs the same first run in its new place.
-- **The user can always stop it.** `pause` keeps the approval and stops runs, `remove` deletes the
-  watcher, and neither depends on what woke the Bot or whether it is still live. Both need only
-  operate access since they run nothing; `resume`, which starts approved code again, needs
-  terminal access like approving.
-- **No Bot path to approval.** There is no Bot-callable approve and no Bot-callable dry run: a Bot
-  that could dry-run its own proposal would execute it before anyone read it. The propose and
-  remove tools are also refused to a turn that did not begin with the user typing, which
-  `BotService.startedByWake` decides from the run's first message: a `bot-wake:` message, another
-  agent's, a scheduled task's, or one that cannot be found all count as not typed. A user who
-  steers a wake turn does not change that: the turn stays refused. The web "Ask the Bot to revise" therefore sends its message queued behind any active run, so the proposal comes from a new turn that begins with the user's text.
+- **Modes.** `health` (the default) is healthy on exit 0 with stdout matching `expect`, if set, and
+  wakes the Bot when it is not. `events` is for news: exit 0 with empty stdout is quiet, exit 0 with
+  output is one wake carrying that output, and anything else is a failure. Stdout is capped at 4096
+  bytes, and in `events` mode output that reaches the cap is a failure: the script's cursor has
+  already moved past what was cut, so the Bot would hear an event with a hole in it.
+- **The state folder.** `$T3_WATCHER_STATE_DIR` is a folder per watcher for cursors and seen ids.
+  It is not a version: a revision keeps it, and removing the watcher deletes it. A dry run gets a
+  throwaway one, so trying a script never moves its cursor. On a linked environment the folder
+  lives there, keyed by this server's id, the Bot and the name, so two boxes linked to one laptop
+  do not share it. A laptop too old to take the key gives the script a throwaway folder, and a
+  watcher removed from the box leaves its folder on the laptop; neither is handled.
+- **Event delivery is crash-safe.** The event is saved as `pendingEvent` before it is sent, and a
+  pending event blocks the next run: the script's cursor may already be past what it printed, so
+  the same wake key is resent until the Bot has it, and only then does the script run again.
+- **Revisions keep the old version running.** A change to an approved watcher becomes the pending
+  version while the live one keeps running, and replaces it only after a verdict and a first run.
+  Proposing the live bytes again drops the pending version.
+- **The reviewer.** The server asks its text-generation model (`TextGeneration.reviewWatcher`, the
+  model the thread title uses) to read the script, its purpose and `expect`, and the diff from the
+  live version, with the Bot's text framed as data under a random tag; a watcher that quotes the
+  frame's markers is refused outright. On approval the server dry-runs the version where it will
+  run and, if that completes, makes it live with `approvedBy: "reviewer"`. No user approval exists,
+  and no Bot tool approves or dry-runs.
+  - A rejection, a reviewer that fails or does not answer in two minutes, and a failed dry run all
+    end the same way: the pending version is discarded and the Bot is woken with the reason, framed
+    as untrusted data, since a model that read a hostile script may repeat its words. A rejected
+    new watcher is deleted; the log and that wake are the only record.
+  - Verdicts (the last 20, plus the approved ones) are shown in the user's Watchers view. The Bot's
+    `t3_bot_watcher_list` returns them without reasons, for the same reason.
+  - The Bot may ask for a revision of a watcher it has from any turn, but a new watcher or removal
+    needs a turn the user typed (`BotService.startedByWake` decides from the run's first message: a
+    `bot-wake:` message, another agent's, a scheduled task's, or one that cannot be found all count
+    as not typed). After a version is dropped, a wake turn's proposals for any of that Bot's
+    watchers are refused for 15 minutes, so a rejection cannot be answered by another try in a
+    loop; a typed turn is exempt.
+  - Caps bound the work a Bot can cause: 3 reviews in flight per Bot, 6 per server, and wake turns
+    1 and 3 of those. `expect` runs in a `node:vm` timer of 50 ms; a version whose pattern timed
+    out stays unhealthy until it is replaced.
+  - **Limits.** The reviewer is a model, so a script written to talk it into approving can succeed.
+    The boundary that holds is the egress allowlist, which is not built yet (spec step 5), so until
+    it is no source that needs a secret is enabled. The cooldown and the slow-pattern memory are in
+    memory and reset on a restart.
+- **The user can always act.** `pause`, `resume`, `remove` and moving a watcher (`setRunsOn`) are
+  protected RPCs (`botWatcher.*`) the user's client calls whatever woke the Bot, and a moved watcher
+  needs its first run in its new place. **Run once** (`dryRun`) runs only a version a model
+  approved, so a client cannot run code nobody read. Pause and remove need operate access since
+  they run nothing; the others start code and need terminal access, as saving a workflow file does.
+- **Watcher wakes are influenced.** A wake from a watcher (`bot-wake:watcher...`, review verdicts
+  included) marks the turn it starts influenced, as a mail digest does, so
+  [`BotHoldService`](../../apps/server/src/bots/BotHoldService.ts) holds consequential calls in it.
+  A script's output reaches the Bot, and a script may print what a stranger wrote.
 - **Running.** The verified bytes are read once, hashed, written to a fresh 0700 scratch directory
   and executed from that copy, never from the stored path, so a rewrite after the check changes
   nothing. Watchers are trusted code, not sandboxed: the scratch directory is the cwd and
@@ -270,16 +306,16 @@ with the `Scheduler`.
   server, the box, calls the peer-only tool `t3_watcher_run` through `PeerMcpClient` with the
   source and its sha256. The receiving server accepts it only from a linked session paired with
   full access and not narrowed below it, refuses source that does not hash to what it was sent
-  with, and runs those bytes through the same private-copy path as a local run. The box attests
-  the approval; the laptop keeps no approvals of its own. It returns the exit and output, and
+  with, and runs those bytes through the same private-copy path as a local run. The box holds the
+  verdicts; the laptop keeps no approvals of its own. It returns the exit and output, and
   the box judges, dedupes and frames them exactly as for a local run. A peer that does not
   answer is `waiting`, not failing: nothing is counted, `failing` and its backoff stay as they
   were, and it is asked again after a minute (the link itself is kept alive by
   `PeerLinkKeepalive`). A peer that answers with a refusal is a failure like any other.
 
-A run is healthy on exit 0 with stdout matching `expect`, if set. A wake is deduplicated per
-failure: a trip, or new output, wakes at once, and the same output wakes again after 15 minutes,
-doubling up to 24 hours. Recovery clears the state silently. `state.json` is saved with the wake
-`pending` before `BotService.wakeWith` queues it, and its key carries the failure's start, wake
-count and output fingerprint, so a restart resends the same key instead of waking twice. The
-output reaches the Bot framed as untrusted data, with a random tag.
+A health wake is deduplicated per failure: a trip, or new output, wakes at once, and the same
+output wakes again after 15 minutes, doubling up to 24 hours. Recovery clears the state silently.
+`state.json` is saved with the wake `pending` before `BotService.wakeWith` queues it, and its key
+carries the failure's start, wake count and output fingerprint, so a restart resends the same key
+instead of waking twice. An `events` wake is not deduplicated, since each is news; its key carries
+the run's time. Output reaches the Bot framed as untrusted data, with a random tag.
