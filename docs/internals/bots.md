@@ -173,14 +173,22 @@ with fixed words the crew can act on:
   while checking is a refusal, never a merge.
 
 **Protected paths.** `PROTECTED_PATHS` ([`RepairService.ts`](../../apps/server/src/bots/RepairService.ts))
-exists so the Bot cannot weaken its own safety boundary unattended: the hold, repair and review
-machinery and what the guard reads (a crew must not be able to make the guard say yes), anything
-that runs on this machine or releases without a build (CI, scripts, git hooks, worktree setup),
-dependencies, and the desktop updater, installer and signing. The list is the one place to read
-what is covered. Updater and signing code is not all named for it (`FullUpdate.ts`,
-`ElectronUpdater.ts` have a capital `U`, desktop signing lives in `scripts/` and the workflows), so
-matching is case-blind and names directories, not just files. A test lists every entry, so a
-change to it is deliberate.
+exists so a repair cannot weaken its own safety boundary or the checks it waits on, unattended. It
+names the hold, repair and review machinery and what the guard reads (a crew must not be able to
+make the guard say yes), the directories that decide what a Bot, a thread or a tool may do (Bot
+code, orchestration with its runtime policy and provider adapters, MCP, contracts, settings and
+storage), what agents are told and taught (`AGENTS.md`, skills, rules, docs, evals), the checks'
+own configuration (test, type, lint and review configs), anything that runs on this machine or
+releases without a build (CI, scripts, git hooks, editor and container setup), dependencies, and
+the desktop updater, installer and signing. The list is the one place to read what is covered.
+Updater and signing code is not all named for it (`FullUpdate.ts`, `ElectronUpdater.ts` have a
+capital `U`, desktop signing lives in `scripts/` and the workflows), so matching is case-blind and
+names directories, not just files. A test lists every entry, so a change to it is deliberate.
+Broad globs are the point: a repair that needs one of these files is the user's to make, and the
+crew's report says so. What is **not** covered: the rest of `apps/server/src` (git, workflows,
+projects, and the other services), `apps/web`, `apps/mobile`, `apps/marketing`, the desktop app
+outside its updater and signing, `packages/shared`, `packages/client-runtime`, `native/**`, and
+root files such as `.gitignore`. A change there is merged when its checks pass.
 
 **What the guard tells the Bot.** After a merge or a refusal the Bot gets one wake with the pull
 request's number, merged or left open, and the reason code, and no title, body or file name. It is

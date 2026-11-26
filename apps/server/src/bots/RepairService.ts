@@ -108,6 +108,46 @@ export const PROTECTED_PATHS = [
   "apps/desktop/resources/**",
   "apps/desktop/**/*updat*",
   "apps/desktop/**/*sign*",
+  // What agents are told, given and taught: instructions, skills, rules, docs and evals. A repair
+  // that rewrote them would be steering the next agent.
+  "AGENTS.md",
+  "CLAUDE.md",
+  "**/AGENTS.md",
+  "**/CLAUDE.md",
+  ".agents/**",
+  ".cursor/**",
+  ".claude/**",
+  "skills/**",
+  "docs/**",
+  "evals/**",
+  // What the checks a merge waits on run and judge with, so a fix cannot make one pass by changing it.
+  "vite.config.ts",
+  "**/vite.config.ts",
+  "**/vitest*.config.*",
+  "knip.jsonc",
+  "tsconfig*.json",
+  "**/tsconfig*.json",
+  "oxlint-plugin-t3code/**",
+  ".macroscope/**",
+  ".coderabbit.config.ts",
+  // Editor, container and cargo setup that runs commands when a folder is opened or built.
+  ".devcontainer/**",
+  ".vscode/**",
+  ".cargo/**",
+  "infra/**",
+  // Where a Bot, a thread or a tool is allowed to do something: its machinery and the contracts,
+  // settings, storage and provider adapters it runs on (runtime mode, MCP exposure and overrides).
+  "apps/server/src/bots/**",
+  "apps/server/src/orchestration-v2/**",
+  "apps/server/src/mcp/**",
+  "apps/server/src/scheduledTasks/webhookTemplate*",
+  "apps/server/src/serverSettings.ts",
+  "apps/server/src/ws.ts",
+  "apps/server/src/persistence/**",
+  "apps/server/src/provider/**",
+  "packages/contracts/**",
+  "packages/provider-*/**",
+  "packages/source-control-definitions/**",
 ] as const;
 
 const Kind = Schema.Literals(["watcher", "reviewer", "run"]);
