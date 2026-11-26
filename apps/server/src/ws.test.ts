@@ -106,6 +106,7 @@ import * as McpSignIn from "./mcpApps/McpSignIn.ts";
 import * as BotService from "./bots/BotService.ts";
 import * as BotHoldService from "./bots/BotHoldService.ts";
 import * as BotMailService from "./bots/BotMailService.ts";
+import * as BotSecretGrantService from "./bots/BotSecretGrantService.ts";
 import * as WatcherService from "./bots/WatcherService.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -894,6 +895,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(McpSignIn.McpSignIn)({}),
   Layer.mock(BotService.BotService)({}),
   Layer.mock(WatcherService.WatcherService)({}),
+  Layer.mock(BotSecretGrantService.BotSecretGrantService)({}),
   Layer.mock(BotMailService.BotMailService)({}),
   Layer.mock(BotHoldService.BotHoldService)({}),
   Layer.mock(ModelManifest.ModelManifest)({}),

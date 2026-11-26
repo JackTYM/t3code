@@ -15,6 +15,7 @@ import * as BotMailService from "./bots/BotMailService.ts";
 import * as BotService from "./bots/BotService.ts";
 import * as BotWakeReactor from "./bots/BotWakeReactor.ts";
 import * as RepairMergeGuard from "./bots/RepairMergeGuard.ts";
+import * as BotSecretGrantService from "./bots/BotSecretGrantService.ts";
 import * as RepairService from "./bots/RepairService.ts";
 import * as WatcherService from "./bots/WatcherService.ts";
 import * as HomeService from "./home/HomeService.ts";
@@ -853,6 +854,8 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
           Layer.provide(PeerMcpClient.layer.pipe(Layer.provide(PeerLinks.layer))),
         ),
       ),
+      // What the user lets a Bot's scripts use; the watchers read it when they run.
+      Layer.provideMerge(BotSecretGrantService.layer),
       // Holds a Bot's consequential calls while email influences its turn; WebSocket lists them.
       // It asks which threads are repair crews, so it sits above the repair service.
       Layer.provideMerge(BotHoldService.layer),

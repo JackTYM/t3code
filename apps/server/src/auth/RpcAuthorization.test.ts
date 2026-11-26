@@ -182,6 +182,15 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("lets readers list a Bot's secret grants, but giving or taking one back is operating threads", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.botSecretGrantList)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    for (const method of [WS_METHODS.botSecretGrantSet, WS_METHODS.botSecretGrantRemove]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
   it("lets readers list the actions a Bot holds, but allowing one takes terminal access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.botHoldList)).toBe(AuthOrchestrationReadScope);
     expect(requiredScopeForRpcMethod(WS_METHODS.botHoldAllow)).toBe(AuthTerminalOperateScope);

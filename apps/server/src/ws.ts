@@ -136,6 +136,7 @@ import * as McpSignIn from "./mcpApps/McpSignIn.ts";
 import * as BotService from "./bots/BotService.ts";
 import * as BotHoldService from "./bots/BotHoldService.ts";
 import * as BotMailService from "./bots/BotMailService.ts";
+import * as BotSecretGrantService from "./bots/BotSecretGrantService.ts";
 import * as WatcherService from "./bots/WatcherService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
@@ -1511,6 +1512,7 @@ export const layerWsRpc = (
       const mcpSignIn = yield* McpSignIn.McpSignIn;
       const bots = yield* BotService.BotService;
       const botWatchers = yield* WatcherService.WatcherService;
+      const botSecretGrants = yield* BotSecretGrantService.BotSecretGrantService;
       const botMail = yield* BotMailService.BotMailService;
       const botHolds = yield* BotHoldService.BotHoldService;
       const analytics = yield* AnalyticsService.AnalyticsService;
@@ -2789,6 +2791,16 @@ export const layerWsRpc = (
           botWatchers.resume({ botThreadId: input.threadId, name: input.name }),
         [WS_METHODS.botWatcherRemove]: (input) =>
           botWatchers.removeByUser({ botThreadId: input.threadId, name: input.name }),
+        [WS_METHODS.botSecretGrantList]: ({ threadId }) => botSecretGrants.list(threadId),
+        [WS_METHODS.botSecretGrantSet]: (input) =>
+          botSecretGrants.set({
+            botThreadId: input.threadId,
+            name: input.name,
+            hosts: input.hosts,
+            value: input.value,
+          }),
+        [WS_METHODS.botSecretGrantRemove]: (input) =>
+          botSecretGrants.remove({ botThreadId: input.threadId, name: input.name }),
         [WS_METHODS.botHoldList]: ({ threadId }) => botHolds.list(threadId),
         [WS_METHODS.botHoldAllow]: (input) =>
           botHolds.allow({ botThreadId: input.threadId, id: input.id }),

@@ -52,6 +52,7 @@ export * from "./threadTags.ts";
 export * from "./botHolds.ts";
 export * from "./botMail.ts";
 export * from "./botMailInbox.ts";
+export * from "./botSecretGrants.ts";
 export * from "./botWatchers.ts";
 export * from "./bots.ts";
 export * from "./threadTitle.ts";

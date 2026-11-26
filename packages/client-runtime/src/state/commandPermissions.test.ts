@@ -258,6 +258,8 @@ describe("command permissions", () => {
     WS_METHODS.homeSetRepairProject,
     WS_METHODS.botWatcherPause,
     WS_METHODS.botWatcherRemove,
+    WS_METHODS.botSecretGrantSet,
+    WS_METHODS.botSecretGrantRemove,
     WS_METHODS.botHoldReject,
     WS_METHODS.botMailSetMailboxes,
     WS_METHODS.botMailForget,

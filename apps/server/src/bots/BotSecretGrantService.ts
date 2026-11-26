@@ -1,0 +1,397 @@
+import {
+  BOT_SECRET_GRANTS_MAX_PER_BOT,
+  BotSecretGrant,
+  BotSecretGrantError,
+  BotSecretGrantName,
+  type BotSecretGrantListResult,
+  type BotSecretGrantSetInput,
+  IsoDateTime,
+  SecretReference,
+  type ThreadId,
+} from "@t3tools/contracts";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
+import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as Redacted from "effect/Redacted";
+import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
+
+import * as PayloadSigner from "../auth/PayloadSigner.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ServerConfig from "../config.ts";
+import * as BotService from "./BotService.ts";
+
+// Grants live in `<stateDir>/bot-secret-grants.json`, signed with a key in the secret store. The
+// Bot can write its memory folder and its watchers' files, so a grant kept there it could give
+// itself. The file holds names, hosts and a reference, never a value: a stored value lives in the
+// secret store, and a reference is read through the secret provider at each use.
+
+// The newest version this service saved is kept in the secret store, outside the file: a restored
+// older copy is signed correctly and would otherwise be believed.
+const VERSION_SECRET = "bot-secret-grants-version";
+const REJECTED_FILE = /^bot-secret-grants\.json\.rejected\.(\d+)(?:-(\d+))?$/u;
+const MAX_REJECTED_FILES = 5;
+
+const GrantRecord = Schema.Struct({
+  hosts: BotSecretGrant.fields.hosts,
+  value: Schema.Union([
+    Schema.Struct({ type: Schema.Literal("stored") }),
+    Schema.Struct({ type: Schema.Literal("reference"), reference: SecretReference }),
+  ]),
+  lastUsedAt: Schema.optional(IsoDateTime),
+});
+type GrantRecord = typeof GrantRecord.Type;
+
+/** By Bot memory folder, then grant name. */
+const State = Schema.Struct({
+  grants: Schema.Record(Schema.String, Schema.Record(BotSecretGrantName, GrantRecord)),
+  version: Schema.Int,
+});
+type State = typeof State.Type;
+
+// `data` stays the exact text that was signed, so the signature is checked over what was read.
+const SignedFile = Schema.fromJsonString(
+  Schema.Struct({ data: Schema.String, signature: Schema.String }),
+);
+const StateJson = Schema.fromJsonString(State);
+const decodeSignedFile = Schema.decodeEffect(SignedFile);
+const encodeSignedFile = Schema.encodeEffect(SignedFile);
+const decodeState = Schema.decodeEffect(StateJson);
+const encodeState = Schema.encodeEffect(StateJson);
+
+interface Started {
+  readonly state: State;
+  /** False when the file could not be read: this run then keeps its grants in memory only. */
+  readonly writable: boolean;
+  readonly trust: BotSecretGrantListResult["approvals"];
+}
+
+const empty = (version: number): State => ({ grants: {}, version });
+
+// `hasOwn`: a caller's name may be `constructor`, which a plain lookup finds on the prototype.
+const recordIn = (state: State, folder: string, name: string): GrantRecord | undefined => {
+  const records = Object.hasOwn(state.grants, folder) ? state.grants[folder] : undefined;
+  return records !== undefined && Object.hasOwn(records, name) ? records[name] : undefined;
+};
+
+const encodeBytes = (text: string) => new TextEncoder().encode(text);
+const decodeBytes = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+
+export class BotSecretGrantService extends Context.Service<
+  BotSecretGrantService,
+  {
+    /** A Bot's grants, without their values. `unverified`: the saved file failed its signature check at start. */
+    readonly list: (botThreadId: ThreadId) => Effect.Effect<BotSecretGrantListResult>;
+    /** The user gives a Bot a secret, or replaces what it was given under that name. */
+    readonly set: (input: {
+      readonly botThreadId: ThreadId;
+      readonly name: BotSecretGrantName;
+      readonly hosts: BotSecretGrant["hosts"];
+      readonly value: BotSecretGrantSetInput["value"];
+    }) => Effect.Effect<void, BotSecretGrantError>;
+    /** The user takes a grant back, with its stored value. */
+    readonly remove: (input: {
+      readonly botThreadId: ThreadId;
+      readonly name: string;
+    }) => Effect.Effect<void, BotSecretGrantError>;
+    /**
+     * The value for a run, only when the grant covers every host the run names. For the server's
+     * own use: no RPC or tool reaches it, and a miss says one fixed reason and nothing of the value.
+     */
+    readonly resolve: (input: {
+      readonly botThreadId: ThreadId;
+      readonly name: string;
+      readonly hosts: ReadonlyArray<string>;
+    }) => Effect.Effect<
+      | { readonly _tag: "Ok"; readonly value: Redacted.Redacted<string> }
+      | {
+          readonly _tag: "Missing";
+          readonly reason: "not granted" | "host not covered" | "unreadable";
+        }
+    >;
+  }
+>()("t3/bots/BotSecretGrantService") {}
+
+const make = Effect.gen(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const config = yield* ServerConfig.ServerConfig;
+  const bots = yield* BotService.BotService;
+  const secrets = yield* ServerSecretStore.ServerSecretStore;
+  const resolver = yield* SecretResolver.SecretResolver;
+  const signer = yield* PayloadSigner.make("bot-secret-grants-key");
+  const statePath = path.join(config.stateDir, "bot-secret-grants.json");
+  const locked = (yield* Semaphore.make(1)).withPermits(1);
+
+  const rejectedAt = (at: number, copy: number) =>
+    `${statePath}.rejected.${at}${copy === 0 ? "" : `-${copy}`}`;
+
+  const verifiedLoad = Effect.gen(function* () {
+    const lastVersion = Option.match(yield* secrets.get(VERSION_SECRET), {
+      onNone: () => 0,
+      onSome: (value) => Number.parseInt(decodeBytes(value), 10),
+    });
+    if (!Number.isSafeInteger(lastVersion) || lastVersion < 0) return yield* Effect.fail("version");
+    const text = yield* fileSystem.readFileString(statePath).pipe(
+      Effect.catchIf(
+        (cause) => cause._tag === "PlatformError" && cause.reason._tag === "NotFound",
+        () => Effect.undefined,
+      ),
+    );
+    const rejected = (reason: string) => ({ state: empty(lastVersion), reason });
+    if (text === undefined) return { state: empty(lastVersion), reason: undefined };
+    // What was read but is not a signed state will not become one by waiting. A read, the secret
+    // store or the key that fail may pass, and are left to the caller.
+    const signed = yield* decodeSignedFile(text).pipe(
+      Effect.catchIf(Schema.isSchemaError, () => Effect.undefined),
+    );
+    if (signed === undefined) return rejected("is not a signed file");
+    if (!(yield* signer.verify(signed.data, signed.signature))) {
+      return rejected("failed its signature");
+    }
+    const decoded = yield* decodeState(signed.data).pipe(
+      Effect.catchIf(Schema.isSchemaError, () => Effect.undefined),
+    );
+    if (decoded === undefined) return rejected("is not a state");
+    return decoded.version >= lastVersion
+      ? { state: decoded, reason: undefined }
+      : rejected("is older than the last save");
+  });
+
+  /** Moves the file to `bot-secret-grants.json.rejected.<time>`, never over an earlier one, and keeps the newest few. */
+  const setAsideRejected = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    let target = rejectedAt(now, 0);
+    for (let copy = 1; yield* fileSystem.exists(target); copy += 1) target = rejectedAt(now, copy);
+    yield* fileSystem.rename(statePath, target);
+    yield* fileSystem.readDirectory(config.stateDir).pipe(
+      Effect.flatMap((names) => {
+        const newestFirst = names
+          .flatMap((name) => {
+            const match = REJECTED_FILE.exec(name);
+            return match === null
+              ? []
+              : [{ name, at: Number(match[1]), copy: Number(match[2] ?? 0) }];
+          })
+          .toSorted((a, b) => b.at - a.at || b.copy - a.copy);
+        return Effect.forEach(
+          newestFirst.slice(MAX_REJECTED_FILES),
+          ({ name }) => fileSystem.remove(path.join(config.stateDir, name)),
+          { discard: true },
+        );
+      }),
+      Effect.catch((cause) =>
+        Effect.logWarning("Older rejected secret grants could not be removed.", { cause }),
+      ),
+    );
+  });
+
+  // A file that cannot be vouched for is dropped, and the count goes on from the newest one, so
+  // later saves are newer; it is moved aside first so a later save cannot write over it. A file
+  // or secret that could not be read is not evidence of anything: it is left as it is, and this
+  // run keeps its grants in memory. Stored values are never touched either way.
+  const initial = yield* verifiedLoad.pipe(
+    Effect.flatMap((loaded) =>
+      loaded.reason === undefined
+        ? Effect.succeed<Started>({ state: loaded.state, writable: true, trust: "ok" })
+        : Effect.logWarning(
+            `Secret grants ${loaded.reason}; they were set aside and the service starts without them.`,
+          ).pipe(
+            Effect.andThen(setAsideRejected),
+            Effect.as<Started>({ state: loaded.state, writable: true, trust: "unverified" }),
+          ),
+    ),
+    Effect.catch((cause) =>
+      Effect.logWarning(
+        "Secret grants could not be read or set aside; they were left as they are and this run keeps none on disk.",
+        { cause },
+      ).pipe(Effect.as<Started>({ state: empty(0), writable: false, trust: "ok" })),
+    ),
+  );
+  const state = yield* Ref.make(initial.state);
+
+  /** Saves the grants of every Bot with `name`'s record replaced (none removes it). */
+  const commit = Effect.fn("BotSecretGrantService.commit")(
+    function* (folder: string, name: string, record: GrantRecord | undefined) {
+      const current = yield* Ref.get(state);
+      const others = Object.entries(current.grants[folder] ?? {}).filter(([key]) => key !== name);
+      const names = Object.fromEntries(record === undefined ? others : [...others, [name, record]]);
+      const grants = Object.fromEntries(
+        Object.entries({ ...current.grants, [folder]: names }).filter(
+          ([, entries]) => Object.keys(entries).length > 0,
+        ),
+      );
+      const next: State = { grants, version: current.version + 1 };
+      if (initial.writable) {
+        const data = yield* encodeState(next);
+        const text = yield* encodeSignedFile({ data, signature: yield* signer.sign(data) });
+        // Renamed into place, so a crash cannot leave a half-written file that reads as no grants.
+        const temporary = `${statePath}.tmp`;
+        yield* fileSystem.makeDirectory(config.stateDir, { recursive: true });
+        yield* fileSystem.writeFileString(temporary, text, { mode: 0o600 });
+        yield* fileSystem.rename(temporary, statePath);
+        // After the file, so a crash between them leaves the file newer than the count, never older.
+        yield* secrets
+          .set(VERSION_SECRET, encodeBytes(String(next.version)))
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Secret grants version could not be kept.", { cause }),
+            ),
+          );
+      }
+      yield* Ref.set(state, next);
+    },
+    // Uninterruptible: a stop between the rename and the Ref must not leave the file ahead of memory.
+    Effect.uninterruptible,
+  );
+
+  // The folder holds `[A-Za-z0-9_~-]` and a grant name has no `-`, so no two grants share a name.
+  const storedSecretName = (folder: string, name: string) => `bot-grant-${folder}-${name}`;
+
+  const failure = (
+    threadId: ThreadId,
+    name: string | undefined,
+    reason: BotSecretGrantError["reason"],
+  ) =>
+    new BotSecretGrantError({
+      threadId,
+      ...(name === undefined ? {} : { grant: name }),
+      reason,
+    });
+  const ioError = (threadId: ThreadId, name: string) => (cause: unknown) =>
+    new BotSecretGrantError({ threadId, grant: name, reason: "io", cause });
+
+  const list: BotSecretGrantService["Service"]["list"] = Effect.fn("BotSecretGrantService.list")(
+    function* (botThreadId) {
+      const records =
+        (yield* Ref.get(state)).grants[BotService.memoryFolderName(botThreadId)] ?? {};
+      return {
+        grants: Object.entries(records)
+          .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+          .map(([name, { hosts, value, lastUsedAt }]) => ({
+            name,
+            hosts,
+            source: value.type,
+            ...(lastUsedAt === undefined ? {} : { lastUsedAt }),
+          })),
+        approvals: initial.trust,
+      };
+    },
+  );
+
+  const set: BotSecretGrantService["Service"]["set"] = Effect.fn("BotSecretGrantService.set")(
+    function* ({ botThreadId, name, hosts, value }) {
+      if (!(yield* bots.isBot(botThreadId))) return yield* failure(botThreadId, name, "not_a_bot");
+      const secret = value.type === "stored" ? Redacted.value(value.secret) : undefined;
+      if (secret !== undefined && secret.trim() === "") {
+        return yield* failure(botThreadId, name, "invalid");
+      }
+      const folder = BotService.memoryFolderName(botThreadId);
+      const valueName = storedSecretName(folder, name);
+      yield* Effect.gen(function* () {
+        const current = yield* Ref.get(state);
+        const existing = recordIn(current, folder, name);
+        if (
+          existing === undefined &&
+          Object.keys(current.grants[folder] ?? {}).length >= BOT_SECRET_GRANTS_MAX_PER_BOT
+        ) {
+          return yield* failure(botThreadId, name, "limit");
+        }
+        if (secret !== undefined) {
+          yield* secrets
+            .set(valueName, encodeBytes(secret))
+            .pipe(Effect.mapError(ioError(botThreadId, name)));
+        }
+        // Replaced, so what a Bot was last given does not carry its time of use to the new value.
+        yield* commit(folder, name, {
+          hosts: [...new Set(hosts)],
+          value:
+            value.type === "stored"
+              ? { type: "stored" }
+              : { type: "reference", reference: value.reference },
+        }).pipe(
+          // A new value under the old hosts, or none saved at all, must not be left to resolve.
+          Effect.tapError(() =>
+            secret === undefined ? Effect.void : Effect.ignore(secrets.remove(valueName)),
+          ),
+          Effect.mapError(ioError(botThreadId, name)),
+        );
+        if (value.type === "reference" && existing?.value.type === "stored") {
+          yield* secrets
+            .remove(valueName)
+            .pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("A replaced stored secret could not be removed.", { cause }),
+              ),
+            );
+        }
+      }).pipe(locked);
+    },
+  );
+
+  const remove: BotSecretGrantService["Service"]["remove"] = Effect.fn(
+    "BotSecretGrantService.remove",
+  )(function* ({ botThreadId, name }) {
+    const folder = BotService.memoryFolderName(botThreadId);
+    yield* Effect.gen(function* () {
+      const existing = recordIn(yield* Ref.get(state), folder, name);
+      if (existing === undefined) return yield* failure(botThreadId, name, "not_found");
+      // The value first: a failure leaves a grant that resolves to nothing, which a retry finishes.
+      yield* secrets
+        .remove(storedSecretName(folder, name))
+        .pipe(Effect.mapError(ioError(botThreadId, name)));
+      yield* commit(folder, name, undefined).pipe(Effect.mapError(ioError(botThreadId, name)));
+    }).pipe(locked);
+  });
+
+  const readValue = (folder: string, name: string, record: GrantRecord) =>
+    record.value.type === "stored"
+      ? secrets.get(storedSecretName(folder, name)).pipe(
+          Effect.map(Option.map(decodeBytes)),
+          Effect.map(Option.getOrUndefined),
+          Effect.catch((cause) =>
+            Effect.logWarning("A stored secret grant could not be read.", { cause }).pipe(
+              Effect.as(undefined),
+            ),
+          ),
+        )
+      : resolver.read([record.value.reference]).pipe(Effect.map(([read]) => read));
+
+  const resolve: BotSecretGrantService["Service"]["resolve"] = Effect.fn(
+    "BotSecretGrantService.resolve",
+  )(function* ({ botThreadId, name, hosts }) {
+    const folder = BotService.memoryFolderName(botThreadId);
+    return yield* Effect.gen(function* () {
+      const record = recordIn(yield* Ref.get(state), folder, name);
+      if (record === undefined) return { _tag: "Missing", reason: "not granted" } as const;
+      if (hosts.length === 0 || !hosts.every((host) => record.hosts.includes(host))) {
+        return { _tag: "Missing", reason: "host not covered" } as const;
+      }
+      const value = yield* readValue(folder, name, record);
+      if (value === undefined || value.trim() === "") {
+        return { _tag: "Missing", reason: "unreadable" } as const;
+      }
+      // The time of use is for the user's list: a save that fails does not hold back the run.
+      yield* commit(folder, name, {
+        ...record,
+        lastUsedAt: DateTime.formatIso(yield* DateTime.now),
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("The time a secret grant was used could not be saved.", { cause }),
+        ),
+      );
+      return { _tag: "Ok", value: Redacted.make(value) } as const;
+    }).pipe(locked);
+  });
+
+  return BotSecretGrantService.of({ list, set, remove, resolve });
+});
+
+export const layer = Layer.effect(BotSecretGrantService, make);

@@ -80,6 +80,10 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // These stop code and run nothing new.
   [WS_METHODS.botWatcherPause]: AuthOrchestrationOperateScope,
   [WS_METHODS.botWatcherRemove]: AuthOrchestrationOperateScope,
+  // Grants are per host and used only by reviewed watchers, so giving or taking one back is held
+  // to the same scope as pausing a watcher.
+  [WS_METHODS.botSecretGrantSet]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botSecretGrantRemove]: AuthOrchestrationOperateScope,
   // Allowing lets a call run that can start code, as approving a watcher does; rejecting runs nothing.
   [WS_METHODS.botHoldAllow]: AuthTerminalOperateScope,
   [WS_METHODS.botHoldReject]: AuthOrchestrationOperateScope,

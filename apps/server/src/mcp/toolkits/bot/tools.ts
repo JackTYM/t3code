@@ -5,6 +5,8 @@ import {
   BOT_WATCHER_MIN_INTERVAL_SECONDS,
   BOT_WATCHER_PURPOSE_MAX_CHARS,
   BOT_WATCHER_SOURCE_MAX_BYTES,
+  BotSecretGrant,
+  BotSecretGrantName,
   BotWatch,
   BotWatcherMode,
   BotWatcherName,
@@ -20,6 +22,7 @@ import * as Schema from "effect/Schema";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import * as BotMailService from "../../../bots/BotMailService.ts";
+import * as BotSecretGrantService from "../../../bots/BotSecretGrantService.ts";
 import * as BotService from "../../../bots/BotService.ts";
 import * as RepairService from "../../../bots/RepairService.ts";
 import * as WatcherService from "../../../bots/WatcherService.ts";
@@ -40,6 +43,7 @@ const shared = {
     BotService.BotService,
     BotMailService.BotMailService,
     WatcherService.WatcherService,
+    BotSecretGrantService.BotSecretGrantService,
     RepairService.RepairService,
   ],
 };
@@ -264,6 +268,24 @@ const WatcherList = Tool.make("t3_bot_watcher_list", {
   .annotate(Tool.OpenWorld, false)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromNonBots);
 
+// Setting, removing and reading a grant's value are the user's alone: no tool does any of them.
+const SecretGrantsList = Tool.make("t3_bot_secret_grants_list", {
+  ...shared,
+  description:
+    "List the secrets the user has let your scripts use: each one's name and the hosts it is limited to. You never see a value, and nothing here gives you one. Ask the user to add or remove a grant.",
+  success: Schema.Struct({
+    grants: Schema.Array(
+      Schema.Struct({ name: BotSecretGrantName, hosts: BotSecretGrant.fields.hosts }),
+    ),
+  }),
+})
+  .annotate(Tool.Title, "List secret grants")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromNonBots);
+
 // The Bot's only part in a repair is saying it should start: the server writes the rest. The tool
 // takes no text, so nothing a hostile message says can steer what the crew is asked to do.
 const RepairStart = Tool.make(RepairService.REPAIR_START_TOOL, {
@@ -374,6 +396,7 @@ export const BotToolkit = Toolkit.make(
   WatcherPropose,
   WatcherRemove,
   WatcherList,
+  SecretGrantsList,
   RepairStart,
   MailSearch,
   MailRead,

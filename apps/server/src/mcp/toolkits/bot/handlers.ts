@@ -9,6 +9,7 @@ import {
 import * as Effect from "effect/Effect";
 
 import * as BotMailService from "../../../bots/BotMailService.ts";
+import * as BotSecretGrantService from "../../../bots/BotSecretGrantService.ts";
 import * as BotService from "../../../bots/BotService.ts";
 import * as RepairService from "../../../bots/RepairService.ts";
 import { frameUntrustedText } from "../../../scheduledTasks/webhookTemplate.ts";
@@ -191,6 +192,16 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
       const watchers = yield* WatcherService.WatcherService;
       yield* watchers.remove({ botThreadId: threadId, name }).pipe(Effect.mapError(watcherFailure));
       return { removed: true };
+    }),
+  ),
+  t3_bot_secret_grants_list: McpToolAccess.readsAsCaller(() =>
+    Effect.gen(function* () {
+      const { threadId } = yield* callerBot;
+      const grants = yield* BotSecretGrantService.BotSecretGrantService;
+      // Names and hosts only: the source, the time of use and any reference stay with the user.
+      return {
+        grants: (yield* grants.list(threadId)).grants.map(({ name, hosts }) => ({ name, hosts })),
+      };
     }),
   ),
   t3_bot_watcher_list: McpToolAccess.readsAsCaller(() =>

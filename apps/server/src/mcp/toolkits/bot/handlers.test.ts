@@ -17,6 +17,7 @@ import { Tool } from "effect/ai";
 import * as BotMailService from "../../../bots/BotMailService.ts";
 import * as BotService from "../../../bots/BotService.ts";
 import * as RepairService from "../../../bots/RepairService.ts";
+import * as BotSecretGrantService from "../../../bots/BotSecretGrantService.ts";
 import * as WatcherService from "../../../bots/WatcherService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -101,6 +102,7 @@ const run = (
         isBot: (threadId) => Effect.succeed(threadId === BOT),
       }),
       Layer.mock(WatcherService.WatcherService)({}),
+      Layer.mock(BotSecretGrantService.BotSecretGrantService)({}),
       Layer.mock(RepairService.RepairService)({
         startRepair: (input) =>
           Effect.suspend(() => {

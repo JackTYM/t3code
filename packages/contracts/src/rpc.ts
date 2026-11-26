@@ -216,6 +216,13 @@ import {
   BotTasksReadResult,
 } from "./bots.ts";
 import {
+  BotSecretGrantError,
+  BotSecretGrantListInput,
+  BotSecretGrantListResult,
+  BotSecretGrantRemoveInput,
+  BotSecretGrantSetInput,
+} from "./botSecretGrants.ts";
+import {
   BotWatcherDryRunInput,
   BotWatcherError,
   BotWatcherListInput,
@@ -613,6 +620,9 @@ export const WS_METHODS = {
   botWatcherPause: "botWatcher.pause",
   botWatcherResume: "botWatcher.resume",
   botWatcherRemove: "botWatcher.remove",
+  botSecretGrantList: "botSecretGrant.list",
+  botSecretGrantSet: "botSecretGrant.set",
+  botSecretGrantRemove: "botSecretGrant.remove",
   botHoldList: "botHold.list",
   botHoldAllow: "botHold.allow",
   botHoldReject: "botHold.reject",
@@ -2086,6 +2096,24 @@ const WsBotWatcherRemoveRpc = Rpc.make(WS_METHODS.botWatcherRemove, {
   error: botWatcherFailure,
 });
 
+const botSecretGrantFailure = Schema.Union([BotSecretGrantError, EnvironmentAuthorizationError]);
+
+const WsBotSecretGrantListRpc = Rpc.make(WS_METHODS.botSecretGrantList, {
+  payload: BotSecretGrantListInput,
+  success: BotSecretGrantListResult,
+  error: botSecretGrantFailure,
+});
+
+const WsBotSecretGrantSetRpc = Rpc.make(WS_METHODS.botSecretGrantSet, {
+  payload: BotSecretGrantSetInput,
+  error: botSecretGrantFailure,
+});
+
+const WsBotSecretGrantRemoveRpc = Rpc.make(WS_METHODS.botSecretGrantRemove, {
+  payload: BotSecretGrantRemoveInput,
+  error: botSecretGrantFailure,
+});
+
 const botHoldFailure = Schema.Union([BotHoldError, EnvironmentAuthorizationError]);
 
 const WsBotHoldListRpc = Rpc.make(WS_METHODS.botHoldList, {
@@ -3040,6 +3068,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotWatcherPauseRpc,
   WsBotWatcherResumeRpc,
   WsBotWatcherRemoveRpc,
+  WsBotSecretGrantListRpc,
+  WsBotSecretGrantSetRpc,
+  WsBotSecretGrantRemoveRpc,
   WsBotHoldListRpc,
   WsBotHoldAllowRpc,
   WsBotHoldRejectRpc,

@@ -65,6 +65,7 @@ import * as BotHoldService from "../bots/BotHoldService.ts";
 import * as BotMailService from "../bots/BotMailService.ts";
 import * as RepairMergeGuard from "../bots/RepairMergeGuard.ts";
 import * as RepairService from "../bots/RepairService.ts";
+import * as BotSecretGrantService from "../bots/BotSecretGrantService.ts";
 import * as WatcherService from "../bots/WatcherService.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -2467,6 +2468,22 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
         ),
         Layer.provide(Layer.mock(RepairService.RepairService)({})),
         Layer.provide(
+          Layer.mock(BotSecretGrantService.BotSecretGrantService)({
+            list: () =>
+              Effect.succeed({
+                approvals: "ok" as const,
+                grants: [
+                  {
+                    name: "GITHUB_TOKEN",
+                    hosts: ["api.github.com"],
+                    source: "reference" as const,
+                    lastUsedAt: "2026-11-26T00:00:00.000Z",
+                  },
+                ],
+              }),
+          }),
+        ),
+        Layer.provide(
           Layer.mock(WatcherService.WatcherService)({
             list: () =>
               Effect.succeed({
@@ -2569,6 +2586,7 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
         "t3_bot_notes_write",
         "t3_bot_preferences_append",
         "t3_bot_repair_start",
+        "t3_bot_secret_grants_list",
         "t3_bot_tasks_write",
         "t3_bot_watch_add",
         "t3_bot_watch_remove",
@@ -2643,6 +2661,14 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
       ).toBeUndefined();
       const refused = yield* plain.call("t3_bot_memory_read", {});
       expect(refused.result?.structuredContent).toBeUndefined();
+
+      // A Bot sees which secrets it may use and for which hosts, and nothing of where they come from.
+      expect((yield* bot.call("t3_bot_secret_grants_list", {})).result?.structuredContent).toEqual({
+        grants: [{ name: "GITHUB_TOKEN", hosts: ["api.github.com"] }],
+      });
+      expect(
+        (yield* plain.call("t3_bot_secret_grants_list", {})).result?.structuredContent,
+      ).toBeUndefined();
 
       // A listing says where each watcher stands, returns the Bot's own source to re-read, and
       // shows the reviewer's verdicts without the reasons: those are the user's, and the Bot is
