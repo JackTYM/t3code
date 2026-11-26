@@ -34,6 +34,9 @@ in the same project with a summary of the thread, and that thread becomes its fi
   not answer, and moving one needs a **Run once** there first.
   A count on the **Bot** button shows how many watchers need you; it updates when you return to the
   window, close the popover or the Bot finishes a turn.
+- A Bot can switch itself to a stronger model for a task that needs more reasoning; when that turn
+  ends, T3 Code puts it back on the model it was on, unless you changed the model yourself in the
+  meantime. A server restart in between leaves it on the stronger one.
 - Settle or archive a Bot when you are done: its crew go back to the top of the sidebar and it stops
   being woken. Reopen it to take them back.
 

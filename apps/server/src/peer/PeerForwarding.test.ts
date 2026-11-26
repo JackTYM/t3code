@@ -1,4 +1,5 @@
 import * as DocumentText from "../provider/DocumentText.ts";
+import * as BotService from "../bots/BotService.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -247,6 +248,7 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
       Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
       Layer.provide(NodeCrypto.layer),
       Layer.provide(boxThreads(seen, linkSession)),
+      Layer.provide(Layer.mock(BotService.BotService)({})),
       Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
       Layer.provide(Layer.mock(SessionMcpServers.SessionMcpServers)({})),
       Layer.provide(boxLaunches(seen)),
@@ -309,6 +311,7 @@ const makeLaptop = Effect.gen(function* () {
   ).pipe(
     Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provide(Layer.mock(BotService.BotService)({})),
     Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
     Layer.provide(Layer.mock(SessionMcpServers.SessionMcpServers)({})),
     Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),

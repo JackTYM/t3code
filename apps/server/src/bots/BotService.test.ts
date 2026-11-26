@@ -1,12 +1,20 @@
 import { assert, it } from "@effect/vitest";
-import { type MilestoneEvent, MilestoneId, ProjectId, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  type MilestoneEvent,
+  MilestoneId,
+  type ModelSelection,
+  ProjectId,
+  ProviderInstanceId,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import * as ServerConfig from "../config.ts";
 import * as BotService from "./BotService.ts";
-import { makeOrchestration, provideBots } from "./BotTestkit.ts";
+import { makeOrchestration, model, provideBots } from "./BotTestkit.ts";
 
 const bot = { enabled: true, muteChildren: false } as const;
 
@@ -234,3 +242,103 @@ it.effect(
     }).pipe(provideBots(orchestration));
   },
 );
+
+const opus: ModelSelection = { ...model, model: "claude-opus-5-5" };
+const sonnet: ModelSelection = { ...model, model: "claude-sonnet-5-5" };
+const modelCommands = (orchestration: ReturnType<typeof makeOrchestration>) =>
+  orchestration.dispatched.flatMap((command) =>
+    command.type === "thread.model-selection.set" || command.type === "provider.switch"
+      ? [[command.type, command.modelSelection.model] as const]
+      : [],
+  );
+
+/** What the MCP tool does: the thread moves to `after`, then the service is told. */
+const raise = (
+  bots: BotService.BotService["Service"],
+  thread: { modelSelection: ModelSelection; readonly id: ThreadId },
+  after: ModelSelection,
+) =>
+  Effect.suspend(() => {
+    const before = thread.modelSelection;
+    thread.modelSelection = after;
+    return bots.noteOwnModelChange({ threadId: thread.id, before, after });
+  });
+
+it.effect("gives a Bot its usual model back when the turn it raised it in ends", () => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    const bots = yield* BotService.BotService;
+    yield* raise(bots, botThread, opus);
+    // A crew thread settling is not the Bot's own turn ending.
+    yield* bots.handleMilestone(milestone("crew-done", { threadId: "thread:crew" }));
+    assert.deepStrictEqual(botThread.modelSelection, opus);
+
+    yield* bots.handleMilestone(milestone("bot-done", { threadId: "thread:bot" }));
+    assert.deepStrictEqual(botThread.modelSelection, model);
+    assert.deepStrictEqual(modelCommands(orchestration), [
+      ["thread.model-selection.set", model.model],
+    ]);
+
+    // The record is gone: a later turn ending changes nothing.
+    yield* bots.handleMilestone(milestone("bot-done-2", { threadId: "thread:bot" }));
+    assert.lengthOf(modelCommands(orchestration), 1);
+  }).pipe(provideBots(orchestration));
+});
+
+it.effect("keeps the first baseline across a second raise in the same turn", () => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    const bots = yield* BotService.BotService;
+    yield* raise(bots, botThread, sonnet);
+    yield* raise(bots, botThread, opus);
+    yield* bots.handleMilestone(milestone("bot-done", { threadId: "thread:bot" }));
+    assert.deepStrictEqual(botThread.modelSelection, model);
+  }).pipe(provideBots(orchestration));
+});
+
+it.effect("never reverts a model the user chose after the Bot raised its own", () => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    const bots = yield* BotService.BotService;
+    yield* raise(bots, botThread, opus);
+    botThread.modelSelection = sonnet;
+    yield* bots.handleMilestone(milestone("bot-done", { threadId: "thread:bot" }));
+    assert.deepStrictEqual(botThread.modelSelection, sonnet);
+    assert.deepStrictEqual(modelCommands(orchestration), []);
+
+    // The user's pick is the new baseline for the next raise, not the one before it.
+    yield* raise(bots, botThread, opus);
+    botThread.modelSelection = sonnet;
+    yield* raise(bots, botThread, opus);
+    yield* bots.handleMilestone(milestone("bot-done-2", { threadId: "thread:bot" }));
+    assert.deepStrictEqual(botThread.modelSelection, sonnet);
+  }).pipe(provideBots(orchestration));
+});
+
+it.effect("tracks nothing for a thread that is not a Bot", () => {
+  const orchestration = makeOrchestration();
+  const plain = orchestration.addThread("thread:plain");
+  return Effect.gen(function* () {
+    const bots = yield* BotService.BotService;
+    yield* raise(bots, plain, opus);
+    yield* bots.handleMilestone(milestone("plain-done", { threadId: "thread:plain" }));
+    assert.deepStrictEqual(plain.modelSelection, opus);
+    assert.deepStrictEqual(modelCommands(orchestration), []);
+  }).pipe(provideBots(orchestration));
+});
+
+it.effect("switches provider back when the Bot raised across providers", () => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  const codex: ModelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };
+  return Effect.gen(function* () {
+    const bots = yield* BotService.BotService;
+    yield* raise(bots, botThread, codex);
+    yield* bots.handleMilestone(milestone("bot-done", { threadId: "thread:bot" }));
+    assert.deepStrictEqual(botThread.modelSelection, model);
+    assert.deepStrictEqual(modelCommands(orchestration), [["provider.switch", model.model]]);
+  }).pipe(provideBots(orchestration));
+});

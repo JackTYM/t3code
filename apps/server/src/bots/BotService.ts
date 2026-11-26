@@ -16,8 +16,11 @@ import {
   isHomeThreadId,
   MessageId,
   type MilestoneEvent,
+  ModelSelection,
+  type RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import { modelSelectionCommandType } from "@t3tools/shared/model";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -121,7 +124,19 @@ export class BotService extends Context.Service<
      * cannot be established, so the question fails closed.
      */
     readonly startedByWake: (threadId: ThreadId) => Effect.Effect<boolean>;
-    /** Wakes the Bots that `event` is news for: the leader of its crew thread, and its watchers. */
+    /**
+     * Notes that a Bot changed its own thread's model through `t3_thread_configure`, so the server
+     * puts it back on `before` when that turn ends (`handleMilestone`). Not a Bot: nothing is kept.
+     */
+    readonly noteOwnModelChange: (input: {
+      readonly threadId: ThreadId;
+      readonly before: ModelSelection;
+      readonly after: ModelSelection;
+    }) => Effect.Effect<void>;
+    /**
+     * Wakes the Bots that `event` is news for: the leader of its crew thread, and its watchers.
+     * A Bot's own turn ending also gives back a model it raised for that turn.
+     */
     readonly handleMilestone: (event: MilestoneEvent) => Effect.Effect<void>;
     /**
      * Starts a new Bot in the thread's project, seeded with a summary of it, and makes the thread
@@ -159,6 +174,16 @@ export const memoryFolderThreadId = (folder: string): ThreadId | undefined => {
 };
 
 const WAKE_MESSAGE_PREFIX = "bot-wake:";
+
+const sameModel = Schema.toEquivalence(ModelSelection);
+
+/** A model the Bot set for its own thread: the one it had before (`baseline`) and the one it set. */
+interface ModelRaise {
+  readonly baseline: ModelSelection;
+  readonly raised: ModelSelection;
+  /** The run the Bot made the change in, so a settle of an earlier run cannot give it back. */
+  readonly runId: RunId | null;
+}
 
 const WatchesFile = Schema.fromJsonString(
   Schema.Record(Schema.String, Schema.Array(BotWatchSchema)),
@@ -249,6 +274,9 @@ const make = Effect.gen(function* () {
   const watchesRef = yield* Ref.make<ReadonlyMap<ThreadId, ReadonlyArray<BotWatch>>>(
     new Map(Object.entries(initialWatches).map(([id, list]) => [ThreadId.make(id), list])),
   );
+
+  // In memory: a restart forgets it and leaves the thread on the model the Bot set.
+  const raisesRef = yield* Ref.make<ReadonlyMap<ThreadId, ModelRaise>>(new Map());
 
   const ioError = (threadId: ThreadId) => (cause: unknown) =>
     new BotError({ threadId, reason: "io", cause });
@@ -537,10 +565,64 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.orElseSucceed(() => true));
   });
 
+  const noteOwnModelChange: BotService["Service"]["noteOwnModelChange"] = Effect.fn(
+    "BotService.noteOwnModelChange",
+  )(function* ({ threadId, before, after }) {
+    if (!(yield* isBot(threadId))) return;
+    const shell = yield* threads.getThreadShell(threadId).pipe(Effect.orElseSucceed(() => null));
+    const runId = shell?.activeRunId ?? null;
+    yield* Ref.update(raisesRef, (all) => {
+      const next = new Map(all);
+      const held = all.get(threadId);
+      // A second raise in the turn keeps the first baseline, unless the user moved the model between.
+      const baseline =
+        held !== undefined && sameModel(held.raised, before) ? held.baseline : before;
+      if (sameModel(baseline, after)) next.delete(threadId);
+      else next.set(threadId, { baseline, raised: after, runId });
+      return next;
+    });
+  });
+
+  // The record always goes; the model goes back only if it is still the one the Bot set, so a
+  // change the user made meanwhile stands.
+  const giveBackModel = Effect.fn("BotService.giveBackModel")(function* (
+    threadId: ThreadId,
+    runId: RunId,
+    milestoneId: string,
+  ) {
+    const raise = (yield* Ref.get(raisesRef)).get(threadId);
+    if (raise === undefined || (raise.runId !== null && raise.runId !== runId)) return;
+    yield* Ref.update(raisesRef, (all) => {
+      const next = new Map(all);
+      next.delete(threadId);
+      return next;
+    });
+    const shell = yield* threads.getThreadShell(threadId).pipe(Effect.orElseSucceed(() => null));
+    if (
+      shell === null ||
+      shell.deletedAt !== null ||
+      shell.archivedAt !== null ||
+      !sameModel(shell.modelSelection, raise.raised)
+    ) {
+      return;
+    }
+    yield* threads.dispatch({
+      type: modelSelectionCommandType(shell.modelSelection.instanceId, raise.baseline),
+      commandId: CommandId.make(`bot-model-give-back:${milestoneId}`),
+      threadId,
+      modelSelection: raise.baseline,
+    });
+  });
+
   // Untraced: runs for every milestone, and most return before doing anything.
   const handleMilestone: BotService["Service"]["handleMilestone"] = Effect.fnUntraced(
     function* (event) {
       if (!WAKING.has(event.type)) return;
+      if (event.type === "thread.run_settled" && event.threadId !== null) {
+        yield* giveBackModel(event.threadId, event.runId, event.id).pipe(
+          Effect.ignoreCause({ log: true }),
+        );
+      }
       const environmentId = yield* environment.getEnvironmentId;
       const ends = new Map<ThreadId, Array<BotWatchTarget>>();
       if (event.threadId !== null) {
@@ -658,6 +740,7 @@ const make = Effect.gen(function* () {
     moveCrew,
     wakeWith,
     startedByWake,
+    noteOwnModelChange,
     handleMilestone,
     start,
   });

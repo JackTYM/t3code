@@ -64,6 +64,31 @@ which `workflow.run_ended` reports for the run. A thread watch ends when the thr
 and a run watch when the run ends; crew are never unwatched. Milestones are local, so wakes cover
 this environment's threads and runs only.
 
+## Model
+
+A Bot runs on a cheap model and may raise its own with `t3_thread_configure` for a task that needs
+more reasoning (its instructions say so). The raise lasts one turn: the server gives the thread back
+the model it had before the Bot's first raise, so the baseline is whatever the thread was on, not a
+stored setting, and it holds for Home and for any thread started as a Bot.
+
+- **Only the Bot's own change is undone.** The tool handler tells
+  [`BotService.noteOwnModelChange`](../../apps/server/src/bots/BotService.ts) when a live Bot sets
+  the model of its own thread (not a subagent's, not another thread's). The record is the baseline
+  and the model the Bot set; a second raise keeps the first baseline, unless the current model is no
+  longer the one the Bot set, which means the user changed it and their pick becomes the baseline.
+- **The end of the turn is the Bot's own `thread.run_settled`.** `handleMilestone` receives it from
+  `BotWakeReactor` like any wake, and settles the record for that run: if the thread is still on the
+  model the Bot set, it dispatches the baseline back (`provider.switch` when the provider differs,
+  which a running turn refuses); if the user changed it meanwhile it leaves it. Either way the
+  record is dropped, so a user's own change is never reverted. A queued wake can start the next run
+  before this dispatch lands, so that run may still use the raised model.
+- **Free in a mail-influenced turn.** Raising the Bot's own model never changes permissions and only
+  costs tokens, so [`BotHoldService`](../../apps/server/src/bots/BotHoldService.ts) lets
+  `t3_thread_configure` through when it names no thread or the Bot's own thread and no linked
+  environment. Aimed at any other thread it is held like any other call.
+- **In memory.** A restart drops the record and leaves the thread on the model the Bot set until
+  the user changes it.
+
 ## Mail
 
 A Bot can know about the user's email. A Cloudflare Worker turns each forwarded email into a
@@ -149,8 +174,8 @@ no signal at all.
   it, so a Bot cannot read the child's thread or poll its task from a turn the user typed. In an
   influenced turn the middleware in `McpHttpServer` (`layerBotMailHold`, global, so it sees every
   toolkit's calls) answers any Bot call that is not read-only, not the Bot's own `t3_bot_*` memory
-  tool or `task_cancel`, not a mail reader's start and not a message to its own crew with an error
-  result instead of running it. That is a deny-by-default list, so a tool added later is held
+  tool or `task_cancel`, not `t3_thread_configure` on the Bot's own thread (see Model), not a mail
+  reader's start and not a message to its own crew with an error result instead of running it. That is a deny-by-default list, so a tool added later is held
   until someone decides it is free; anything naming a linked environment is held too. Thread
   launches, other delegations, messages outside the crew, schedules and project changes therefore
   wait for the user. A held call is stored in memory with its arguments (a restart drops it, and

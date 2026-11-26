@@ -152,6 +152,26 @@ it.effect("leaves reads, notes, tasks, the mail reader and crew messages free in
   ),
 );
 
+it.effect("lets a Bot set its own model in that turn but holds it aimed at another thread", () =>
+  run({ startedBy: DIGEST }, (holds) =>
+    Effect.gen(function* () {
+      const model = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
+      for (const params of [{ modelSelection: model }, { threadId: BOT, modelSelection: model }]) {
+        assert.isFalse((yield* holds.check(call("t3_thread_configure", params))).held);
+      }
+      assert.deepEqual((yield* holds.list(BOT)).held, []);
+      for (const params of [
+        { threadId: CREW, modelSelection: model },
+        { threadId: STRANGER, modelSelection: model },
+        { environmentId: "environment:laptop", modelSelection: model },
+        { threadId: BOT, environmentId: "environment:laptop", modelSelection: model },
+      ]) {
+        assert.isTrue((yield* holds.check(call("t3_thread_configure", params))).held);
+      }
+    }),
+  ),
+);
+
 it.effect("holds in the turn a mail reader's report starts, not one an ordinary child's does", () =>
   Effect.gen(function* () {
     const fromReader = yield* run(

@@ -40,7 +40,7 @@ export interface FakeThread {
   readonly id: ThreadId;
   readonly projectId: ProjectId;
   readonly title: string;
-  readonly modelSelection: ModelSelection;
+  modelSelection: ModelSelection;
   readonly runtimeMode: "full-access";
   readonly interactionMode: "default";
   readonly lineage: { readonly parentThreadId: ThreadId | null };
@@ -141,6 +141,9 @@ export const makeOrchestration = () => {
       dispatch: (command) =>
         Effect.sync(() => {
           dispatched.push(command as never);
+          if (command.type === "thread.model-selection.set" || command.type === "provider.switch") {
+            threads.get(command.threadId)!.modelSelection = command.modelSelection;
+          }
           if (command.type === "thread.metadata.update" && command.groupedUnderThreadId) {
             threads.get(command.threadId)!.groupedUnderThreadId = command.groupedUnderThreadId;
           }

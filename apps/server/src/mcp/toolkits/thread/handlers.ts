@@ -21,6 +21,7 @@ import {
   readThread,
   unavailable,
 } from "../../threadAccess.ts";
+import * as BotService from "../../../bots/BotService.ts";
 import * as SessionMcpServers from "../../../mcpServers/SessionMcpServers.ts";
 import type * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
@@ -264,6 +265,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       Effect.gen(function* () {
         const modelSelection = yield* required(input.modelSelection, "modelSelection");
         const {
+          scope,
           threads,
           projection: { thread },
         } = yield* readThread(input.threadId);
@@ -271,6 +273,14 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         const result = yield* threads
           .dispatch({ type, threadId: thread.id, commandId: yield* newCommandId(), modelSelection })
           .pipe(Effect.mapError(dispatchFailure));
+        // A Bot's own change lasts its turn; the server gives the model back when it ends.
+        if (scope.thread?.threadId === thread.id && scope.thread.subagent !== true) {
+          yield* (yield* BotService.BotService).noteOwnModelChange({
+            threadId: thread.id,
+            before: thread.modelSelection,
+            after: modelSelection,
+          });
+        }
         return { sequence: result.sequence };
       }),
     ),

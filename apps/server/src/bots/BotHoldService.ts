@@ -56,6 +56,20 @@ const isBotOwnTool = (tool: string) => tool.startsWith("t3_bot_") || tool === "t
 /** Tools that talk to a thread named by `threadId`, free when that thread is the Bot's crew. */
 const CREW_TOOLS = new Set(["t3_thread_send", "t3_thread_send_attachments", "t3_thread_interrupt"]);
 
+/**
+ * A Bot setting its own thread's model only costs tokens: the tool never changes permissions.
+ * Aimed at any other thread it stays held.
+ */
+const isOwnModelChange = (
+  botThreadId: ThreadId,
+  tool: string,
+  params: Readonly<Record<string, unknown>>,
+  local: EnvironmentId,
+) =>
+  tool === "t3_thread_configure" &&
+  !remoteEnvironment(params, local) &&
+  (params.threadId === undefined || params.threadId === botThreadId);
+
 const summarize = (tool: string, params: Readonly<Record<string, unknown>>) => {
   const title = typeof params.title === "string" ? params.title.replace(/\s+/gu, " ").trim() : "";
   const shown =
@@ -196,7 +210,13 @@ const make = Effect.gen(function* () {
         yield* taint(call.botThreadId);
         return { held: false };
       }
-      if (call.readonly || isBotOwnTool(call.tool)) return { held: false };
+      if (
+        call.readonly ||
+        isBotOwnTool(call.tool) ||
+        isOwnModelChange(call.botThreadId, call.tool, params, call.environmentId)
+      ) {
+        return { held: false };
+      }
       const isInfluenced = yield* influenced(call.botThreadId).pipe(
         Effect.orElseSucceed(() => true),
       );

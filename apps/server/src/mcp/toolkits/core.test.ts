@@ -1,4 +1,5 @@
 import * as AssetSigner from "../../assets/AssetSigner.ts";
+import * as BotService from "../../bots/BotService.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -88,6 +89,7 @@ const decodeThreadSearchResult = Schema.decodeUnknownEffect(
 );
 
 const layerThreadToolkit = McpHttpServer.layerThreadToolkit.pipe(
+  Layer.provide(Layer.mock(BotService.BotService)({})),
   Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
   Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
   Layer.provide(Layer.mock(SessionMcpServers.SessionMcpServers)({})),
@@ -940,6 +942,7 @@ it.effect("search names the calling thread, so an agent can tell its own match a
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+        Layer.provide(Layer.mock(BotService.BotService)({})),
         Layer.provide(Layer.mock(SessionMcpServers.SessionMcpServers)({})),
         Layer.provide(
           Layer.mock(ThreadSearch.ThreadSearch)({
@@ -963,6 +966,71 @@ it.effect("search names the calling thread, so an agent can tell its own match a
       ),
     ),
   ),
+);
+
+const noted: Array<unknown> = [];
+
+it.effect(
+  "a Bot's own model change is noted for the server to give back, another thread's is not",
+  () =>
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const call = (args: Record<string, unknown>) =>
+        server.callTool({ name: "t3_thread_configure", arguments: args }).pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, {
+            ...scope,
+            thread: { ...scope.thread!, bot: true },
+          }),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      const opus = { instanceId: "codex", model: "gpt-5-pro" };
+
+      // Omitting `threadId` is the caller's own thread.
+      expect((yield* call({ modelSelection: opus })).isError).toBe(false);
+      expect((yield* call({ threadId, modelSelection: opus })).isError).toBe(false);
+      expect((yield* call({ threadId: "crew-thread", modelSelection: opus })).isError).toBe(false);
+      expect((yield* call({ threadId })).isError).toBe(false);
+      expect(noted).toEqual([
+        { threadId, before: { instanceId: "codex", model: "gpt-5" }, after: opus },
+        { threadId, before: { instanceId: "codex", model: "gpt-5" }, after: opus },
+      ]);
+    }).pipe(
+      Effect.provide(
+        McpHttpServer.layerThreadToolkit.pipe(
+          Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provide(NodeCrypto.layer),
+          Layer.provide(
+            Layer.mock(BotService.BotService)({
+              noteOwnModelChange: (change) =>
+                Effect.sync(() => {
+                  noted.push(change);
+                }),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: (id) =>
+                Effect.succeed(
+                  McpToolAccessTestkit.liveThreadShell(id, { activeRunId: RunId.make("run:bot") }),
+                ),
+              getProjectThreadRecords: ({ threadId: id }) =>
+                Effect.succeed(
+                  McpToolAccessTestkit.idleThreadProjection(
+                    McpToolAccessTestkit.liveThreadShell(id),
+                  ),
+                ),
+              dispatch: () => Effect.succeed({ sequence: 1 } as never),
+            }),
+          ),
+          Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
+          Layer.provide(Layer.mock(SessionMcpServers.SessionMcpServers)({})),
+          Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+          Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+          Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+          Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+        ),
+      ),
+    ),
 );
 
 it.effect("a read-only client reads threads and is refused every write before it runs", () =>
@@ -1182,6 +1250,7 @@ it.effect.each([
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
+        Layer.provide(Layer.mock(BotService.BotService)({})),
         Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
         Layer.provide(Layer.mock(SessionMcpServers.SessionMcpServers)({})),
         Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
@@ -1222,6 +1291,7 @@ it.effect("run_scheduled_task_now reports why a started run failed to dispatch",
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
+        Layer.provide(Layer.mock(BotService.BotService)({})),
         Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
         Layer.provide(Layer.mock(SessionMcpServers.SessionMcpServers)({})),
         Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
