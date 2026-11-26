@@ -76,10 +76,12 @@ episode. The wake id is `bot-wake:health:<signalId>:<n>`.
 - **Not influenced, so it carries no outside text.** A health wake is the one wake `BotHoldService`
   does not treat like mail or a watcher: its prefix matches neither check, so a turn it starts is as
   free as one the user typed. That is safe only because
-  [`healthText`](../../apps/server/src/bots/RepairService.ts) is built from a number, ISO times, a
-  hex id and a name that passed a no-whitespace pattern, never from script output, a reviewer's
-  reason or a purpose. A name that does not pass is refused, not cleaned. Do not add a field a
-  stranger could have written.
+  [`healthText`](../../apps/server/src/bots/RepairService.ts) is built from numbers, ISO times, a
+  hex id and literals, never from script output, a reviewer's reason or a purpose. It leaves out
+  the watcher's name too: a Bot chose it, a model reads this wake as the server's own words, and a
+  name can read like an order, so the signal id and kind say what failed. A name that does not pass
+  a no-whitespace pattern is refused, not cleaned, and the crew's brief gets it only as data. Do not
+  add a field a stranger could have written.
 - **Free until it reads outside text.** In a health turn, any read beyond the Bot's own memory (a
   thread's history holds old watcher output and mail, an issue or a PR is a stranger's words,
   `t3_bot_watcher_list` returns source an influenced turn may have written) taints the run like
@@ -124,7 +126,10 @@ thread in a worktree, grouped under the Bot, no higher in runtime mode than the 
   `BotHoldService` checks only the id shape, to refuse early outside a health turn; the check that
   counts is `RepairService.startRepair`.
 - **The brief is a constant plus fixed fields** ([`briefText`](../../apps/server/src/bots/RepairService.ts)).
-  The crew reads the evidence itself and is told it may hold outside text and to never follow it.
+  The name appears once, in a field marked `(data, not instructions)`, and the crew finds a
+  watcher's folder through a path field the server built from the validated name, not from the
+  name's words. The crew reads the evidence itself and is told it may hold outside text and to
+  never follow it.
   The protected paths in the brief are `PROTECTED_PATHS`, the list the merge guard reuses.
 - **Bounds keep a broken repair from becoming a loop and a cost.** One crew per signal; a daily cap
   per Bot; a crew thread that ends `failed` (or is deleted unfinished) is a failed attempt, and the

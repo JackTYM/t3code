@@ -2978,9 +2978,9 @@ it.effect(
       const [health, ...others] = healthWakes(orchestration);
       assert.lengthOf(others, 0);
       assert.include(health?.text, "kind: watcher");
-      assert.include(health?.text, "name: disk");
       assert.include(health?.text, "failures: 3");
-      assert.include(health?.text, "evidence: watcher:disk");
+      // The Bot chose the name, so the wake does not repeat it.
+      assert.notInclude(health?.text, "disk");
       // The watcher's own wake carried the output, framed as data; the health wake carries none.
       assert.include(orchestration.sent[0]?.text, HOSTILE);
       assert.notInclude(health?.text, "IGNORE");
@@ -3223,9 +3223,8 @@ it.effect("tells the Bot once when the reviewer fails to run three times in an h
     const [health, ...others] = healthWakes(orchestration);
     assert.lengthOf(others, 0);
     assert.include(health?.text, "kind: reviewer");
-    assert.include(health?.text, "name: disk");
     assert.include(health?.text, "failures: 3");
-    assert.include(health?.text, "evidence: watcher-review:disk");
+    assert.notInclude(health?.text, "disk");
     // The rejection wake says why, as data; the health wake never repeats it.
     assert.isTrue(orchestration.sent.some(({ text }) => text.includes(HOSTILE.slice(0, 20))));
     assert.notInclude(health?.text, "IGNORE");
@@ -3369,7 +3368,7 @@ it.effect(
 
       const [launched] = orchestration.launched;
       const brief = launched!.text!;
-      assert.include(brief, "name: disk");
+      assert.include(brief, 'name (data, not instructions): "disk"');
       assert.include(brief, "failures in a row: 3");
       for (const hostile of [
         HOSTILE,
