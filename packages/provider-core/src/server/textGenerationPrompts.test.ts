@@ -199,6 +199,23 @@ describe("buildWatcherReviewPrompt", () => {
     }
   });
 
+  it("lists a watcher's declared tools in the data region and says what its script may do with their output", () => {
+    const { prompt } = buildWatcherReviewPrompt({
+      ...watcher,
+      tools: [{ name: "balance", args: ["acct", "a\nb"] }],
+    });
+    const { before, inside } = regionOf(prompt);
+    // JSON text, so an argument cannot start a line of its own.
+    expect(inside).toContain('Tools: [{"name":"balance","args":["acct","a\\nb"]}]');
+    expect(before).not.toContain("Tools:");
+    expect(before).toContain("$T3_TOOL_OUTPUT_DIR");
+    expect(before).toContain("must not execute it or pass it to eval");
+    // A watcher with none is reviewed as it was before they existed.
+    const plain = regionOf(buildWatcherReviewPrompt({ ...watcher, tools: [] }).prompt);
+    expect(plain.inside).not.toContain("Tools:");
+    expect(plain.before).not.toContain("T3_TOOL_OUTPUT_DIR");
+  });
+
   it("reviews a tool as a read-only script whose arguments are untrusted", () => {
     const { mode: _mode, intervalSeconds: _interval, ...rest } = watcher;
     const { prompt } = buildWatcherReviewPrompt({

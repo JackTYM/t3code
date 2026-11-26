@@ -134,6 +134,8 @@ export interface WatcherReviewInput {
   /** Names of the granted secrets the script receives, and the hosts they may go to; never values. */
   secrets?: ReadonlyArray<string> | undefined;
   hosts?: ReadonlyArray<string> | undefined;
+  /** A watcher only: the tools the server runs before the script, with their fixed arguments. */
+  tools?: ReadonlyArray<{ name: string; args: ReadonlyArray<string> }> | undefined;
   source: string;
   previousSource?: string | undefined;
   /** Names the review's data markers; random per call, so a script cannot quote them. */

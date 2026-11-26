@@ -17,6 +17,8 @@ export const BOT_WATCHER_MIN_INTERVAL_SECONDS = 60;
 export const BOT_WATCHER_EXPECT_MAX_CHARS = 500;
 /** Granted secrets one watcher version may declare. */
 export const BOT_WATCHER_MAX_SECRETS = 4;
+/** Tools one watcher version may declare. */
+export const BOT_WATCHER_MAX_TOOLS = 4;
 
 /**
  * A tool is a watcher's read-only sibling: the same reviewed, approved, versioned script, run on
@@ -32,6 +34,18 @@ export const BotWatcherName = Schema.String.check(
   Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u),
 );
 export type BotWatcherName = typeof BotWatcherName.Type;
+
+/** A tool a watcher has the server run before its script, with the fixed arguments it is run with. */
+export const BotWatcherToolRef = Schema.Struct({
+  name: BotWatcherName,
+  args: Schema.Array(
+    Schema.String.check(
+      Schema.isMaxLength(BOT_TOOL_ARG_MAX_CHARS),
+      Schema.isPattern(/^[^\u0000]*$/u),
+    ),
+  ).check(Schema.isMaxLength(BOT_TOOL_MAX_ARGS)),
+});
+export type BotWatcherToolRef = typeof BotWatcherToolRef.Type;
 
 export const BotWatcherRuntime = Schema.Literals(["node", "sh"]);
 export type BotWatcherRuntime = typeof BotWatcherRuntime.Type;
@@ -126,7 +140,7 @@ export const BotWatcher = Schema.Struct({
   hash: Schema.String,
   approvedHash: Schema.optional(Schema.String),
   pendingHash: Schema.optional(Schema.String),
-  /** `runtime`, `source`, `intervalSeconds`, `expect`, `mode`, `purpose`, `usage`, `secrets`, `hosts` and `requestedRunsOn` are absent when that version's files are missing or changed on disk (`invalid`). */
+  /** `runtime`, `source`, `intervalSeconds`, `expect`, `mode`, `purpose`, `usage`, `secrets`, `hosts`, `tools` and `requestedRunsOn` are absent when that version's files are missing or changed on disk (`invalid`). */
   runtime: Schema.optional(BotWatcherRuntime),
   source: Schema.optional(Schema.String),
   intervalSeconds: Schema.optional(Schema.Int),
@@ -143,6 +157,10 @@ export const BotWatcher = Schema.Struct({
   /** The hosts those secrets may be sent to, sorted. */
   hosts: Schema.optional(
     Schema.Array(BotSecretGrantHost).check(Schema.isMaxLength(BOT_SECRET_GRANT_MAX_HOSTS)),
+  ),
+  /** A watcher only: the tools the server runs before its script, sorted by name. */
+  tools: Schema.optional(
+    Schema.Array(BotWatcherToolRef).check(Schema.isMaxLength(BOT_WATCHER_MAX_TOOLS)),
   ),
   /** Where the Bot asked it to run. The user's choice is `runsOn`. */
   requestedRunsOn: Schema.optional(BotWatcherRunsOn),

@@ -560,6 +560,8 @@ export interface WatcherReviewPromptInput {
   secrets?: ReadonlyArray<string> | undefined;
   /** The hosts those secrets may be sent to. */
   hosts?: ReadonlyArray<string> | undefined;
+  /** A watcher only: tools the server runs before the script, with their fixed arguments. */
+  tools?: ReadonlyArray<{ name: string; args: ReadonlyArray<string> }> | undefined;
   source: string;
   previousSource?: string | undefined;
   /** Unique to this review and unknown to whoever wrote the script; it names the data region's markers. */
@@ -575,7 +577,11 @@ const markersOf = (tag: string) => ({
 });
 
 // This policy is the security boundary for unattended watcher scripts; change it deliberately.
-const watcherReviewPolicy = (markers: ReturnType<typeof markersOf>, kind: "watch" | "tool") =>
+const watcherReviewPolicy = (
+  markers: ReturnType<typeof markersOf>,
+  kind: "watch" | "tool",
+  hasTools: boolean,
+) =>
   `${
     kind === "tool"
       ? `You review a script that an assistant wrote as a read-only TOOL: it looks one thing up in one outside source (mail, calendar, GitHub, chat) and prints the answer. The assistant calls it on demand, whenever it likes, with up to 8 arguments that arrive as separate command-line arguments after the script's own path ($1, $2 ... in sh, process.argv.slice(2) in Node). There is no timer, and the script is not shown to a user before each call. It runs on the user's own computer, unsandboxed, as the user. Decide whether it is safe to run unattended. The arguments are untrusted: the assistant may have copied them from a hostile message.`
@@ -589,7 +595,13 @@ Do not reject a script for being imprecise, inefficient, buggy, incomplete or on
 A script may run the standard command-line client for the source named in its purpose (for example gh for GitHub, or curl for that service's documented read-only HTTP API), and that client reading its own saved login from its normal config location is expected: that is not the script reading a credential. Writing item ids, timestamps, cursors and short summaries of what it fetched into $T3_WATCHER_STATE_DIR is fine.
 
 A script whose Secrets are listed below receives each one as an environment variable of that name, which the user granted for the listed Hosts. Using it as a credential for a request to a listed host is expected; for curl that means a header read from standard input or a config file, or an HTTP client library, rather than an argument.
-
+${
+  hasTools
+    ? `
+A script whose Tools are listed below has the server run those tools first and leave their output in $T3_TOOL_OUTPUT_DIR as <name>.out and <name>.exit. Reading those files is expected. Their text comes from outside: the script must not execute it or pass it to eval, run it or part of it as a command, or use it to choose a host or URL; reject a script that does.
+`
+    : ""
+}
 REJECT if it does any of these:
 - Writes, moves or deletes files outside $T3_WATCHER_STATE_DIR and its temp directory.
 - Reads or prints credentials or private files itself (cat, grep, cp or reading ~/.ssh, keychains, browser profiles, .env files, other apps' data, or a client's token file such as ~/.config/gh/hosts.yml), or passes a credential to anything but the client it belongs to.
@@ -642,6 +654,10 @@ export function buildWatcherReviewPrompt(input: WatcherReviewPromptInput) {
     ...(input.hosts === undefined || input.hosts.length === 0
       ? []
       : [`Hosts: ${JSON.stringify(input.hosts)}`]),
+    // JSON text, so nothing in an argument can start a line of its own.
+    ...(input.tools === undefined || input.tools.length === 0
+      ? []
+      : [`Tools: ${JSON.stringify(input.tools)}`]),
     `Script:\n${input.source}`,
     ...(input.previousSource === undefined
       ? []
@@ -654,7 +670,11 @@ export function buildWatcherReviewPrompt(input: WatcherReviewPromptInput) {
 
   return {
     prompt: [
-      watcherReviewPolicy(markers, input.kind ?? "watch"),
+      watcherReviewPolicy(
+        markers,
+        input.kind ?? "watch",
+        input.tools !== undefined && input.tools.length > 0,
+      ),
       [markers.start, ...region, markers.end].join("\n"),
     ].join("\n\n"),
     outputSchema,

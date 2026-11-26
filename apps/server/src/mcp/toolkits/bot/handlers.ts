@@ -259,6 +259,7 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
             usage,
             secrets,
             hosts,
+            tools,
             runsOn,
             approvedHash,
             pendingHash,
@@ -302,6 +303,7 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
                   })),
                 }),
             ...(hosts === undefined ? {} : { hosts }),
+            ...(tools === undefined ? {} : { tools }),
           }),
         ),
       };
