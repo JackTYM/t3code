@@ -1,7 +1,23 @@
 // A form this short would match unrelated text, so only the value itself is hidden below this.
 const ENCODED_FORM_MIN_LENGTH = 8;
 
-const formsOf = (value: string): ReadonlyArray<string> => {
+// Base64 turns 3 bytes into 4 characters, so where a value falls in a longer encoded text
+// (`Basic base64("user:" + value)`) shifts its characters. For each of the 3 shifts, only the
+// characters that depend on the value's own bytes alone are the same wherever it sits.
+const ALIGNED_CORE_MIN_LENGTH = 12;
+const alignedCores = (form: string): ReadonlyArray<string> => {
+  const bytes = Buffer.from(form);
+  return [0, 1, 2].flatMap((shift) => {
+    const shifted = Buffer.concat([Buffer.alloc(shift), bytes]);
+    const from = Math.ceil((8 * shift) / 6);
+    const to = Math.floor((8 * (shift + bytes.length)) / 6);
+    return (["base64", "base64url"] as const)
+      .map((encoding) => shifted.toString(encoding).replace(/=+$/u, "").slice(from, to))
+      .filter((core) => core.length >= ALIGNED_CORE_MIN_LENGTH);
+  });
+};
+
+const computeForms = (value: string): ReadonlyArray<string> => {
   // `encodeURIComponent` throws on a lone surrogate; the original is kept so a script that printed
   // it as it was is still found.
   const wellFormed = value.toWellFormed();
@@ -19,9 +35,22 @@ const formsOf = (value: string): ReadonlyArray<string> => {
             percent,
             percent.replace(/%[0-9A-F]{2}/gu, (match) => match.toLowerCase()),
             JSON.stringify(form).slice(1, -1),
+            ...alignedCores(form),
           ];
         });
   return [...new Set([...plain, ...encoded])];
+};
+
+// A run asks for the same few values again for each output and each state file.
+const FORMS_CACHE_MAX = 64;
+const formsCache = new Map<string, ReadonlyArray<string>>();
+const formsOf = (value: string): ReadonlyArray<string> => {
+  const known = formsCache.get(value);
+  if (known !== undefined) return known;
+  const forms = computeForms(value);
+  if (formsCache.size >= FORMS_CACHE_MAX) formsCache.clear();
+  formsCache.set(value, forms);
+  return forms;
 };
 
 /**

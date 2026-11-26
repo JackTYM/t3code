@@ -72,7 +72,7 @@ const encodeState = Schema.encodeEffect(StateJson);
 
 interface Started {
   readonly state: State;
-  /** False when the file could not be read: this run then keeps its grants in memory only. */
+  /** False when the file or secrets could not be read: nothing is changed until they can be. */
   readonly writable: boolean;
   readonly trust: BotSecretGrantListResult["approvals"];
 }
@@ -197,11 +197,10 @@ const make = Effect.gen(function* () {
     );
   });
 
-  // A file that cannot be vouched for is dropped, and the count goes on from the newest one, so
-  // later saves are newer; it is moved aside first so a later save cannot write over it. A file
-  // or secret that could not be read is not evidence of anything: it is left as it is, and this
-  // run keeps its grants in memory. Stored values are never touched either way.
-  const initial = yield* verifiedLoad.pipe(
+  // A file that cannot be vouched for is moved aside and its grants dropped. A file or secret that
+  // could not be read is evidence of nothing: it is left as it is, no grant is in effect and none
+  // can be changed until a later call reads them. Stored values are never touched.
+  const start = verifiedLoad.pipe(
     Effect.flatMap((loaded) =>
       loaded.reason === undefined
         ? Effect.succeed<Started>({ state: loaded.state, writable: true, trust: "ok" })
@@ -214,14 +213,26 @@ const make = Effect.gen(function* () {
     ),
     Effect.catch((cause) =>
       Effect.logWarning(
-        "Secret grants could not be read or set aside; they were left as they are and this run keeps none on disk.",
+        "Secret grants could not be read or set aside; they were left as they are and none is in effect until they can be read.",
         { cause },
-      ).pipe(Effect.as<Started>({ state: empty(0), writable: false, trust: "ok" })),
+      ).pipe(Effect.as<Started>({ state: empty(0), writable: false, trust: "unreadable" })),
     ),
   );
+  const initial = yield* start;
   const state = yield* Ref.make(initial.state);
+  const readable = yield* Ref.make(initial.writable);
   // `unverified` describes the file found at start: it ends once a good signed file replaces it.
   const trust = yield* Ref.make(initial.trust);
+  /** Reads the grants again when the last read failed; whether they are read now. */
+  const recover = Effect.gen(function* () {
+    if (yield* Ref.get(readable)) return true;
+    const started = yield* start;
+    if (!started.writable) return false;
+    yield* Ref.set(state, started.state);
+    yield* Ref.set(trust, started.trust);
+    yield* Ref.set(readable, true);
+    return true;
+  });
   // Counts changes per grant. A run reads its value without the lock, and a grant changed or
   // removed meanwhile must not be answered from that read.
   const changes = new Map<string, number>();
@@ -241,7 +252,7 @@ const make = Effect.gen(function* () {
         ),
       );
       const next: State = { grants, version: current.version + 1 };
-      if (initial.writable) {
+      if (yield* Ref.get(readable)) {
         const data = yield* encodeState(next);
         const text = yield* encodeSignedFile({ data, signature: yield* signer.sign(data) });
         // Renamed into place, so a crash cannot leave a half-written file that reads as no grants.
@@ -283,6 +294,7 @@ const make = Effect.gen(function* () {
 
   const list: BotSecretGrantService["Service"]["list"] = Effect.fn("BotSecretGrantService.list")(
     function* (botThreadId) {
+      if (!(yield* Ref.get(readable))) yield* locked(recover);
       const records =
         (yield* Ref.get(state)).grants[BotService.memoryFolderName(botThreadId)] ?? {};
       return {
@@ -312,6 +324,7 @@ const make = Effect.gen(function* () {
       const folder = BotService.memoryFolderName(botThreadId);
       const valueName = storedSecretName(folder, name);
       yield* Effect.gen(function* () {
+        if (!(yield* recover)) return yield* failure(botThreadId, name, "unreadable");
         const current = yield* Ref.get(state);
         const existing = recordIn(current, folder, name);
         if (
@@ -372,6 +385,7 @@ const make = Effect.gen(function* () {
   )(function* ({ botThreadId, name }) {
     const folder = BotService.memoryFolderName(botThreadId);
     yield* Effect.gen(function* () {
+      if (!(yield* recover)) return yield* failure(botThreadId, name, "unreadable");
       const existing = recordIn(yield* Ref.get(state), folder, name);
       if (existing === undefined) return yield* failure(botThreadId, name, "not_found");
       noteChange(folder, name);
@@ -399,6 +413,7 @@ const make = Effect.gen(function* () {
   const resolve: BotSecretGrantService["Service"]["resolve"] = Effect.fn(
     "BotSecretGrantService.resolve",
   )(function* ({ botThreadId, name, hosts }) {
+    if (!(yield* Ref.get(readable))) yield* locked(recover);
     const folder = BotService.memoryFolderName(botThreadId);
     // Taken before the record, so a change in between is seen as one.
     const seenChanges = changesOf(folder, name);

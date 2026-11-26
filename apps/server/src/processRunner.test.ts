@@ -132,6 +132,30 @@ describe("runProcess", () => {
     );
   });
 
+  it.effect("refuses, when asked, a command that Windows would hand to the shell", () => {
+    let spawned = 0;
+    const spawner = makeSpawner(() =>
+      Effect.sync(() => {
+        spawned += 1;
+        return makeHandle({ stdout: "" });
+      }),
+    );
+    return runWith(spawner)({
+      command: "sh",
+      args: ["run", "a & calc"],
+      refuseShell: true,
+    }).pipe(
+      Effect.flip,
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.provideService(HostProcess.Environment, { PATH: "C:\\shims", PATHEXT: ".EXE;.CMD" }),
+      Effect.provideService(SpawnExecutableResolution, () => "C:\\shims\\sh.cmd"),
+      Effect.map((error) => {
+        expect(error._tag).toBe("ProcessSpawnError");
+        expect(spawned).toBe(0);
+      }),
+    );
+  });
+
   it.effect("types spawn failures that the platform spawner throws synchronously", () =>
     Effect.gen(function* () {
       // File-valued PATH entries make spawn throw ENOTDIR synchronously, arriving through Effect.callback as a defect.

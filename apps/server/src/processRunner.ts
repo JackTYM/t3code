@@ -36,6 +36,11 @@ export interface ProcessRunInput {
   readonly maxOutputBytes?: number | undefined;
   readonly outputMode?: "error" | "truncate" | undefined;
   readonly truncatedMarker?: string | undefined;
+  /**
+   * Fails to spawn, instead of running through `cmd.exe`, a command that resolves to a Windows
+   * `.cmd` or `.bat` shim: the caller's arguments would be read by a shell.
+   */
+  readonly refuseShell?: boolean | undefined;
   /** Timed-out results discard partial stdout/stderr. */
   readonly timeoutBehavior?: "error" | "timedOutResult" | undefined;
 }
@@ -297,6 +302,10 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
       shell: spawnCommand.shell,
       cause,
     });
+
+  if (input.refuseShell === true && spawnCommand.shell) {
+    return yield* toSpawnError("the command would run through a shell");
+  }
 
   const spawn = spawner
     .spawn(

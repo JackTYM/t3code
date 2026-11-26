@@ -135,9 +135,6 @@ const make = Effect.gen(function* () {
   const repair = yield* RepairService.RepairService;
   const random = yield* SecureRandom.SecureRandom;
   const held = yield* Ref.make<ReadonlyMap<ThreadId, ReadonlyArray<Held>>>(new Map());
-  // Runs that read or started something email shaped after they began. Only a run's own id is
-  // kept, and a Bot's runs are few, so this stays small.
-  const taintedRuns = new Set<string>();
   const readerChildren = new Map<string, boolean>();
 
   const isMailReader = (childThreadId: ThreadId) => {
@@ -184,7 +181,7 @@ const make = Effect.gen(function* () {
   const influenced = Effect.fn("BotHoldService.influenced")(function* (botThreadId: ThreadId) {
     const runId = yield* activeRun(botThreadId);
     if (runId === null) return true;
-    if (taintedRuns.has(runId)) return true;
+    if (yield* bots.isRunTainted(runId)) return true;
     const { runs, subagents } = yield* threads.getThreadRecords(botThreadId, ["runs", "subagents"]);
     const run = runs.find((candidate) => candidate.id === runId);
     if (
@@ -235,7 +232,7 @@ const make = Effect.gen(function* () {
 
   const taint = (botThreadId: ThreadId) =>
     activeRun(botThreadId).pipe(
-      Effect.tap((runId) => Effect.sync(() => runId !== null && taintedRuns.add(runId))),
+      Effect.flatMap((runId) => (runId === null ? Effect.void : bots.noteRunTainted(runId))),
       Effect.ignore,
     );
 

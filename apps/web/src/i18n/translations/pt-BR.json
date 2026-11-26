@@ -13307,5 +13307,9 @@
   "2543655df54b5176": "Active",
   "5e9cac029425bec2": "The Bot writes these. Watchers check on a timer and tools run when the Bot asks. A reviewer model checks each version before it runs; you can run one once, pause or remove it, and move a watcher.",
   "6359ac544d986639": "The saved approvals failed their signature check, so every watcher and tool was dropped. The Bot can propose them again.",
-  "0deb8697b04e8fd9": "The Bot has no watchers or tools yet. Ask it to watch something or look something up and it will propose one."
+  "0deb8697b04e8fd9": "The Bot has no watchers or tools yet. Ask it to watch something or look something up and it will propose one.",
+  "a9c21d14c3224fbf": "Secret grants could not be read",
+  "5d61ea6f30196ad7": "The saved secret grants could not be read, so none of them is in effect for now. Try again in a moment.",
+  "1d9cf94658cc1040": "Saved grants could not be read",
+  "4378ac931b8b2959": "The saved grants could not be read, so none of them is in effect and none can be added or changed until they can. Try again in a moment."
 }

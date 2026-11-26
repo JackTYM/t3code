@@ -5364,16 +5364,23 @@ it.effect("two calls of one tool take turns, and two tools run side by side", ()
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
 
-it.effect("runs at most four tool calls at once, whichever tools they are", () => {
+it.effect("runs at most four tool calls at once, whichever Bots and tools they are", () => {
   const orchestration = makeOrchestration();
-  const botThread = addBot(orchestration, "thread:bot");
+  const bots = ["thread:bot", "thread:bot2", "thread:bot3"].map((id) => addBot(orchestration, id));
   const runner = makeScriptedRunner();
   return Effect.gen(function* () {
-    const names = ["t1", "t2", "t3", "t4", "t5"];
-    for (const name of names) yield* installTool(botThread.id, name);
+    // Two Bots with two calls each fill the four places; the third Bot's call has to wait.
+    const targets = [
+      [bots[0]!, "t1"],
+      [bots[0]!, "t2"],
+      [bots[1]!, "t3"],
+      [bots[1]!, "t4"],
+      [bots[2]!, "t5"],
+    ] as const;
+    for (const [thread, name] of targets) yield* installTool(thread.id, name);
     const gate = yield* makeToolGate(runner);
-    const calls = yield* Effect.forEach(names, (name) =>
-      callTool(botThread.id, name).pipe(Effect.forkChild),
+    const calls = yield* Effect.forEach(targets, ([thread, name]) =>
+      callTool(thread.id, name).pipe(Effect.forkChild),
     );
     for (let call = 0; call < 4; call += 1) yield* Queue.take(gate.started);
     for (let tick = 0; tick < 50; tick += 1) yield* Effect.yieldNow;
@@ -5681,3 +5688,131 @@ it.effect("does not fail a watcher's run for a revision of its tool approved whi
     assert.strictEqual(orchestration.sent.length, 0);
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
+
+// A turn the user typed is as steerable as a wake once it has read outside text (a mail search, a
+// tool's output): the same hostile email could ask for a script with a secret.
+const taintTurn = (thread: ReturnType<typeof addBot>) =>
+  BotService.BotService.pipe(Effect.flatMap((bots) => bots.noteRunTainted(thread.activeRunId!)));
+
+it.effect(
+  "a typed turn that has read outside text cannot create or remove scripts, or widen them",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const runner = makeScriptedRunner();
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+      yield* grantSecret(botThread.id, "LINEAR_KEY", OTHER_SECRET);
+      yield* installWatcher(botThread.id, "gh", declaresGithub);
+      yield* installTool(botThread.id, "status");
+
+      // Clean, a typed turn may create what it likes.
+      const clean = yield* proposeWatcher(botThread.id, "fresh", declaresGithub);
+      assert.isTrue(clean.pending);
+      yield* proposeTool(botThread.id, "fresh-tool", declaresGithub);
+
+      yield* taintTurn(botThread);
+      const refusals = [
+        yield* proposeWatcher(botThread.id, "new", declaresGithub).pipe(Effect.flip),
+        yield* proposeTool(botThread.id, "new-tool", declaresGithub).pipe(Effect.flip),
+        yield* watchers.remove({ botThreadId: botThread.id, name: "gh" }).pipe(Effect.flip),
+        yield* watchers.remove({ botThreadId: botThread.id, name: "status" }).pipe(Effect.flip),
+      ];
+      assert.deepStrictEqual(
+        refusals.map(({ reason }) => reason),
+        ["started_by_wake", "started_by_wake", "started_by_wake", "started_by_wake"],
+      );
+      // Nor can it change what an approved one may reach.
+      const widened = yield* proposeWatcher(botThread.id, "gh", {
+        secrets: ["LINEAR_KEY"],
+        hosts: GITHUB,
+      }).pipe(Effect.flip);
+      const widenedTool = yield* proposeTool(botThread.id, "status", {
+        secrets: ["GITHUB_TOKEN"],
+        hosts: GITHUB,
+      }).pipe(Effect.flip);
+      for (const error of [widened, widenedTool]) {
+        assert.strictEqual(error.reason, "invalid");
+        assert.include(error.message, "needs a turn the user starts");
+      }
+      // It may still mend an approved script that keeps its secrets and hosts.
+      const mended = yield* proposeWatcher(botThread.id, "gh", {
+        ...declaresGithub,
+        run: "echo mended\n",
+      });
+      assert.isTrue(mended.pending);
+      assert.deepStrictEqual(
+        (yield* watchers.list(botThread.id)).watchers.map(({ name }) => name).toSorted(),
+        ["fresh", "fresh-tool", "gh", "status"],
+      );
+    }).pipe(provideWatchers(orchestration, runner.layer));
+  },
+);
+
+it.effect("a turn started by a wake is refused as before, tainted or not", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    orchestration.startRun(botThread, { id: "bot-wake:watcher:x:1", createdBy: "system" });
+    const refused = yield* proposeWatcher(botThread.id, "new").pipe(Effect.flip);
+    assert.strictEqual(refused.reason, "started_by_wake");
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("runs a node script by the server's own node, and never through a shell", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  runner.state.result = { code: ExitCode(0), stdout: "", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* installWatcher(botThread.id, "js", { runtime: "node", run: "console.log(1)\n" });
+    yield* installWatcher(botThread.id, "plain");
+    yield* installTool(botThread.id, "status");
+    yield* watchers.runDue;
+    yield* callTool(botThread.id, "status", ["a & calc"]);
+    const inputs = [...runner.state.inputs, ...runner.state.dryInputs];
+    assert.isAbove(inputs.length, 3);
+    for (const input of inputs) {
+      assert.isTrue(input.refuseShell);
+      assert.strictEqual(
+        input.command,
+        input.args[0]?.endsWith("run.js") ? process.execPath : "sh",
+      );
+    }
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect(
+  "lets one Bot hold only two of the four tool places, so another Bot's call still runs",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const otherThread = addBot(orchestration, "thread:other");
+    const runner = makeScriptedRunner();
+    return Effect.gen(function* () {
+      const names = ["t1", "t2", "t3", "t4"];
+      for (const name of names) yield* installTool(botThread.id, name);
+      yield* installTool(otherThread.id, "mine");
+      const gate = yield* makeToolGate(runner);
+      const calls = yield* Effect.forEach(names, (name) =>
+        callTool(botThread.id, name).pipe(Effect.forkChild),
+      );
+      yield* Queue.take(gate.started);
+      yield* Queue.take(gate.started);
+      for (let tick = 0; tick < 50; tick += 1) yield* Effect.yieldNow;
+      assert.strictEqual(runner.state.runs, 2);
+
+      // The other Bot is not starved by the two that wait.
+      const theirs = yield* callTool(otherThread.id, "mine").pipe(Effect.forkChild);
+      yield* Queue.take(gate.started);
+      assert.strictEqual(runner.state.runs, 3);
+
+      yield* Deferred.succeed(gate.release, undefined);
+      yield* Effect.forEach([...calls, theirs], Fiber.join);
+      assert.strictEqual(runner.state.runs, 5);
+    }).pipe(provideWatchers(orchestration, runner.layer));
+  },
+);

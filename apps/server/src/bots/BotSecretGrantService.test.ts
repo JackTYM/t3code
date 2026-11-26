@@ -117,6 +117,8 @@ const makeHarness = Effect.gen(function* () {
     get: (name) => refusing(name) ?? realStore.get(name),
     set: (name, value) => refusing(name) ?? realStore.set(name, value),
   };
+  /** While true, the secret store cannot say what the newest saved version is. */
+  const versionFails = { current: true };
   const grantsFile = path.join(stateDir, "bot-secret-grants.json");
   const storedValue = (name: string) =>
     realStore
@@ -133,6 +135,7 @@ const makeHarness = Effect.gen(function* () {
     breakWrites: fileSystem.makeDirectory(`${grantsFile}.tmp`).pipe(Effect.orDie),
     mendWrites: fileSystem.remove(`${grantsFile}.tmp`, { recursive: true }).pipe(Effect.orDie),
     storeOf,
+    versionFails,
     stateDir,
     grantsFile,
     /** Starts the service over the same files and secrets. */
@@ -141,7 +144,7 @@ const makeHarness = Effect.gen(function* () {
     bootWithoutVersion: bootOver({
       ...storeOf,
       get: (name) =>
-        name === "bot-secret-grants-version"
+        name === "bot-secret-grants-version" && versionFails.current
           ? Effect.fail(new ServerSecretStore.SecretStoreConcurrentReadError({ resource: name }))
           : storeOf.get(name),
     }),
@@ -617,7 +620,7 @@ it.effect.each(["tampered", "unsigned", "not json", "rolled back"] as const)(
 );
 
 it.effect(
-  "starts from nothing, in memory only, when the file or secrets cannot be read, and leaves the file alone",
+  "says the saved grants could not be read, changes nothing until they can, and then carries on",
   () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
@@ -632,12 +635,30 @@ it.effect(
       const degraded = yield* harness.bootWithoutVersion;
       yield* Effect.gen(function* () {
         const service = yield* BotSecretGrantService.BotSecretGrantService;
-        assert.deepStrictEqual(yield* service.list(bot), { grants: [], approvals: "ok" });
+        assert.deepStrictEqual(yield* service.list(bot), { grants: [], approvals: "unreadable" });
+        assert.deepStrictEqual(
+          yield* service.resolve({ botThreadId: bot, name: "GITHUB_TOKEN", hosts: GITHUB }),
+          { _tag: "Missing", reason: "not granted" },
+        );
+        const refused = yield* grant(service, bot, "SECOND_TOKEN").pipe(Effect.flip);
+        const removal = yield* service
+          .remove({ botThreadId: bot, name: "GITHUB_TOKEN" })
+          .pipe(Effect.flip);
+        assert.deepStrictEqual([refused.reason, removal.reason], ["unreadable", "unreadable"]);
+        assert.include(refused.message, "could not be read");
+        assert.strictEqual(yield* harness.read, before);
+
+        // The store reads again: the next call finds the grants, and changes go through.
+        harness.versionFails.current = false;
+        const back = yield* service.list(bot);
+        assert.deepStrictEqual(
+          [back.approvals, back.grants.map(({ name }) => name)],
+          ["ok", ["GITHUB_TOKEN"]],
+        );
         yield* grant(service, bot, "SECOND_TOKEN");
-        assert.strictEqual((yield* service.list(bot)).grants.length, 1);
+        assert.strictEqual((yield* service.list(bot)).grants.length, 2);
       }).pipe(degraded);
 
-      assert.strictEqual(yield* harness.read, before);
       assert.deepStrictEqual(yield* harness.rejectedFiles, []);
     }),
 );

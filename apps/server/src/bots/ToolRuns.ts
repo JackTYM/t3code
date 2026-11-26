@@ -19,6 +19,8 @@ export const MAX_TOOLS_PER_BOT = 12;
 const TOOL_CALLS_PER_MINUTE = 6;
 // Calls running at once, of all Bots and all tools.
 export const MAX_CONCURRENT_TOOL_CALLS = 4;
+// Of those, what one Bot may hold, so a Bot that calls slow tools cannot take every place.
+export const MAX_CONCURRENT_TOOL_CALLS_PER_BOT = 2;
 const MINUTE_MS = 60_000;
 export const TOOL_CALL_LIMIT_MESSAGE = `Too many tool calls: at most ${TOOL_CALLS_PER_MINUTE} a minute. Wait and try again.`;
 export const TOOL_STDERR_MAX_CHARS = 500;

@@ -869,6 +869,19 @@ export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
           </AlertDescription>
         </Alert>
       ) : null}
+      {secretGrants.data?.approvals === "unreadable" ? (
+        <Alert variant="warning">
+          <AlertTitle>
+            <T>Secret grants could not be read</T>
+          </AlertTitle>
+          <AlertDescription>
+            <T>
+              The saved secret grants could not be read, so none of them is in effect for now. Try
+              again in a moment.
+            </T>
+          </AlertDescription>
+        </Alert>
+      ) : null}
       {secretGrants.data?.approvals === "unverified" ? (
         <Alert variant="warning">
           <AlertTitle>

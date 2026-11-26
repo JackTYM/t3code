@@ -157,3 +157,55 @@ it("says how much longer than a value its longest form can be", () => {
   );
   assert.isAtLeast(redactionSlack([{ value }]), longest);
 });
+
+it("hides a value inside base64 whatever comes before or after it, as in Basic auth", () => {
+  const tokens = [
+    `ghp_${"aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bD1fH3jL5"}`,
+    `sk_live_${"4eC39HqLyjWDarjtT1zdp7dc"}`,
+    "9f86d081884c7d659a2feacc0b0e7d3a1c51d1a9",
+    "AAAA+BBBB/CCCC+DDDD/EEEE+FFFF/GGGG+HHHH",
+    "a-fairly-long-api-key-with-dashes-0123456789",
+  ];
+  const affixes: ReadonlyArray<readonly [string, string]> = [
+    ["", ""],
+    ["a:", ""],
+    ["user:", ""],
+    ["x", ""],
+    ["email@example.com:", ""],
+    ["", ":"],
+    ["", "\n"],
+    ["bot:", ":extra"],
+  ];
+  for (const value of tokens) {
+    for (const [before, after] of affixes) {
+      for (const encoding of ["base64", "base64url"] as const) {
+        const encoded = Buffer.from(`${before}${value}${after}`).toString(encoding);
+        const text = `Authorization: Basic ${encoded}`;
+        const out = redactSecrets(text, [{ name: "KEY", value }]);
+        const middle = encoded.slice(
+          Math.floor(encoded.length / 2) - 4,
+          Math.floor(encoded.length / 2) + 4,
+        );
+        assert.include(
+          out,
+          "[secret KEY]",
+          `${encoding} ${JSON.stringify([before, value, after])}`,
+        );
+        assert.notInclude(out, middle, `${encoding} ${JSON.stringify([before, value, after])}`);
+      }
+    }
+  }
+});
+
+it("leaves a short value's encodings alone, and ordinary base64 text", () => {
+  const out = redactSecrets(`${Buffer.from("xx:abcdefg").toString("base64")} hello`, [
+    { name: "KEY", value: "abcdefg" },
+  ]);
+  assert.notInclude(out, "[secret");
+  assert.strictEqual(
+    redactSecrets("QWxhZGRpbjpvcGVuIHNlc2FtZQ== is the example", [
+      { name: "KEY", value: "ghp_aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bD1fH3jL5" },
+    ]),
+    "QWxhZGRpbjpvcGVuIHNlc2FtZQ== is the example",
+  );
+});

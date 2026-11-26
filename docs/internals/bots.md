@@ -615,7 +615,7 @@ a name cannot be both and review has one path. What differs is a trap:
   crew looks for the folder by it.
 - Calls do not take the global one-script-at-a-time gate, which a 30 second tool would hold against
   every watcher. Each tool has its own lock (its state folder is a cursor), four calls run at once
-  overall, and the lock is held across re-reading the record, so a pause, removal or approved
+  overall and at most two for one Bot, so one Bot cannot take every place, and the lock is held across re-reading the record, so a pause, removal or approved
   revision that came while a call waited decides what it does.
 - What stops a loop from spending a paid API is the call limit (six calls a minute and twelve tools per Bot)
   and the failure streaks, both in memory.
@@ -664,7 +664,21 @@ them.
   longest a form can run past its value, so a form that straddles the cap is whole before it is hidden
   and then cut. And a script can write a secret to a file instead, so after a run the state folder
   (bounded in files, depth and bytes, links not followed) is rewritten with the value hidden, and a
-  hit fails the run as `secret-written`.
+  hit fails the run as `secret-written`. The scan fails closed: a file it cannot open or read, one
+  too large to read, a path that leaves the folder, and a hit in a file that is not small text all
+  count as a hit, and such a file is removed rather than rewritten.
+- **Values are not isolated from the Bot's machine.** A stored value is a plain file under the
+  server's `secrets` folder (`ServerSecretStore`), readable by every process of the user who runs
+  the server: the Bot's own full-access shell (its instructions say not to use one; nothing
+  enforces it), repair crews and every approved script. `resolve` is the only API that returns a
+  value, which stops a tool or RPC from handing one out, not a process from opening the file.
+  Redaction protects what is recorded and sent, not against a hostile process. Granting a secret is
+  therefore not safe for a credential whose misuse is unacceptable, until the Bot and scripts run
+  isolated from that folder and an egress allowlist holds requests to the declared hosts.
+- **Only the reviewer judges it.** Any new version of a script that declares secrets is approved by
+  the reviewer model alone, which sees names and hosts, never values, and is the one control on what
+  the script does with them. A wake or tainted turn cannot add or widen what a script declares
+  (`BotService.turnInfluenced`), but a typed, clean turn can, with the reviewer's approval.
 - **Known limits.** Values that are split, reversed, hex-encoded or otherwise transformed are not
   found, nor are values past the scan's bounds, or written by a descendant that outlives the run,
   after the scan. The reviewer is meant to catch those, and it is a model.

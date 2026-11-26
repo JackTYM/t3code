@@ -42,8 +42,10 @@ export const BotSecretGrantListResult = Schema.Struct({
   /**
    * `unverified`: the saved grants failed their signature check when the server started, so every
    * grant was dropped until the user gives it again. The stored values were not touched.
+   * `unreadable`: the saved grants or their secrets could not be read, so none is in effect and
+   * none can be changed until they can; the next call tries again.
    */
-  approvals: Schema.Literals(["ok", "unverified"]),
+  approvals: Schema.Literals(["ok", "unverified", "unreadable"]),
 });
 export type BotSecretGrantListResult = typeof BotSecretGrantListResult.Type;
 
@@ -73,7 +75,15 @@ export class BotSecretGrantError extends Schema.TaggedError<BotSecretGrantError>
     threadId: ThreadId,
     /** The grant it concerns. */
     grant: Schema.optional(Schema.String),
-    reason: Schema.Literals(["not_a_bot", "invalid", "too_short", "limit", "not_found", "io"]),
+    reason: Schema.Literals([
+      "not_a_bot",
+      "invalid",
+      "too_short",
+      "limit",
+      "not_found",
+      "unreadable",
+      "io",
+    ]),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -89,6 +99,8 @@ export class BotSecretGrantError extends Schema.TaggedError<BotSecretGrantError>
         return `A Bot can hold at most ${BOT_SECRET_GRANTS_MAX_PER_BOT} secret grants. Remove one first.`;
       case "not_found":
         return `There is no secret grant named ${this.grant ?? ""}.`;
+      case "unreadable":
+        return "The saved secret grants could not be read, so they cannot be changed now. Try again in a moment.";
       case "io":
         return `Failed to read or save the secret grants for thread ${this.threadId}.`;
     }

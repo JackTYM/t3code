@@ -33,8 +33,6 @@ import {
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { createTwoFilesPatch } from "diff";
 import * as NodeCrypto from "node:crypto";
-import * as NodeFSP from "node:fs/promises";
-import * as NodePath from "node:path";
 import * as NodeVM from "node:vm";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -67,6 +65,7 @@ import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as BotSecretGrantService from "./BotSecretGrantService.ts";
 import * as BotService from "./BotService.ts";
 import { redactionSlack, redactSecrets } from "./redactSecrets.ts";
+import { hideInStateFolder } from "./stateFolderScan.ts";
 import * as RepairService from "./RepairService.ts";
 import {
   framedToolOutput,
@@ -74,6 +73,7 @@ import {
   makeToolCallLimiter,
   makeToolFailureStreaks,
   MAX_CONCURRENT_TOOL_CALLS,
+  MAX_CONCURRENT_TOOL_CALLS_PER_BOT,
   makeToolCallMemo,
   MAX_TOOLS_PER_BOT,
   MAX_WATCHER_TOOL_RUNS_PER_MINUTE,
@@ -104,11 +104,6 @@ const PEER_RUN_TOOL = "t3_watcher_run";
 const PEER_RETRY_MS = BOT_WATCHER_MIN_INTERVAL_SECONDS * 1000;
 const STDOUT_MAX_BYTES = 4096;
 const STDERR_MAX_CHARS = 1024;
-// What is looked at in a script's state folder for a value it wrote there: a few small files.
-const STATE_SCAN_MAX_FILES = 64;
-const STATE_SCAN_MAX_ENTRIES = 1024;
-const STATE_SCAN_MAX_DEPTH = 8;
-const STATE_SCAN_MAX_BYTES = 1024 * 1024;
 const SECRET_WRITTEN_EXIT = "secret-written";
 const SECRET_WRITTEN_STDERR = "a secret was written to the state folder";
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -163,8 +158,10 @@ const STARTED_BY_WAKE_TOOL =
 const WATCHER_TOOLS_STAY_HERE = "A watcher that uses tools runs only on this machine.";
 // What each runtime executes, and what the copy of the source is called so the interpreter
 // treats it right (a `.js` file may use either module syntax on current Node).
+// The server's own Node, by absolute path, so the command is never looked up on PATH (where a
+// Windows `.cmd` shim would hand the arguments to a shell).
 const RUNTIMES = {
-  node: { command: "node", file: "run.js" },
+  node: { command: process.execPath, file: "run.js" },
   sh: { command: "sh", file: "run" },
 } as const satisfies Record<BotWatcherRuntime, { command: string; file: string }>;
 
@@ -388,55 +385,6 @@ const hideThenCut = (
   while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
   return bytes.subarray(0, end).toString();
 };
-
-/**
- * Replaces, in place, every value found in the regular files of a script's state folder, and says
- * whether any was. Bounded in files, entries, depth and bytes; links and special files are left
- * alone, and a file is opened without following a link. A value past the first megabyte of a larger
- * file is not seen, and one that is split across two files is not either.
- */
-const hideInStateFolder = (root: string, secrets: ReadonlyArray<InjectedSecret>) =>
-  Effect.promise(async () => {
-    let files = 0;
-    let entries = 0;
-    let found = false;
-    const hideIn = async (target: string) => {
-      const handle = await NodeFSP.open(
-        target,
-        NodeFSP.constants.O_RDWR | NodeFSP.constants.O_NOFOLLOW | NodeFSP.constants.O_NONBLOCK,
-      );
-      try {
-        const stat = await handle.stat();
-        if (!stat.isFile()) return;
-        const buffer = Buffer.alloc(Math.min(stat.size, STATE_SCAN_MAX_BYTES));
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-        const text = buffer.subarray(0, bytesRead).toString();
-        const hidden = redactSecrets(text, secrets);
-        if (hidden === text) return;
-        found = true;
-        await handle.truncate(0);
-        await handle.write(hidden, 0);
-      } finally {
-        await handle.close();
-      }
-    };
-    const walk = async (directory: string, depth: number): Promise<void> => {
-      for (const entry of await NodeFSP.readdir(directory, { withFileTypes: true })) {
-        entries += 1;
-        if (entries > STATE_SCAN_MAX_ENTRIES || files >= STATE_SCAN_MAX_FILES) return;
-        const target = NodePath.join(directory, entry.name);
-        // A `Dirent` from `readdir` is not a link's target: a link is neither a file nor a directory.
-        if (entry.isDirectory()) {
-          if (depth < STATE_SCAN_MAX_DEPTH) await walk(target, depth + 1).catch(() => undefined);
-        } else if (entry.isFile()) {
-          files += 1;
-          await hideIn(target).catch(() => undefined);
-        }
-      }
-    };
-    await walk(root, 0).catch(() => undefined);
-    return found;
-  });
 
 const regexSandbox: { expect?: RegExp; text?: string } = {};
 NodeVM.createContext(regexSandbox);
@@ -711,6 +659,7 @@ const make = Effect.gen(function* () {
   // minute. Only one call of a tool at a time, since its state folder is a cursor, and a few at
   // once overall so a flood of calls cannot start processes without bound.
   const toolLocks = new Map<string, Semaphore.Semaphore>();
+  const toolCallsOfBot = new Map<string, Semaphore.Semaphore>();
   const toolCallsAtOnce = (yield* Semaphore.make(MAX_CONCURRENT_TOOL_CALLS)).withPermits(1);
   const withToolLock =
     (folder: string, name: string) =>
@@ -718,8 +667,12 @@ const make = Effect.gen(function* () {
       const key = watcherKey(folder, name);
       const lock = toolLocks.get(key) ?? Semaphore.makeUnsafe(1);
       toolLocks.set(key, lock);
-      // The tool's own turn first, so a call waiting for it holds none of the few places.
-      return lock.withPermits(1)(toolCallsAtOnce(effect));
+      const ofBot =
+        toolCallsOfBot.get(folder) ?? Semaphore.makeUnsafe(MAX_CONCURRENT_TOOL_CALLS_PER_BOT);
+      toolCallsOfBot.set(folder, ofBot);
+      // The tool's own turn first, then the Bot's places, then the server's, so a call that waits
+      // holds none of the places behind it.
+      return lock.withPermits(1)(ofBot.withPermits(1)(toolCallsAtOnce(effect)));
     };
   // The reviews in flight, one per watcher: a newer version takes its older one's place, so what
   // the caps count is watchers waiting on the reviewer. `reviewingHash` says which version each
@@ -984,15 +937,22 @@ const make = Effect.gen(function* () {
       const output = yield* runner.run({
         command: runtime.command,
         args: [file, ...(input.tool?.args ?? [])],
+        refuseShell: true,
         cwd: scratch,
-        env: scrubbedEnv(
-          scratch,
-          stateDir,
-          input.dryRun,
-          secrets,
-          input.tool !== undefined,
-          toolOutputDir,
-        ),
+        env: {
+          ...scrubbedEnv(
+            scratch,
+            stateDir,
+            input.dryRun,
+            secrets,
+            input.tool !== undefined,
+            toolOutputDir,
+          ),
+          // Inside the desktop app the server's own binary is Electron, which runs a script as Node only when told to.
+          ...(input.runtime === "node" && process.versions.electron !== undefined
+            ? { ELECTRON_RUN_AS_NODE: "1" }
+            : {}),
+        },
         inheritEnv: false,
         // Closed at once, so a script that reads stdin sees the end instead of waiting.
         stdin: "",
@@ -1004,7 +964,8 @@ const make = Effect.gen(function* () {
         outputMode: "truncate",
       });
       // Before the scope ends: a dry run's state folder is under the scratch directory.
-      const written = secrets.length > 0 && (yield* hideInStateFolder(stateDir, secrets));
+      const written =
+        secrets.length > 0 && (yield* Effect.promise(() => hideInStateFolder(stateDir, secrets)));
       return { output, written };
     }).pipe(
       Effect.scoped,
@@ -1680,7 +1641,8 @@ const make = Effect.gen(function* () {
     if (!(yield* bots.isBot(botThreadId))) {
       return yield* failure(botThreadId, name, "not_a_bot");
     }
-    if (yield* bots.startedByWake(botThreadId)) {
+    // Not only a wake: a turn the user typed is as steerable once it has read outside text.
+    if (yield* bots.turnInfluenced(botThreadId)) {
       return yield* failure(
         botThreadId,
         name,
@@ -1717,7 +1679,7 @@ const make = Effect.gen(function* () {
       }
       // A wake turn is the one hostile text can steer, so it is held to less than a typed one.
       const fromWake =
-        existing?.approvedHash !== undefined && (yield* bots.startedByWake(botThreadId));
+        existing?.approvedHash !== undefined && (yield* bots.turnInfluenced(botThreadId));
       // No new version straight after one was dropped: that answers the wake with another review.
       if (fromWake && recentlyDropped(folder, yield* Clock.currentTimeMillis)) {
         return yield* invalid(

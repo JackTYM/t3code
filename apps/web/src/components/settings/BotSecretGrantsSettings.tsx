@@ -407,6 +407,21 @@ function BotGrants(props: { environmentId: EnvironmentId; threadId: ThreadId }) 
         />
       ) : (
         <>
+          {grants.data.approvals === "unreadable" ? (
+            <div className="px-3 py-2 sm:px-4">
+              <Alert variant="warning">
+                <AlertTitle>
+                  <T>Saved grants could not be read</T>
+                </AlertTitle>
+                <AlertDescription>
+                  <T>
+                    The saved grants could not be read, so none of them is in effect and none can be
+                    added or changed until they can. Try again in a moment.
+                  </T>
+                </AlertDescription>
+              </Alert>
+            </div>
+          ) : null}
           {grants.data.approvals === "unverified" ? (
             <div className="px-3 py-2 sm:px-4">
               <Alert variant="warning">

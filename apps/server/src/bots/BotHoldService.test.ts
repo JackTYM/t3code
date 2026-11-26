@@ -130,14 +130,19 @@ const run = <A, E>(
   body: (
     service: BotHoldService.BotHoldService["Service"],
     wakes: Effect.Effect<ReadonlyArray<string>>,
+    tainted: ReadonlySet<string>,
   ) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
     const wakes = yield* Ref.make<Array<string>>([]);
+    // What `BotService` keeps, so the watchers see the same taint.
+    const tainted = new Set<string>();
     const dependencies = Layer.mergeAll(
       NodeCrypto.layer,
       Layer.mock(BotService.BotService)({
         isBot: (threadId) => Effect.succeed(threadId === BOT),
+        noteRunTainted: (runId) => Effect.sync(() => void tainted.add(runId)),
+        isRunTainted: (runId) => Effect.sync(() => tainted.has(runId)),
         wakeWith: ({ key, text }) =>
           Ref.update(wakes, (all) => [...all, `${key}\n${text}`]).pipe(Effect.as(true)),
       }),
@@ -216,7 +221,7 @@ const run = <A, E>(
       }),
     );
     return yield* Effect.gen(function* () {
-      return yield* body(yield* BotHoldService.BotHoldService, Ref.get(wakes));
+      return yield* body(yield* BotHoldService.BotHoldService, Ref.get(wakes), tainted);
     }).pipe(Effect.provide(BotHoldService.layer.pipe(Layer.provide(dependencies))));
   });
 
@@ -664,4 +669,21 @@ it.effect(
       }),
     );
   },
+);
+
+it.effect.each([
+  call("t3_bot_mail_search", { query: "x" }, true),
+  call("t3_bot_tool_run", { name: "pr", args: [] }),
+  call("delegate_task", { role: "mail-reader", task: "Read mail 7." }),
+])(
+  "$tool marks the run it is in as having read outside text, for the watchers too",
+  (taintingCall) =>
+    run({ startedBy: "message:typed" }, (holds, _wakes, tainted) =>
+      Effect.gen(function* () {
+        yield* holds.check(call("t3_bot_note_read", {}, true));
+        assert.deepStrictEqual([...tainted], []);
+        yield* holds.check(taintingCall);
+        assert.deepStrictEqual([...tainted], [RUN]);
+      }),
+    ),
 );

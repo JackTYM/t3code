@@ -135,6 +135,18 @@ export class BotService extends Context.Service<
      */
     readonly startedByWake: (threadId: ThreadId) => Effect.Effect<boolean>;
     /**
+     * Notes that a run read outside text (a mail search, a tool's output) after it began, so what
+     * it does from here is steerable even when the user typed its first message.
+     */
+    readonly noteRunTainted: (runId: RunId) => Effect.Effect<void>;
+    readonly isRunTainted: (runId: RunId) => Effect.Effect<boolean>;
+    /**
+     * Whether the thread's active run is one outside text may have steered: it began with
+     * something the user did not type (`startedByWake`), or it has read outside text since. What
+     * creates or widens a script asks this, not only `startedByWake`. True when it cannot be told.
+     */
+    readonly turnInfluenced: (threadId: ThreadId) => Effect.Effect<boolean>;
+    /**
      * Notes that a Bot changed its own thread's model through `t3_thread_configure`, so the server
      * puts it back on `before` when that turn ends (`handleMilestone`). Not a Bot: nothing is kept.
      */
@@ -595,6 +607,26 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.orElseSucceed(() => true));
   });
 
+  // Runs that read outside text after they began. Only a run's own id is kept, and a Bot's runs are
+  // few, so this stays small; a restart forgets it, and a run does not outlive one.
+  const taintedRuns = new Set<RunId>();
+  const noteRunTainted: BotService["Service"]["noteRunTainted"] = (runId) =>
+    Effect.sync(() => {
+      taintedRuns.add(runId);
+    });
+  const isRunTainted: BotService["Service"]["isRunTainted"] = (runId) =>
+    Effect.sync(() => taintedRuns.has(runId));
+
+  const turnInfluenced: BotService["Service"]["turnInfluenced"] = Effect.fn(
+    "BotService.turnInfluenced",
+  )(function* (threadId) {
+    if (yield* startedByWake(threadId)) return true;
+    return yield* threads.getThreadShell(threadId).pipe(
+      Effect.map((shell) => shell?.activeRunId == null || taintedRuns.has(shell.activeRunId)),
+      Effect.orElseSucceed(() => true),
+    );
+  });
+
   const noteOwnModelChange: BotService["Service"]["noteOwnModelChange"] = Effect.fn(
     "BotService.noteOwnModelChange",
   )(function* ({ threadId, before, after }) {
@@ -771,6 +803,9 @@ const make = Effect.gen(function* () {
     wakeWith,
     wakeHealth,
     startedByWake,
+    noteRunTainted,
+    isRunTainted,
+    turnInfluenced,
     noteOwnModelChange,
     handleMilestone,
     start,
