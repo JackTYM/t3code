@@ -3,9 +3,15 @@ import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeCrypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { EnvironmentId, OrchestratorMcpFailure, type ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  OrchestratorMcpFailure,
+  TextGenerationError,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -13,6 +19,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import { ExitCode } from "effect/process/ChildProcessSpawner";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -22,6 +29,7 @@ import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as BotService from "./BotService.ts";
 import { makeOrchestration } from "./BotTestkit.ts";
 import * as WatcherService from "./WatcherService.ts";
@@ -124,6 +132,94 @@ const makeFakePeer = () => {
 };
 const noPeer = Layer.mock(PeerMcpClient.PeerMcpClient)({});
 
+type ReviewInput = Parameters<TextGeneration.TextGeneration["Service"]["reviewWatcher"]>[0];
+type ReviewAnswer =
+  | { readonly verdict: "approve" | "reject"; readonly reason: string }
+  | TextGenerationError;
+interface ReviewCall {
+  readonly input: ReviewInput;
+  readonly answer: Deferred.Deferred<
+    { readonly verdict: "approve" | "reject"; readonly reason: string },
+    TextGenerationError
+  >;
+}
+
+const isTextGenerationError = Schema.is(TextGenerationError);
+const APPROVES = { verdict: "approve", reason: "Reads only what its purpose names." } as const;
+const REJECTS = { verdict: "reject", reason: "It posts what it reads to a third party." } as const;
+const matchName = (name: string) => (input: ReviewInput) => input.name === name;
+const matchSource = (source: string) => (input: ReviewInput) => input.source === source;
+
+/**
+ * The reviewer model. A review waits until the test answers it, so a revision stays pending unless
+ * a test says otherwise; `answer` works whether the call has been made yet or not.
+ */
+class FakeReviewer extends Context.Service<
+  FakeReviewer,
+  {
+    readonly calls: ReadonlyArray<ReviewCall>;
+    /** Each call that waits for an answer, as the service makes it, so a test need not poll. */
+    readonly started: Queue.Queue<ReviewCall>;
+    readonly answer: (
+      match: (input: ReviewInput) => boolean,
+      answer: ReviewAnswer,
+    ) => Effect.Effect<void>;
+    readonly review: (
+      input: ReviewInput,
+    ) => Effect.Effect<{ verdict: "approve" | "reject"; reason: string }, TextGenerationError>;
+  }
+>()("t3/bots/WatcherService.test/FakeReviewer") {}
+
+const makeFakeReviewer = Effect.gen(function* () {
+  const calls: Array<ReviewCall> = [];
+  const unanswered = new Set<ReviewCall>();
+  const early: Array<{ match: (input: ReviewInput) => boolean; answer: ReviewAnswer }> = [];
+  const started = yield* Queue.unbounded<ReviewCall>();
+  const finish = (call: ReviewCall, answer: ReviewAnswer) => {
+    unanswered.delete(call);
+    return isTextGenerationError(answer)
+      ? Deferred.fail(call.answer, answer)
+      : Deferred.succeed(call.answer, answer);
+  };
+  return FakeReviewer.of({
+    calls,
+    started,
+    answer: (match, answer) =>
+      Effect.gen(function* () {
+        const held = [...unanswered].find((call) => match(call.input));
+        if (held === undefined) early.push({ match, answer });
+        else yield* finish(held, answer);
+      }),
+    review: (input) =>
+      Effect.gen(function* () {
+        const call: ReviewCall = {
+          input,
+          answer: yield* Deferred.make<
+            { readonly verdict: "approve" | "reject"; readonly reason: string },
+            TextGenerationError
+          >(),
+        };
+        calls.push(call);
+        unanswered.add(call);
+        const ready = early.findIndex(({ match }) => match(input));
+        // Only a review that waits is announced: a test is looking for those.
+        if (ready >= 0) yield* finish(call, early.splice(ready, 1)[0]!.answer);
+        else yield* Queue.offer(started, call);
+        return yield* Deferred.await(call.answer);
+      }),
+  });
+});
+
+const layerReviewer = Layer.unwrap(
+  Effect.gen(function* () {
+    const reviewer = yield* makeFakeReviewer;
+    return Layer.merge(
+      Layer.succeed(FakeReviewer, reviewer),
+      Layer.mock(TextGeneration.TextGeneration)({ reviewWatcher: reviewer.review }),
+    );
+  }),
+);
+
 const layerWatchers = (
   orchestration: ReturnType<typeof makeOrchestration>,
   runner: Layer.Layer<ProcessRunner.ProcessRunner>,
@@ -135,6 +231,7 @@ const layerWatchers = (
       Layer.mergeAll(
         runner,
         peer,
+        layerReviewer,
         Scheduler.layer,
         // Only the watchers see it: the Bot service keeps the testkit's own.
         environmentId === undefined
@@ -194,24 +291,20 @@ const proposeWatcher = (
     });
   });
 
-/** Proposes a watcher and, unless told not to, dry-runs and approves that exact version as the user. */
+/**
+ * Proposes a watcher and, unless told not to, lets the reviewer approve it: the server dry-runs
+ * that exact version and makes it live, as it does for a Bot.
+ */
 const installWatcher = Effect.fn("installWatcher")(function* (
   threadId: ThreadId,
   name: string,
   options: Parameters<typeof proposeWatcher>[2] & { readonly approve?: boolean } = {},
 ) {
   const watchers = yield* WatcherService.WatcherService;
+  const reviewer = yield* FakeReviewer;
+  if (options.approve !== false) yield* reviewer.answer(matchName(name), APPROVES);
   const { hash } = yield* proposeWatcher(threadId, name, options);
-  if (options.approve !== false) {
-    yield* watchers.dryRun({ botThreadId: threadId, name, hash });
-    yield* watchers.approve({
-      botThreadId: threadId,
-      name,
-      hash,
-      runsOn: "local",
-      approvedBy: "owner",
-    });
-  }
+  if (options.approve !== false) yield* watchers.drainReviews;
   return hash;
 });
 
@@ -270,8 +363,11 @@ it.effect(
       assert.strictEqual(listed?.approvedHash, approvedHash);
       assert.strictEqual(listed?.pendingHash, proposed.hash);
 
-      // Rejecting the proposal resumes the version the user approved before.
-      yield* watchers.reject({ botThreadId: botThread.id, name: "disk" });
+      // The reviewer rejecting the proposal leaves the approved version running.
+      const reviewer = yield* FakeReviewer;
+      yield* reviewer.answer(matchName("disk"), REJECTS);
+      yield* reviewer.answer(matchName("unapproved"), REJECTS);
+      yield* watchers.drainReviews;
       yield* TestClock.adjust(EVERY_MS);
       yield* watchers.runDue;
       assert.strictEqual(runner.state.runs, 3);
@@ -389,26 +485,16 @@ it.effect("refuses to create or remove watchers in a turn the user did not start
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
 
-it.effect("approves only the version that is still pending, and shows what changed", () => {
+it.effect("approves the version that is still pending, and shows what changed", () => {
   const orchestration = makeOrchestration();
   const botThread = addBot(orchestration, "thread:bot");
   const runner = makeScriptedRunner();
   runner.state.result = { code: ExitCode(1), stdout: "boom", timedOut: false };
-  const approve = (hash: string) =>
-    Effect.gen(function* () {
-      const watchers = yield* WatcherService.WatcherService;
-      return yield* watchers.approve({
-        botThreadId: botThread.id,
-        name: "disk",
-        hash,
-        runsOn: "local",
-        approvedBy: "owner",
-      });
-    });
   return Effect.gen(function* () {
     const watchers = yield* WatcherService.WatcherService;
+    const reviewer = yield* FakeReviewer;
     const first = yield* proposeWatcher(botThread.id, "disk", { run: "echo one\n" });
-    // Nothing runs until approval, and a dry run of what is shown does not wake the Bot.
+    // The user can run a version once to see it. That does not wake the Bot.
     const dry = yield* watchers.dryRun({
       botThreadId: botThread.id,
       name: "disk",
@@ -426,9 +512,8 @@ it.effect("approves only the version that is still pending, and shows what chang
       "boom",
     );
 
-    // The Bot revises it before the user decides: what the user saw is no longer approvable.
+    // The Bot revises it before the reviewer answers: the first version is stale.
     const second = yield* proposeWatcher(botThread.id, "disk", { run: "echo two\n" });
-    assert.strictEqual((yield* approve(first.hash).pipe(Effect.flip)).reason, "stale_hash");
     const staleDry = yield* watchers
       .dryRun({ botThreadId: botThread.id, name: "disk", hash: first.hash })
       .pipe(Effect.flip);
@@ -436,23 +521,24 @@ it.effect("approves only the version that is still pending, and shows what chang
     // The new version has not been dry-run: the old result is not carried over.
     assert.isUndefined((yield* watchers.list(botThread.id)).watchers[0]?.lastDryRun);
 
-    // A dry run of the version the user saw says nothing about this one: the server wants its own.
-    assert.strictEqual((yield* approve(second.hash).pipe(Effect.flip)).reason, "dry_run_required");
-    yield* watchers.dryRun({ botThreadId: botThread.id, name: "disk", hash: second.hash });
-    yield* approve(second.hash);
-    assert.strictEqual((yield* approve(second.hash).pipe(Effect.flip)).reason, "no_pending");
+    yield* reviewer.answer(matchSource("echo one\n"), APPROVES);
+    yield* reviewer.answer(matchSource("echo two\n"), APPROVES);
+    yield* watchers.drainReviews;
     const approved = (yield* watchers.list(botThread.id)).watchers[0]!;
     assert.strictEqual(approved.approvedHash, second.hash);
     assert.isUndefined(approved.pendingHash);
+    // The version that was replaced got no approval, and the server dry-ran the one it approved.
     assert.deepStrictEqual(
       approved.history.map(({ hash, approvedBy }) => [hash, approvedBy]),
       [
         [first.hash, undefined],
-        [second.hash, "owner"],
+        [second.hash, "reviewer"],
       ],
     );
+    assert.strictEqual(approved.lastDryRun?.hash, second.hash);
+    assert.strictEqual(runner.state.dryInputs.length, 2);
 
-    // A later proposal comes with a diff against what the user approved.
+    // A later proposal comes with a diff against what is approved.
     const third = yield* proposeWatcher(botThread.id, "disk", { run: "echo three\n" });
     const pending = (yield* watchers.list(botThread.id)).watchers[0]!;
     assert.strictEqual(pending.hash, third.hash);
@@ -491,22 +577,16 @@ const LAPTOP = EnvironmentId.make("env:laptop");
 const HOUR = 60 * MINUTE;
 const sha256Hex = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
 
-/** A Bot with a watcher the user dry-ran and approved to run on the laptop. */
+/** A Bot with an approved watcher that the user dry-ran on the laptop and moved there. */
 const installRemoteWatcher = Effect.fn("installRemoteWatcher")(function* (
   threadId: ThreadId,
   name: string,
   options: Parameters<typeof proposeWatcher>[2] = {},
 ) {
   const watchers = yield* WatcherService.WatcherService;
-  const { hash } = yield* proposeWatcher(threadId, name, options);
+  const hash = yield* installWatcher(threadId, name, options);
   yield* watchers.dryRun({ botThreadId: threadId, name, hash, runsOn: LAPTOP });
-  yield* watchers.approve({
-    botThreadId: threadId,
-    name,
-    hash,
-    runsOn: LAPTOP,
-    approvedBy: "owner",
-  });
+  yield* watchers.setRunsOn({ botThreadId: threadId, name, runsOn: LAPTOP });
   return hash;
 });
 
@@ -579,18 +659,18 @@ it.effect(
     return Effect.gen(function* () {
       const watchers = yield* WatcherService.WatcherService;
       const target = { botThreadId: botThread.id, name: "disk" };
-      const { hash } = yield* proposeWatcher(botThread.id, "disk", {
+      const hash = yield* installWatcher(botThread.id, "disk", {
         run: "#!/bin/sh\ndf\n",
         expect: "^ok$",
       });
-      const approve = watchers.approve({ ...target, hash, runsOn: LAPTOP, approvedBy: "owner" });
-      // A dry run here says nothing about how it behaves on the laptop.
-      yield* watchers.dryRun({ ...target, hash });
-      assert.strictEqual((yield* approve.pipe(Effect.flip)).reason, "dry_run_required");
+      // The server's own dry run, before it approved, was here: it says nothing about the laptop.
+      assert.strictEqual(runner.state.dryInputs.length, 1);
+      const move = watchers.setRunsOn({ ...target, runsOn: LAPTOP });
+      assert.strictEqual((yield* move.pipe(Effect.flip)).reason, "dry_run_required");
       const dry = yield* watchers.dryRun({ ...target, hash, runsOn: LAPTOP });
       assert.deepStrictEqual([dry.runsOn, dry.stdout, dry.healthy], [LAPTOP, "disk 91%", false]);
-      yield* approve;
-      assert.strictEqual(runner.state.runs + runner.state.dryInputs.length, 1);
+      yield* move;
+      assert.strictEqual(runner.state.runs, 0);
       const [dryCall] = peer.state.calls;
       assert.strictEqual(dryCall?.environmentId, LAPTOP);
       assert.strictEqual(dryCall?.tool, "t3_watcher_run");
@@ -709,7 +789,7 @@ it.effect("waits for an unreachable laptop without failing, backing off or wakin
 });
 
 it.effect(
-  "does not record a dry run the laptop never completed, and reports a refusal as a trip",
+  "discards a version whose dry run the laptop never completed, and reports a refusal as a trip",
   () => {
     const orchestration = makeOrchestration();
     const botThread = addBot(orchestration, "thread:bot");
@@ -717,29 +797,37 @@ it.effect(
     const peer = makeFakePeer();
     return Effect.gen(function* () {
       const watchers = yield* WatcherService.WatcherService;
-      const { hash } = yield* proposeWatcher(botThread.id, "disk");
-      const target = { botThreadId: botThread.id, name: "disk", hash, runsOn: LAPTOP };
-      peer.state.reachable = false;
-      assert.strictEqual((yield* watchers.dryRun(target).pipe(Effect.flip)).reason, "unreachable");
-      assert.isUndefined((yield* watchers.list(botThread.id)).watchers[0]?.lastDryRun);
-      assert.strictEqual(
-        (yield* watchers.approve({ ...target, approvedBy: "owner" }).pipe(Effect.flip)).reason,
-        "dry_run_required",
-      );
+      const reviewer = yield* FakeReviewer;
+      const hash = yield* installRemoteWatcher(botThread.id, "disk");
+      const revise = Effect.fn("revise")(function* (run: string) {
+        yield* reviewer.answer(matchName("disk"), APPROVES);
+        yield* proposeWatcher(botThread.id, "disk", { run });
+        yield* watchers.drainReviews;
+        return (yield* watchers.list(botThread.id)).watchers[0]!;
+      });
 
+      // The reviewer approved, but a laptop that does not answer completed no dry run.
+      peer.state.reachable = false;
+      const unreachable = yield* revise("echo one\n");
+      assert.deepStrictEqual(
+        [unreachable.approvedHash, unreachable.pendingHash, unreachable.lastDryRun],
+        [hash, undefined, undefined],
+      );
+      assert.strictEqual(orchestration.sent.length, 1);
+      assert.include(orchestration.sent[0]?.text, "could not complete");
+
+      // One that answers with a refusal did not either.
       peer.state.reachable = true;
       peer.state.refusal =
         "This tool runs code here, so the link must have been paired with full access.";
-      assert.strictEqual((yield* watchers.dryRun(target).pipe(Effect.flip)).reason, "invalid");
+      const refused = yield* revise("echo two\n");
+      assert.deepStrictEqual([refused.approvedHash, refused.pendingHash], [hash, undefined]);
+      assert.strictEqual(orchestration.sent.length, 2);
 
-      // Once approved, a laptop that answers with a refusal is a failure the Bot hears about.
-      peer.state.refusal = undefined;
-      yield* watchers.dryRun(target);
-      yield* watchers.approve({ ...target, approvedBy: "owner" });
+      // Once approved, a laptop that answers a scheduled run with a refusal is a failure the Bot hears about.
       peer.state.refusal = "refused";
       yield* watchers.runDue;
-      assert.include(orchestration.sent[0]?.text, "exit: refused");
-      assert.include(orchestration.sent[0]?.text, "refused");
+      assert.include(orchestration.sent[2]?.text, "exit: refused");
     }).pipe(provideWatchers(orchestration, runner.layer, peer.layer));
   },
 );
@@ -1030,40 +1118,33 @@ it.effect("runs due watchers from the Scheduler", () => {
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
 
-it.effect("approves only a version whose own dry run completed, whatever that run found", () => {
+it.effect("approves a version whose dry run completed, whatever that run found", () => {
   const orchestration = makeOrchestration();
   const botThread = addBot(orchestration, "thread:bot");
   const runner = makeScriptedRunner();
-  // A watcher that trips right now is still approvable: the user decides after seeing it run.
+  // A watcher that trips right now is still approvable: the Bot hears of it in the first real run.
   runner.state.result = { code: ExitCode(1), stdout: "disk 99%", timedOut: false };
   return Effect.gen(function* () {
     const watchers = yield* WatcherService.WatcherService;
-    const approve = (hash: string) =>
-      watchers
-        .approve({
-          botThreadId: botThread.id,
-          name: "disk",
-          hash,
-          runsOn: "local",
-          approvedBy: "owner",
-        })
-        .pipe(Effect.flip);
-    const first = yield* proposeWatcher(botThread.id, "disk", { run: "echo one\n" });
-    assert.strictEqual((yield* approve(first.hash)).reason, "dry_run_required");
-    assert.strictEqual(runner.state.runs + runner.state.dryInputs.length, 0);
+    const first = yield* installWatcher(botThread.id, "disk", { run: "echo one\n" });
+    const approved = (yield* watchers.list(botThread.id)).watchers[0]!;
+    assert.strictEqual(approved.approvedHash, first);
+    assert.deepStrictEqual(
+      [approved.lastDryRun?.hash, approved.lastDryRun?.healthy, approved.lastDryRun?.stdout],
+      [first, false, "disk 99%"],
+    );
+    assert.deepStrictEqual(
+      [runner.state.runs, runner.state.dryInputs.length, orchestration.sent.length],
+      [0, 1, 0],
+    );
 
-    yield* watchers.dryRun({ botThreadId: botThread.id, name: "disk", hash: first.hash });
-    yield* watchers.approve({
-      botThreadId: botThread.id,
-      name: "disk",
-      hash: first.hash,
-      runsOn: "local",
-      approvedBy: "owner",
-    });
-
-    // A changed version starts over, even though an older one was dry-run and approved.
+    // A changed version starts over: the old dry run is not carried over.
     const second = yield* proposeWatcher(botThread.id, "disk", { run: "echo two\n" });
-    assert.strictEqual((yield* approve(second.hash)).reason, "dry_run_required");
+    const revised = (yield* watchers.list(botThread.id)).watchers[0]!;
+    assert.deepStrictEqual(
+      [revised.approvedHash, revised.pendingHash, revised.lastDryRun],
+      [first, second.hash, undefined],
+    );
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
 
@@ -1089,19 +1170,16 @@ it.effect("lets the user pause, resume and remove a watcher whatever woke the Bo
     yield* watchers.runDue;
     assert.strictEqual(runner.state.runs, 0);
 
-    // A newer version needs approval as usual, and approving it does not undo the user's pause.
+    // A newer version is reviewed as usual, and approving it does not undo the user's pause.
     // A wake turn may propose it; the user's own turn then replaces that proposal.
+    const reviewer = yield* FakeReviewer;
     const fromWake = yield* proposeWatcher(botThread.id, "api", { run: "#!/bin/sh\nexit 3\n" });
     assert.isTrue(fromWake.pending);
     orchestration.startRun(botThread, userMessage);
-    const proposed = yield* proposeWatcher(botThread.id, "api", { run: "#!/bin/sh\nexit 2\n" });
-    yield* watchers.dryRun({ ...target, hash: proposed.hash });
-    yield* watchers.approve({
-      ...target,
-      hash: proposed.hash,
-      runsOn: "local",
-      approvedBy: "owner",
-    });
+    yield* proposeWatcher(botThread.id, "api", { run: "#!/bin/sh\nexit 2\n" });
+    yield* reviewer.answer(matchSource("#!/bin/sh\nexit 3\n"), APPROVES);
+    yield* reviewer.answer(matchSource("#!/bin/sh\nexit 2\n"), APPROVES);
+    yield* watchers.drainReviews;
     yield* watchers.runDue;
     assert.strictEqual(runner.state.runs, 0);
     assert.strictEqual((yield* watchers.list(botThread.id)).watchers[0]?.paused, true);
@@ -1630,10 +1708,7 @@ const stateKeySentFrom = (environmentId: string) => {
   const peer = makeFakePeer();
   return Effect.gen(function* () {
     const watchers = yield* WatcherService.WatcherService;
-    const target = { botThreadId: botThread.id, name: "disk" };
-    const { hash } = yield* proposeWatcher(botThread.id, "disk");
-    yield* watchers.dryRun({ ...target, hash, runsOn: LAPTOP });
-    yield* watchers.approve({ ...target, hash, runsOn: LAPTOP, approvedBy: "owner" });
+    yield* installRemoteWatcher(botThread.id, "disk");
     yield* watchers.runDue;
     return peer.state.calls.at(-1)?.arguments.stateKey;
   }).pipe(provideWatchers(orchestration, runner.layer, peer.layer, environmentId));
@@ -1699,4 +1774,331 @@ it.effect("events mode: a dry run leaves a pending event where it is", () => {
     assert.strictEqual(orchestration.sent.length, 1);
     assert.strictEqual(runner.state.runs, 1);
   }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+/** The wakes the reviewer's rejections sent, as the Bot received them. */
+const reviewWakes = (orchestration: ReturnType<typeof makeOrchestration>) =>
+  orchestration.sent.filter(({ commandId }) => commandId.startsWith("bot-wake:watcher-review:"));
+
+it.effect("a reviewer's approval is dry-run and then live, as the reviewer's own", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const reviewer = yield* FakeReviewer;
+    // The first run is a dry run: until the reviewer has answered nothing is run at all.
+    const { hash, pending } = yield* proposeWatcher(botThread.id, "disk", { purpose: "Disk use" });
+    assert.isTrue(pending);
+    const asked = yield* Queue.take(reviewer.started);
+    assert.strictEqual(runner.state.dryInputs.length, 0);
+    assert.strictEqual((yield* statuses(botThread.id))[0]?.[1], "needs_approval");
+
+    yield* reviewer.answer(matchName("disk"), APPROVES);
+    yield* watchers.drainReviews;
+    assert.strictEqual(reviewer.calls.length, 1);
+    assert.strictEqual(asked, reviewer.calls[0]);
+    assert.strictEqual(runner.state.dryInputs.length, 1);
+    assert.strictEqual(runner.state.runs, 0);
+    const [listed] = (yield* watchers.list(botThread.id)).watchers;
+    assert.deepStrictEqual(
+      [listed?.status, listed?.approvedHash, listed?.pendingHash, listed?.runsOn],
+      ["healthy", hash, undefined, "local"],
+    );
+    assert.deepStrictEqual(
+      listed?.history.map((entry) => [entry.hash, entry.approvedBy]),
+      [[hash, "reviewer"]],
+    );
+    assert.deepStrictEqual(
+      listed?.reviews.map(({ hash: reviewed, verdict, reason }) => [reviewed, verdict, reason]),
+      [[hash, "approve", APPROVES.reason]],
+    );
+    assert.isAbove(listed?.reviews[0]?.model.length ?? 0, 0);
+    assert.strictEqual(orchestration.sent.length, 0);
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 1);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("a reviewer's rejection of a revision leaves the approved version running", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const reviewer = yield* FakeReviewer;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const approvedHash = yield* installWatcher(botThread.id, "disk");
+    const dryRuns = runner.state.dryInputs.length;
+
+    const revised = yield* proposeWatcher(botThread.id, "disk", { run: "#!/bin/sh\nexit 0\n" });
+    yield* reviewer.answer(matchName("disk"), REJECTS);
+    yield* watchers.drainReviews;
+
+    const [listed] = (yield* watchers.list(botThread.id)).watchers;
+    assert.deepStrictEqual(
+      [listed?.status, listed?.approvedHash, listed?.pendingHash],
+      ["healthy", approvedHash, undefined],
+    );
+    assert.deepStrictEqual(
+      listed?.reviews.map(({ hash, verdict, reason }) => [hash, verdict, reason]),
+      [
+        [approvedHash, "approve", APPROVES.reason],
+        [revised.hash, "reject", REJECTS.reason],
+      ],
+    );
+    assert.isFalse(
+      yield* fileSystem.exists(yield* versionDirectory(botThread.id, "disk", revised.hash)),
+    );
+    // A rejected version is never run, not even once.
+    assert.strictEqual(runner.state.dryInputs.length, dryRuns);
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 1);
+
+    // The Bot hears why once, with the reviewer's words framed as data.
+    const [wake, ...more] = reviewWakes(orchestration);
+    assert.strictEqual(more.length, 0);
+    assert.strictEqual(wake?.commandId.includes(`:disk:${revised.hash}`), true);
+    assert.match(
+      wake!.text,
+      new RegExp(`<watcher-data-[0-9a-f-]+>\\s*${REJECTS.reason}\\s*</watcher-data-`, "u"),
+    );
+    assert.include(wake!.text, "untrusted data");
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("a reviewer's rejection of a new watcher removes it", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const reviewer = yield* FakeReviewer;
+    const fileSystem = yield* FileSystem.FileSystem;
+    yield* reviewer.answer(matchName("draft"), REJECTS);
+    yield* proposeWatcher(botThread.id, "draft");
+    yield* watchers.drainReviews;
+    assert.deepStrictEqual(yield* statuses(botThread.id), []);
+    assert.isFalse(yield* fileSystem.exists(yield* watcherDirectory(botThread.id, "draft")));
+    assert.strictEqual(runner.state.dryInputs.length, 0);
+    assert.strictEqual(reviewWakes(orchestration).length, 1);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect.each([
+  [
+    "fails",
+    new TextGenerationError({ operation: "reviewWatcher", detail: "Claude Cloud cannot do that." }),
+  ],
+  ["takes more than two minutes", undefined],
+] as const)("a reviewer that %s rejects, and says it could not run", ([, failure]) => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const reviewer = yield* FakeReviewer;
+    const approvedHash = yield* installWatcher(botThread.id, "disk");
+    yield* proposeWatcher(botThread.id, "disk", { run: "#!/bin/sh\nexit 0\n" });
+    yield* Queue.take(reviewer.started);
+    if (failure === undefined) yield* TestClock.adjust(Duration.seconds(120));
+    else yield* reviewer.answer(matchName("disk"), failure);
+    yield* watchers.drainReviews;
+
+    const [listed] = (yield* watchers.list(botThread.id)).watchers;
+    assert.deepStrictEqual([listed?.approvedHash, listed?.pendingHash], [approvedHash, undefined]);
+    const verdict = listed?.reviews.at(-1);
+    assert.strictEqual(verdict?.verdict, "reject");
+    assert.match(
+      verdict!.reason,
+      /^The reviewer could not run: .+\. Choose a different text-generation model in Settings\.$/u,
+    );
+    assert.include(
+      verdict!.reason,
+      failure === undefined ? "two minutes" : "Claude Cloud cannot do that",
+    );
+    assert.isAtMost(verdict!.reason.length, 300);
+    assert.strictEqual(runner.state.dryInputs.length, 1);
+    assert.include(reviewWakes(orchestration)[0]?.text, "could not run");
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("gives the reviewer the watcher's own fields and nothing else", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const reviewer = yield* FakeReviewer;
+    yield* installWatcher(botThread.id, "inbox", {
+      mode: "events",
+      purpose: "New assignments",
+      run: "echo one\n",
+      intervalSeconds: 300,
+    });
+    yield* installWatcher(botThread.id, "inbox", {
+      mode: "events",
+      purpose: "New assignments",
+      run: "echo two\n",
+      intervalSeconds: 300,
+    });
+    const [first, second] = reviewer.calls.map(({ input }) => input);
+    assert.deepStrictEqual(Object.keys(first!).sort(), [
+      "cwd",
+      "intervalSeconds",
+      "mode",
+      "modelSelection",
+      "name",
+      "previousSource",
+      "projectId",
+      "purpose",
+      "runtime",
+      "source",
+    ]);
+    assert.deepStrictEqual(
+      [first?.name, first?.purpose, first?.runtime, first?.mode, first?.intervalSeconds],
+      ["inbox", "New assignments", "sh", "events", 300],
+    );
+    assert.deepStrictEqual(
+      [first?.source, first?.previousSource, second?.source, second?.previousSource],
+      ["echo one\n", undefined, "echo two\n", "echo one\n"],
+    );
+    // The review runs from a folder that holds nothing of the Bots', not from theirs.
+    const path = yield* Path.Path;
+    const { baseDir } = yield* ServerConfig.ServerConfig;
+    assert.isTrue(path.relative(path.join(baseDir, "bots"), first!.cwd).startsWith(".."));
+    // The model is the one thread titles use, resolved from the same settings.
+    const settings = yield* (yield* ServerSettings.ServerSettingsService).getSettings;
+    assert.deepStrictEqual(first?.modelSelection, settings.textGenerationModelSelection);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("drops a review's answer when a newer proposal has replaced its version", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const reviewer = yield* FakeReviewer;
+    const approvedHash = yield* installWatcher(botThread.id, "disk");
+    const dryRuns = runner.state.dryInputs.length;
+
+    yield* proposeWatcher(botThread.id, "disk", { run: "echo one\n" });
+    yield* Queue.take(reviewer.started);
+    const newer = yield* proposeWatcher(botThread.id, "disk", { run: "echo two\n" });
+    yield* Queue.take(reviewer.started);
+    // The older review answers after it was replaced; its approval must not count for anything.
+    yield* reviewer.answer(matchSource("echo one\n"), APPROVES);
+    yield* reviewer.answer(matchSource("echo two\n"), REJECTS);
+    yield* watchers.drainReviews;
+
+    const [listed] = (yield* watchers.list(botThread.id)).watchers;
+    assert.deepStrictEqual([listed?.approvedHash, listed?.pendingHash], [approvedHash, undefined]);
+    assert.deepStrictEqual(
+      listed?.reviews.map(({ hash, verdict }) => [hash, verdict]),
+      [
+        [approvedHash, "approve"],
+        [newer.hash, "reject"],
+      ],
+    );
+    assert.strictEqual(runner.state.dryInputs.length, dryRuns);
+    assert.strictEqual(reviewWakes(orchestration).length, 1);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("does not approve a version that was replaced while its dry run was running", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const reviewer = yield* FakeReviewer;
+    const approvedHash = yield* installWatcher(botThread.id, "disk");
+    const reached = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    runner.state.onRun = () =>
+      Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release)));
+
+    const older = yield* proposeWatcher(botThread.id, "disk", { run: "echo one\n" });
+    yield* reviewer.answer(matchSource("echo one\n"), APPROVES);
+    yield* Deferred.await(reached);
+    // The reviewer approved the older version and its dry run is under way: a newer one arrives.
+    const newer = yield* proposeWatcher(botThread.id, "disk", { run: "echo two\n" });
+    yield* reviewer.answer(matchSource("echo two\n"), APPROVES);
+    yield* Deferred.succeed(release, undefined);
+    yield* watchers.drainReviews;
+
+    const [listed] = (yield* watchers.list(botThread.id)).watchers;
+    assert.deepStrictEqual([listed?.approvedHash, listed?.pendingHash], [newer.hash, undefined]);
+    assert.deepStrictEqual(
+      listed?.history.map(({ hash, approvedBy }) => [hash, approvedBy]),
+      [
+        [approvedHash, "reviewer"],
+        [older.hash, undefined],
+        [newer.hash, "reviewer"],
+      ],
+    );
+    assert.strictEqual(runner.state.dryInputs.length, 3);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("starts the review of a pending version again after a restart", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const { boot } = yield* makeRestarts(orchestration, runner);
+    const first = yield* boot;
+    // The server stopped with this version waiting on the reviewer.
+    const hash = yield* installWatcher(botThread.id, "disk", { approve: false }).pipe(first);
+
+    const second = yield* boot;
+    yield* Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const reviewer = yield* FakeReviewer;
+      assert.strictEqual(reviewer.calls.length, 0);
+      yield* reviewer.answer(matchName("disk"), APPROVES);
+      yield* watchers.start();
+      yield* watchers.drainReviews;
+      assert.strictEqual(reviewer.calls.length, 1);
+      const [listed] = (yield* watchers.list(botThread.id)).watchers;
+      assert.deepStrictEqual([listed?.approvedHash, listed?.pendingHash], [hash, undefined]);
+    }).pipe(second);
+  }).pipe(Effect.provide(NodeServices.layer));
+});
+
+it.effect("resumes a review that has its verdict without asking the reviewer again", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const { boot } = yield* makeRestarts(orchestration, runner);
+    const first = yield* boot;
+    const hash = yield* Effect.gen(function* () {
+      const reviewer = yield* FakeReviewer;
+      // The server stops in the dry run, after the verdict was saved.
+      const reached = yield* Deferred.make<void>();
+      runner.state.onRun = () =>
+        Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never));
+      yield* reviewer.answer(matchName("disk"), APPROVES);
+      const { hash } = yield* proposeWatcher(botThread.id, "disk");
+      yield* Deferred.await(reached);
+      return hash;
+    }).pipe(first);
+    runner.state.onRun = () => Effect.void;
+
+    const second = yield* boot;
+    yield* Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const reviewer = yield* FakeReviewer;
+      yield* watchers.start();
+      yield* watchers.drainReviews;
+      assert.strictEqual(reviewer.calls.length, 0);
+      const [listed] = (yield* watchers.list(botThread.id)).watchers;
+      assert.deepStrictEqual(
+        [listed?.approvedHash, listed?.reviews.length, listed?.history[0]?.approvedBy],
+        [hash, 1, "reviewer"],
+      );
+    }).pipe(second);
+  }).pipe(Effect.provide(NodeServices.layer));
 });

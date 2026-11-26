@@ -3,8 +3,8 @@ import * as Schema from "effect/Schema";
 import { EnvironmentId, IsoDateTime, ThreadId } from "./baseSchemas.ts";
 
 /**
- * A watcher is a script a Bot proposes and the user approves, version by version. It polls for
- * free and wakes the Bot only when it trips.
+ * A watcher is a script a Bot proposes and a reviewer model approves, version by version. It polls
+ * for free and wakes the Bot only when it trips.
  */
 export const BOT_WATCHER_SOURCE_MAX_BYTES = 64 * 1024;
 export const BOT_WATCHER_MIN_INTERVAL_SECONDS = 60;
@@ -29,9 +29,9 @@ export const BotWatcherRunsOn = Schema.Union([Schema.Literal("local"), Environme
 export type BotWatcherRunsOn = typeof BotWatcherRunsOn.Type;
 
 /**
- * `needs_approval`: no version is approved, so nothing runs; a revision beside an approved one
- * does not set it. `paused`: the user stopped it, approval kept. `waiting`: its environment did
- * not answer, which counts as no failure.
+ * `needs_approval`: no version is approved yet, so nothing runs; the reviewer has not finished with
+ * the first one. A revision beside an approved one does not set it. `paused`: the user stopped it,
+ * approval kept. `waiting`: its environment did not answer, which counts as no failure.
  */
 export const BotWatcherStatus = Schema.Literals([
   "needs_approval",
@@ -64,6 +64,18 @@ export const BotWatcherHistoryEntry = Schema.Struct({
 });
 export type BotWatcherHistoryEntry = typeof BotWatcherHistoryEntry.Type;
 
+/** One verdict of the reviewer model on one version, kept after the version is gone. */
+export const BotWatcherReview = Schema.Struct({
+  hash: Schema.String,
+  at: IsoDateTime,
+  verdict: Schema.Literals(["approve", "reject"]),
+  /** The reviewer's own words, or why it could not run; at most 300 characters. */
+  reason: Schema.String,
+  /** The model that judged it. */
+  model: Schema.String,
+});
+export type BotWatcherReview = typeof BotWatcherReview.Type;
+
 export const BotWatcher = Schema.Struct({
   name: BotWatcherName,
   status: BotWatcherStatus,
@@ -93,6 +105,8 @@ export const BotWatcher = Schema.Struct({
   failingSince: Schema.optional(Schema.Number),
   nextWakeAt: Schema.optional(Schema.Number),
   history: Schema.Array(BotWatcherHistoryEntry),
+  /** The reviewer's verdicts, oldest first; the last 20. */
+  reviews: Schema.Array(BotWatcherReview),
 });
 export type BotWatcher = typeof BotWatcher.Type;
 
@@ -103,13 +117,13 @@ export const BotWatcherListResult = Schema.Struct({
   watchers: Schema.Array(BotWatcher),
   /**
    * `unverified`: the saved approvals failed their signature check when the server started, so
-   * every watcher was reset to unapproved and nothing runs until the user approves again.
+   * every watcher was dropped and nothing runs until the Bot proposes it again.
    */
   approvals: Schema.Literals(["ok", "unverified"]),
 });
 export type BotWatcherListResult = typeof BotWatcherListResult.Type;
 
-/** Runs the pending version once. `hash` is the version the user saw, so a newer one is refused. */
+/** Runs a version once, for the user to see. `hash` is the version the user saw, so a newer one is refused. */
 export const BotWatcherDryRunInput = Schema.Struct({
   threadId: ThreadId,
   name: BotWatcherName,
@@ -118,19 +132,6 @@ export const BotWatcherDryRunInput = Schema.Struct({
   runsOn: Schema.optional(BotWatcherRunsOn),
 });
 export type BotWatcherDryRunInput = typeof BotWatcherDryRunInput.Type;
-
-/** Approves exactly `hash`, which must still be the pending version. */
-export const BotWatcherApproveInput = Schema.Struct({
-  threadId: ThreadId,
-  name: BotWatcherName,
-  hash: Schema.String,
-  runsOn: BotWatcherRunsOn,
-});
-export type BotWatcherApproveInput = typeof BotWatcherApproveInput.Type;
-
-/** Discards the pending version and resumes the approved one, if there is one. */
-export const BotWatcherRejectInput = Schema.Struct({ threadId: ThreadId, name: BotWatcherName });
-export type BotWatcherRejectInput = typeof BotWatcherRejectInput.Type;
 
 /** Pauses, resumes or removes a watcher; the user's, so none of them depends on the Bot's state. */
 export const BotWatcherTargetInput = Schema.Struct({ threadId: ThreadId, name: BotWatcherName });
@@ -177,7 +178,7 @@ export class BotWatcherError extends Schema.TaggedError<BotWatcherError>()("BotW
       case "stale_hash":
         return `Watcher ${this.watcher ?? ""} changed since that version was shown. Review the new version first.`;
       case "dry_run_required":
-        return `Run watcher ${this.watcher ?? ""} once, where it will run, before approving it: the server approves only a version whose dry run has completed there.`;
+        return `Run watcher ${this.watcher ?? ""} once, where it will run, first: the server makes a version live, or moves a watcher, only after a dry run has completed there.`;
       case "unreachable":
         return this.detail ?? "The environment did not answer.";
       case "io":

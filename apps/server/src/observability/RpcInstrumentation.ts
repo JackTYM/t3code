@@ -236,8 +236,6 @@ const RPC_AGGREGATES = {
   [WS_METHODS.botMailRotateHook]: "orchestration",
   [WS_METHODS.botWatcherList]: "orchestration",
   [WS_METHODS.botWatcherDryRun]: "orchestration",
-  [WS_METHODS.botWatcherApprove]: "orchestration",
-  [WS_METHODS.botWatcherReject]: "orchestration",
   [WS_METHODS.botWatcherSetRunsOn]: "orchestration",
   [WS_METHODS.botWatcherPause]: "orchestration",
   [WS_METHODS.botWatcherResume]: "orchestration",

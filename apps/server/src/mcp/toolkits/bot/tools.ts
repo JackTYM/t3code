@@ -8,6 +8,7 @@ import {
   BotWatch,
   BotWatcherMode,
   BotWatcherName,
+  BotWatcherReview,
   BotWatcherRunsOn,
   BotWatcherRuntime,
   BotWatcherStatus,
@@ -149,12 +150,13 @@ const WatchRemove = Tool.make("t3_bot_watch_remove", {
   .annotate(Tool.OpenWorld, false)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromNonBots);
 
-// There is deliberately no tool to approve a watcher or to run one once: both are the user's, so
-// a Bot that read a hostile message cannot put code to work by calling them.
+// There is deliberately no tool to approve a watcher or to run one once: a reviewer model judges
+// each version, and a dry run is the server's or the user's, so a Bot that read a hostile message
+// cannot put code to work by calling a tool.
 const WatcherPropose = Tool.make("t3_bot_watcher_propose", {
   ...shared,
   description:
-    "Propose a watcher: a script that polls for free and wakes you only when it trips. It does NOT run until the user has read its source, run it once, and approved that exact version; a changed version of an approved watcher waits beside it, and the approved version keeps running until the new one is approved. You cannot approve or dry-run it yourself. Runs on an interval, with no stdin, a minimal environment, and a short timeout. Healthy is exit 0 and, when `expect` is set, stdout matching it; anything else trips and wakes you with the output. mode `events`: exit 0 with empty stdout means nothing happened; exit 0 with output means news and wakes you once with that output. Keep a cursor in $T3_WATCHER_STATE_DIR so you only print what is new. Stdout is capped at 4096 bytes. In events mode, output that reaches the cap counts as a failure, so print a short line per new item. A new watcher is refused in a turn that began with a wake or any message the user did not type; a revision of one the user already approved is not.",
+    "Propose a watcher: a script that polls for free and wakes you only when it trips. A reviewer model checks the script and the server runs it once and approves it; a rejection is reported to you in a wake with the reason. Revisions keep the old version running meanwhile. You cannot approve or dry-run it yourself. Runs on an interval, with no stdin, a minimal environment, and a short timeout. Healthy is exit 0 and, when `expect` is set, stdout matching it; anything else trips and wakes you with the output. mode `events`: exit 0 with empty stdout means nothing happened; exit 0 with output means news and wakes you once with that output. Keep a cursor in $T3_WATCHER_STATE_DIR so you only print what is new. Stdout is capped at 4096 bytes. In events mode, output that reaches the cap counts as a failure, so print a short line per new item. A new watcher is refused in a turn that began with a wake or any message the user did not type; a revision of one the user already approved is not.",
   parameters: Schema.Struct({
     name: BotWatcherName.annotate({
       description:
@@ -179,7 +181,7 @@ const WatcherPropose = Tool.make("t3_bot_watcher_propose", {
     runsOn: Schema.optional(
       BotWatcherRunsOn.annotate({
         description:
-          "`local` (default) or a linked environment's id. A request: the user chooses where it runs when approving.",
+          "`local` (default) or a linked environment's id. A request: the user chooses where it runs by moving the watcher.",
       }),
     ),
     mode: Schema.optional(
@@ -196,7 +198,8 @@ const WatcherPropose = Tool.make("t3_bot_watcher_propose", {
   success: Schema.Struct({
     hash: Schema.String,
     pending: Schema.Boolean.annotate({
-      description: "True while it waits for the user. False when it is the approved version again.",
+      description:
+        "True while it waits for the reviewer. False when it is the approved version again.",
     }),
   }),
 })
@@ -224,7 +227,7 @@ const WatcherRemove = Tool.make("t3_bot_watcher_remove", {
 const WatcherList = Tool.make("t3_bot_watcher_list", {
   ...shared,
   description:
-    "List your watchers and where each stands, with the source of the version shown so you can re-read what you wrote. `needs_approval` means no version of the watcher is approved yet, so nothing runs. A revision you proposed to an approved watcher shows as `pendingHash` while the approved version keeps running.",
+    "List your watchers and where each stands, with the source of the version shown so you can re-read what you wrote, and the reviewer's verdicts with their reasons. `needs_approval` means no version of the watcher is approved yet, so nothing runs: the reviewer has not finished with the first one. A revision you proposed to an approved watcher shows as `pendingHash` while the approved version keeps running.",
   success: Schema.Struct({
     watchers: Schema.Array(
       Schema.Struct({
@@ -239,6 +242,10 @@ const WatcherList = Tool.make("t3_bot_watcher_list", {
         mode: Schema.optional(BotWatcherMode),
         purpose: Schema.optional(Schema.String),
         runsOn: BotWatcherRunsOn,
+        approvedHash: Schema.optional(Schema.String),
+        pendingHash: Schema.optional(Schema.String),
+        /** Oldest first, the last 20: each says which version it judged. */
+        reviews: Schema.Array(BotWatcherReview),
       }),
     ),
   }),

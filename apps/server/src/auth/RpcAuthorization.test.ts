@@ -165,23 +165,18 @@ describe("RPC authorization scopes", () => {
     }
   });
 
-  it("lets readers list a Bot's watchers, but running or approving one takes terminal access", () => {
+  it("lets readers list a Bot's watchers, but running one takes terminal access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.botWatcherList)).toBe(AuthOrchestrationReadScope);
-    // A watcher is a script this server runs: approving, dry-running, or moving it is running code.
+    // A watcher is a script this server runs: dry-running, moving or resuming it is running code.
     for (const method of [
       WS_METHODS.botWatcherDryRun,
-      WS_METHODS.botWatcherApprove,
       WS_METHODS.botWatcherSetRunsOn,
       WS_METHODS.botWatcherResume,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthTerminalOperateScope);
     }
-    // Discarding a proposal, pausing or removing a watcher runs nothing new.
-    for (const method of [
-      WS_METHODS.botWatcherReject,
-      WS_METHODS.botWatcherPause,
-      WS_METHODS.botWatcherRemove,
-    ]) {
+    // Pausing or removing a watcher runs nothing new.
+    for (const method of [WS_METHODS.botWatcherPause, WS_METHODS.botWatcherRemove]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }
   });

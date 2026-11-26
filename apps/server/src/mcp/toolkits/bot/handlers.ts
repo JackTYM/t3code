@@ -183,8 +183,8 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
     Effect.gen(function* () {
       const { threadId } = yield* callerBot;
       const watchers = yield* WatcherService.WatcherService;
-      // The source is the Bot's own text, so it may re-read it to revise; the user's review state
-      // (diff, dry run, history) stays in the client.
+      // The source is the Bot's own text, so it may re-read it to revise; the verdicts say why a
+      // version was refused. The diff, dry run and history stay in the client.
       return {
         watchers: (yield* watchers.list(threadId)).watchers.map(
           ({
@@ -198,11 +198,17 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
             mode,
             purpose,
             runsOn,
+            approvedHash,
+            pendingHash,
+            reviews,
           }) => ({
             name,
             status,
             hash,
             runsOn,
+            reviews,
+            ...(approvedHash === undefined ? {} : { approvedHash }),
+            ...(pendingHash === undefined ? {} : { pendingHash }),
             ...(runtime === undefined ? {} : { runtime }),
             ...(source === undefined ? {} : { source }),
             ...(intervalSeconds === undefined ? {} : { intervalSeconds }),

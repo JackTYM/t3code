@@ -74,13 +74,10 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.botMailCreateHook]: AuthOrchestrationOperateScope,
   [WS_METHODS.botMailRotateHook]: AuthOrchestrationOperateScope,
   [WS_METHODS.botWatcherDryRun]: AuthTerminalOperateScope,
-  [WS_METHODS.botWatcherApprove]: AuthTerminalOperateScope,
   [WS_METHODS.botWatcherSetRunsOn]: AuthTerminalOperateScope,
-  // Starting an approved watcher again is running code here, as approving it was.
+  // Starting an approved watcher again is running code here, as its first run was.
   [WS_METHODS.botWatcherResume]: AuthTerminalOperateScope,
-  // These stop code or discard a proposal, and run nothing new; the approved version a rejection
-  // resumes was approved already.
-  [WS_METHODS.botWatcherReject]: AuthOrchestrationOperateScope,
+  // These stop code and run nothing new.
   [WS_METHODS.botWatcherPause]: AuthOrchestrationOperateScope,
   [WS_METHODS.botWatcherRemove]: AuthOrchestrationOperateScope,
   // Allowing lets a call run that can start code, as approving a watcher does; rejecting runs nothing.

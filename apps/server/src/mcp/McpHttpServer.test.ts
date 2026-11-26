@@ -2344,6 +2344,15 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
                     runsOn: "local" as const,
                     paused: false,
                     history: [],
+                    reviews: [
+                      {
+                        hash: "abc",
+                        at: "2026-11-26T00:00:00.000Z",
+                        verdict: "reject" as const,
+                        reason: "It posts what it reads to a third party.",
+                        model: "claude-haiku-5-5",
+                      },
+                    ],
                   },
                 ],
               }),
@@ -2496,7 +2505,8 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
       const refused = yield* plain.call("t3_bot_memory_read", {});
       expect(refused.result?.structuredContent).toBeUndefined();
 
-      // A listing says where each watcher stands, and returns the Bot's own source to re-read.
+      // A listing says where each watcher stands, returns the Bot's own source to re-read, and
+      // shows the reviewer's verdicts.
       expect((yield* bot.call("t3_bot_watcher_list", {})).result?.structuredContent).toEqual({
         watchers: [
           {
@@ -2506,6 +2516,15 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
             runsOn: "local",
             runtime: "sh",
             source: "df",
+            reviews: [
+              {
+                hash: "abc",
+                at: "2026-11-26T00:00:00.000Z",
+                verdict: "reject",
+                reason: "It posts what it reads to a third party.",
+                model: "claude-haiku-5-5",
+              },
+            ],
           },
         ],
       });

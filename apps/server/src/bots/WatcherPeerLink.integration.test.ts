@@ -14,6 +14,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import { ExitCode } from "effect/process/ChildProcessSpawner";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
@@ -36,6 +37,7 @@ import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as BotService from "./BotService.ts";
 import { makeOrchestration } from "./BotTestkit.ts";
 import * as WatcherService from "./WatcherService.ts";
@@ -52,7 +54,11 @@ const layerBase = () =>
     Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer)),
   );
 
-/** Counts what reaches a `ProcessRunner`, which runs for real when `real` says so. */
+/**
+ * Counts what reaches a `ProcessRunner`, which runs for real when `real` says so. Otherwise it is
+ * the box's, which answers only the server's own dry run of a new version, before the user moves
+ * the watcher to the laptop; a scheduled run there is a bug.
+ */
 const makeRunner = (real: boolean) => {
   const state = { runs: 0 };
   const layer = Layer.effect(
@@ -61,6 +67,18 @@ const makeRunner = (real: boolean) => {
       const runner = real ? yield* ProcessRunner.make() : undefined;
       return ProcessRunner.ProcessRunner.of({
         run: (input) => {
+          if (runner === undefined && input.env?.T3_WATCHER_DRY_RUN === "1") {
+            return Effect.succeed({
+              code: ExitCode(0),
+              stdout: "",
+              stderr: "",
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutInvalidUtf8: false,
+              stderrInvalidUtf8: false,
+            });
+          }
           state.runs += 1;
           return runner === undefined
             ? Effect.die("the box ran a script that belongs on the laptop")
@@ -78,7 +96,16 @@ const layerWatchers = (
   peers: Layer.Layer<PeerMcpClient.PeerMcpClient>,
 ) =>
   WatcherService.layer.pipe(
-    Layer.provideMerge(Layer.mergeAll(runner, peers, Scheduler.layer)),
+    Layer.provideMerge(
+      Layer.mergeAll(
+        runner,
+        peers,
+        Scheduler.layer,
+        Layer.mock(TextGeneration.TextGeneration)({
+          reviewWatcher: () => Effect.succeed({ verdict: "approve", reason: "Looks fine." }),
+        }),
+      ),
+    ),
     Layer.provideMerge(BotService.layer),
     Layer.provideMerge(orchestration.layer),
     Layer.provideMerge(ServerSettings.ServerSettingsService.layerTest()),
@@ -182,7 +209,7 @@ const mcpSession = Effect.fn("mcpSession")(function* (url: string, token: string
 const bot = { enabled: true, muteChildren: false } as const;
 const userMessage = { id: "message:user", createdBy: "user" } as const;
 
-/** A Bot whose watcher the user dry-ran on the laptop and approved there. */
+/** A Bot whose watcher the reviewer approved, and the user dry-ran on the laptop and moved there. */
 const installOnLaptop = Effect.fn("installOnLaptop")(function* (
   watchers: WatcherService.WatcherService["Service"],
   threadId: ThreadId,
@@ -198,14 +225,9 @@ const installOnLaptop = Effect.fn("installOnLaptop")(function* (
     intervalSeconds: 3600,
     expect,
   });
+  yield* watchers.drainReviews;
   const dry = yield* watchers.dryRun({ botThreadId: threadId, name, hash, runsOn: LAPTOP });
-  yield* watchers.approve({
-    botThreadId: threadId,
-    name,
-    hash,
-    runsOn: LAPTOP,
-    approvedBy: "owner",
-  });
+  yield* watchers.setRunsOn({ botThreadId: threadId, name, runsOn: LAPTOP });
   return dry;
 });
 

@@ -255,7 +255,6 @@ describe("command permissions", () => {
     WS_METHODS.homeDisable,
     WS_METHODS.homeReset,
     WS_METHODS.homeSetModel,
-    WS_METHODS.botWatcherReject,
     WS_METHODS.botWatcherPause,
     WS_METHODS.botWatcherRemove,
     WS_METHODS.botHoldReject,
@@ -299,7 +298,6 @@ describe("command permissions", () => {
   );
   it.effect.each([
     WS_METHODS.botWatcherDryRun,
-    WS_METHODS.botWatcherApprove,
     WS_METHODS.botWatcherSetRunsOn,
     WS_METHODS.botWatcherResume,
     WS_METHODS.botHoldAllow,

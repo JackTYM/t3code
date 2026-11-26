@@ -24,6 +24,7 @@ const watcher = (overrides: Partial<BotWatcher> & { name: string }): BotWatcher 
   runsOn: "local",
   paused: false,
   history: [],
+  reviews: [],
   ...overrides,
 });
 

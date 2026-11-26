@@ -216,12 +216,10 @@ import {
   BotTasksReadResult,
 } from "./bots.ts";
 import {
-  BotWatcherApproveInput,
   BotWatcherDryRunInput,
   BotWatcherError,
   BotWatcherListInput,
   BotWatcherListResult,
-  BotWatcherRejectInput,
   BotWatcherRun,
   BotWatcherSetRunsOnInput,
   BotWatcherTargetInput,
@@ -601,8 +599,6 @@ export const WS_METHODS = {
   botMailRotateHook: "botMail.rotateHook",
   botWatcherList: "botWatcher.list",
   botWatcherDryRun: "botWatcher.dryRun",
-  botWatcherApprove: "botWatcher.approve",
-  botWatcherReject: "botWatcher.reject",
   botWatcherSetRunsOn: "botWatcher.setRunsOn",
   botWatcherPause: "botWatcher.pause",
   botWatcherResume: "botWatcher.resume",
@@ -2048,16 +2044,6 @@ const WsBotWatcherDryRunRpc = Rpc.make(WS_METHODS.botWatcherDryRun, {
   error: botWatcherFailure,
 });
 
-const WsBotWatcherApproveRpc = Rpc.make(WS_METHODS.botWatcherApprove, {
-  payload: BotWatcherApproveInput,
-  error: botWatcherFailure,
-});
-
-const WsBotWatcherRejectRpc = Rpc.make(WS_METHODS.botWatcherReject, {
-  payload: BotWatcherRejectInput,
-  error: botWatcherFailure,
-});
-
 const WsBotWatcherSetRunsOnRpc = Rpc.make(WS_METHODS.botWatcherSetRunsOn, {
   payload: BotWatcherSetRunsOnInput,
   error: botWatcherFailure,
@@ -3014,8 +3000,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotMailRotateHookRpc,
   WsBotWatcherListRpc,
   WsBotWatcherDryRunRpc,
-  WsBotWatcherApproveRpc,
-  WsBotWatcherRejectRpc,
   WsBotWatcherSetRunsOnRpc,
   WsBotWatcherPauseRpc,
   WsBotWatcherResumeRpc,

@@ -192,7 +192,7 @@ function DiffView(props: { diff: string }) {
   );
 }
 
-type Busy = "run" | "approve" | "reject" | "move" | "pause" | "resume" | "remove" | "revise";
+type Busy = "run" | "move" | "pause" | "resume" | "remove" | "revise";
 
 function WatcherCard(props: {
   threadRef: ScopedThreadRef;
@@ -207,8 +207,6 @@ function WatcherCard(props: {
   const { environmentId, threadId } = props.threadRef;
   const thread = useThreadShell(props.threadRef);
   const dryRun = useAtomCommand(botFilesEnvironment.watcherDryRun, { reportFailure: false });
-  const approve = useAtomCommand(botFilesEnvironment.watcherApprove, { reportFailure: false });
-  const reject = useAtomCommand(botFilesEnvironment.watcherReject, { reportFailure: false });
   const setRunsOn = useAtomCommand(botFilesEnvironment.watcherSetRunsOn, {
     reportFailure: false,
   });
@@ -265,20 +263,6 @@ function WatcherCard(props: {
       }),
     );
   };
-  const approveVersion = async () => {
-    if (watcher.pendingHash === undefined) return;
-    const done = await settle("approve", gt("Failed to approve the watcher"), () =>
-      approve({
-        environmentId,
-        input: { ...base, hash: watcher.pendingHash!, runsOn: target },
-      }),
-    );
-    if (done) setPicked(null);
-  };
-  const rejectVersion = () =>
-    void settle("reject", gt("Failed to reject the new version"), () =>
-      reject({ environmentId, input: base }),
-    );
   const moveWatcher = async () => {
     const done = await settle("move", gt("Failed to move the watcher"), () =>
       setRunsOn({ environmentId, input: { ...base, runsOn: target } }),
@@ -328,7 +312,7 @@ function WatcherCard(props: {
       toastManager.add({
         type: "success",
         title: gt("Asked the Bot to revise {name}", { name: watcher.name }),
-        description: gt("A new version needs its own Run once and approval."),
+        description: gt("A reviewer model checks the new version before it runs."),
       });
     }
   };
@@ -336,7 +320,7 @@ function WatcherCard(props: {
   const why = (control: BotWatcherControl) =>
     control.enabled ? undefined : blockedReason(control.reason);
   // A disabled button has no tooltip, so the reason is printed under the row.
-  const approveReason = why(controls.approve);
+  const runOnceReason = why(controls.runOnce);
   const idle = busy === null;
 
   return (
@@ -382,13 +366,12 @@ function WatcherCard(props: {
 
       {state === "new" ? (
         <p className="text-muted-foreground text-xs">
-          <T>The Bot proposed this. Nothing runs until you approve this exact version.</T>
+          <T>The Bot proposed this. It runs once a reviewer model has approved it.</T>
         </p>
       ) : state === "changed" ? (
         <p className="text-muted-foreground text-xs">
           <T>
-            The Bot saved a new version. The version you approved is stopped until you approve the
-            new one or reject it.
+            The Bot saved a new version. The approved version keeps running until it is reviewed.
           </T>
         </p>
       ) : state === "invalid" ? (
@@ -501,25 +484,6 @@ function WatcherCard(props: {
             </Button>
             <Button
               size="xs"
-              disabled={!controls.approve.enabled || !idle}
-              onClick={() => void approveVersion()}
-            >
-              {busy === "approve" ? <T>Approving…</T> : <T>Approve this version</T>}
-            </Button>
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={!controls.reject.enabled || !idle}
-              onClick={rejectVersion}
-            >
-              {watcher.approvedHash === undefined ? (
-                <T>Reject</T>
-              ) : (
-                <T>Reject, keep the approved version running</T>
-              )}
-            </Button>
-            <Button
-              size="xs"
               variant="ghost"
               disabled={thread === null || !idle}
               onClick={() => setRevising((open) => !open)}
@@ -527,8 +491,8 @@ function WatcherCard(props: {
               <T>Ask the Bot to revise</T>
             </Button>
           </div>
-          {approveReason === undefined ? null : (
-            <p className="text-muted-foreground text-xs">{approveReason}</p>
+          {runOnceReason === undefined ? null : (
+            <p className="text-muted-foreground text-xs">{runOnceReason}</p>
           )}
         </div>
       ) : (
@@ -645,8 +609,8 @@ function WatcherCard(props: {
             <AlertDialogTitle>{gt("Remove {name}?", { name: watcher.name })}</AlertDialogTitle>
             <AlertDialogDescription>
               <T>
-                This deletes the watcher and its versions. The Bot can propose it again, and you
-                would approve it again.
+                This deletes the watcher and its versions. The Bot can propose it again, and the
+                reviewer would check it again.
               </T>
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -680,8 +644,8 @@ function GroupHeading(props: { group: BotWatcherGroup; count: number }) {
 }
 
 /**
- * The scripts the Bot proposes to watch things for free. The user reads each version, runs it
- * once, and approves exactly that version; the source is never editable here.
+ * The scripts the Bot proposes to watch things for free. A reviewer model approves each version;
+ * the user can read it, run it once, move, pause or remove it. The source is never editable here.
  */
 export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
   const gt = useGT();
@@ -689,13 +653,11 @@ export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
   const watchers = useEnvironmentQuery(
     botFilesEnvironment.watchers({ environmentId, input: { threadId } }),
   );
-  // Run once, approve, move and resume all run code, so each needs terminal access. Every
+  // Run once, move and resume all run code, so each needs terminal access. Every
   // permission is read before any is combined, since a short-circuit would skip a hook.
   const canDryRun = useAtomValue(botFilesEnvironment.watcherDryRun.permissionAtom(environmentId));
-  const canApprove = useAtomValue(botFilesEnvironment.watcherApprove.permissionAtom(environmentId));
   const canMove = useAtomValue(botFilesEnvironment.watcherSetRunsOn.permissionAtom(environmentId));
   const canResume = useAtomValue(botFilesEnvironment.watcherResume.permissionAtom(environmentId));
-  const canReject = useAtomValue(botFilesEnvironment.watcherReject.permissionAtom(environmentId));
   const canPause = useAtomValue(botFilesEnvironment.watcherPause.permissionAtom(environmentId));
   const canRemove = useAtomValue(botFilesEnvironment.watcherRemove.permissionAtom(environmentId));
   const firstRemote = watchers.data?.watchers
@@ -707,8 +669,8 @@ export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
     return <p className="text-muted-foreground text-sm">{watchers.error ?? <T>Loading…</T>}</p>;
   }
   const grants = {
-    runCode: canDryRun && canApprove && canMove && canResume,
-    operate: canReject && canPause && canRemove,
+    runCode: canDryRun && canMove && canResume,
+    operate: canPause && canRemove,
   };
   const groups = groupBotWatchers(watchers.data.watchers);
 
@@ -717,8 +679,8 @@ export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
       <div className="flex items-start justify-between gap-2">
         <p className="text-muted-foreground text-xs">
           <T>
-            The Bot writes these. Nothing runs until you approve that exact version, and any change
-            stops it again.
+            The Bot writes these. A reviewer model checks each version before it runs; you can run
+            one once, move, pause or remove it.
           </T>
         </p>
         <Button
@@ -738,8 +700,8 @@ export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
           </AlertTitle>
           <AlertDescription>
             <T>
-              The saved approvals failed their signature check, so every watcher is stopped until
-              you approve it again.
+              The saved approvals failed their signature check, so every watcher was dropped. The
+              Bot can propose them again.
             </T>
           </AlertDescription>
         </Alert>

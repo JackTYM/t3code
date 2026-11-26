@@ -2766,16 +2766,6 @@ export const layerWsRpc = (
             hash: input.hash,
             runsOn: input.runsOn,
           }),
-        [WS_METHODS.botWatcherApprove]: (input) =>
-          botWatchers.approve({
-            botThreadId: input.threadId,
-            name: input.name,
-            hash: input.hash,
-            runsOn: input.runsOn,
-            approvedBy: currentSession.subject,
-          }),
-        [WS_METHODS.botWatcherReject]: (input) =>
-          botWatchers.reject({ botThreadId: input.threadId, name: input.name }),
         [WS_METHODS.botWatcherSetRunsOn]: (input) =>
           botWatchers.setRunsOn({
             botThreadId: input.threadId,
