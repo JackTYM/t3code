@@ -54,10 +54,12 @@ needs you.
   is a shell with your own logins, so "do not build or release" is an instruction it follows, not a
   block.
 - T3 Code refuses the crew's merge, and the fix waits for you as an open pull request, when it
-  touches the parts that guard the Bot (its own safety machinery, how it connects, updates and
-  releases, CI and scripts, dependencies, the desktop updater and signing) or when any of its checks
-  has not passed. A pull request with no checks counts as not passed. This is a check on the merge
-  tool only: a crew that merges another way, through its shell, is not stopped by it.
+  touches the parts that guard the Bot (its own safety machinery, how the server connects, starts and
+  answers requests, what it runs and reaches, how it updates and releases, CI and scripts,
+  dependencies, the desktop updater and signing) or when any of its checks has not passed. A pull
+  request with no checks counts as not passed. The web and mobile apps, and most of the other
+  packages, are not on that list: a fix there merges when its checks pass. This is a check on the
+  merge tool only: a crew that merges another way, through its shell, is not stopped by it.
 - Automatic merging needs the repository's checks to run on pull requests. Without that, every
   fix waits for you.
 

@@ -119,13 +119,16 @@ episode. The wake id is `bot-wake:health:<signalId>:<n>`.
   whose key is not the episode's own, is dropped. Each save raises a version in the file, and the
   newest version is also kept in the secret store. The start tells three outcomes apart:
   - **A file that is not there** is the first run: empty.
-  - **A file that cannot be vouched for** (a bad signature, or a version older than the secret
-    store's, as a restored backup would be) is believed for nothing. It is moved to
-    `repair-state.json.rejected` so no later save writes over it, and the service starts empty.
-    The version count goes on from the secret store's, so later saves are newer.
-  - **Anything else** (a file that cannot be read, is not JSON or is a state this version cannot
-    decode, a secret store that cannot be read) proves nothing against the file, which may hold the
-    only record of a running crew. It is left as it is, and the run keeps its state in memory and
+  - **A file that cannot be vouched for** is believed for nothing: a bad signature, a version
+    older than the secret store's (as a restored backup would be), or a file that reads but is not
+    a signed state at all (not JSON, or signed but not a state this version decodes), which will
+    not become one by waiting. It is moved to `repair-state.json.rejected.<ms>` (with `-<n>` when
+    two land in the same millisecond) so no later save writes over it, earlier rejected files are
+    kept, only the five newest stay, and the service starts empty with a log line. The version
+    count goes on from the secret store's, so later saves are newer.
+  - **Anything else** (a file that cannot be read, a secret store or key that cannot be read, or a
+    file that cannot be moved aside) proves nothing against the file, which may hold the only
+    record of a running crew. It is left as it is, and the run keeps its state in memory and
     writes nothing until a start reads a file that verifies.
 
   The version check is outside the file but inside the user's reach: a process that can read the
@@ -177,9 +180,13 @@ thread in a worktree, grouped under the Bot, no higher in runtime mode than the 
   stays and is marked `uncertain`, and the next server start or the next repair start for that
   signal looks again: a thread that is there is a recorded crew, and one that is not was never made,
   so the claim is released without counting as a failed attempt and the retry launches the same
-  thread id. `crewOf(threadId)` says which repair a recorded crew, or a subagent of one by lineage
-  root, belongs to and the branch it was told to push; it knows nothing of a thread a crew
-  launched, which the hold recognises by what sent its first message. The claim is made under the
+  thread id. The id is predictable, so a client can create a thread named
+  `repair-crew:<signal>:<n>` first: the real launch then fails, the squatting thread is what is
+  recorded for that attempt, and the signal is blocked (`already_started`) until that thread is
+  deleted, which counts it as a failed attempt. A lookup that keeps failing blocks a signal the
+  same way until it works. `crewOf(threadId)` says which repair a recorded crew, or a subagent of
+  one by lineage root, belongs to and the branch it was told to push; it knows nothing of a thread
+  a crew launched, which the hold recognises by what sent its first message. The claim is made under the
   service lock and the launch runs outside it, since a launch can be slow and every signal and merge
   result waits on the lock; a claim whose thread does not exist yet is "launching", not lost.
 
@@ -234,24 +241,29 @@ make the guard say yes, so the workflow forge that can merge is in it), the dire
 what a Bot, a thread or a tool may do (Bot code, orchestration with its runtime policy and provider
 adapters, MCP, scheduled tasks and webhooks, contracts, settings and storage), who may connect and
 what a link, a token or a managed policy lets them do (the HTTP entry, guest links, peers, the relay,
-and the shared auth-scope, connect and bootstrap-token helpers), what agents are told and taught
-(`AGENTS.md`, skills, rules, docs, evals), the checks' own configuration (test, type, lint and
-review configs), anything that runs on this machine or releases without a build (CI, scripts, git
-hooks, editor and container setup), dependencies, and how the app updates and releases itself (the
-desktop updater, installer and signing, and the server's own self-update and release code). The
-list is the one place to read what is covered. Updater and signing code is not all named for it
-(`FullUpdate.ts`, `ElectronUpdater.ts` have a capital `U`, desktop signing lives in `scripts/` and
-the workflows), so matching is case-blind and names directories, not just files. A test lists every
-entry, so a change to it is deliberate. Broad globs are the point: a repair that needs one of these
-files is the user's to make, and the crew's report says so.
+and the shared auth-scope, connect and bootstrap-token helpers), how the server starts and answers a
+request (the CLI, startup access, CORS and request-URL handling, the bootstrap and the settings
+secrets, the secret providers, mail's sender checks and parser), what it runs and reaches (the
+workspace, process and terminal code, the milestone hub, and the `ssh` and `tailscale` packages),
+what agents are told and taught (`AGENTS.md`, skills, rules, docs, evals), the checks' own
+configuration (test, type, lint and review configs), anything that runs on this machine or releases
+without a build (CI, scripts, git hooks, editor and container setup), dependencies, and how the app
+updates and releases itself (the desktop updater, installer and signing, and the server's own
+self-update and release code). The list is the one place to read what is covered. Updater and
+signing code is not all named for it (`FullUpdate.ts`, `ElectronUpdater.ts` have a capital `U`,
+desktop signing lives in `scripts/` and the workflows), so matching is case-blind and names
+directories, not just files. A test lists every entry, so a change to it is deliberate. Broad globs
+are the point: a repair that needs one of these files is the user's to make, and the crew's report
+says so.
 
-What is **not** covered, so a fix there merges when its checks pass: the rest of `apps/server/src`,
-including what spawns processes and touches the machine (`process`, `terminal`, `workspace`, `git`,
-`vcs`, `checkpointing`), `project`, `mail`, `mcpServers` and `mcpApps`; the rest of
-`packages/shared` and `packages/client-runtime`; the other forge packages beside GitHub, the secret
-providers, `packages/ssh` and `packages/tailscale`; `apps/web`, `apps/mobile` and `apps/marketing`;
-the desktop app outside its updater and signing; `native/**`; and root files such as `.gitignore`.
-A list of paths cannot be complete, which is why the control that holds is on GitHub (below).
+What is **not** covered, so a fix there merges when its checks pass: the rest of `apps/server/src`
+(`git`, `vcs`, `checkpointing`, `project`, the rest of `mail`, `mcpServers` and `mcpApps`, among
+others); the rest of `packages/shared`, `packages/client-runtime` and the other packages not named
+above, including the forge packages beside GitHub; the whole of `apps/web`, `apps/mobile` and
+`apps/marketing`; the desktop app outside its updater and signing; `native/**`; and root files such
+as `.gitignore`. A client change in `apps/web` or `apps/mobile` can still change what the user sees
+and clicks. A list of paths cannot be complete, which is why the control that holds is on GitHub
+(below).
 
 **What the guard tells the Bot.** After a merge or a refusal the Bot gets one wake with the pull
 request's number, merged or left open, and the reason code, and no title, body or file name. It is
@@ -277,13 +289,24 @@ command may run. So these remain open:
 - The give-up, merge and limit wakes start free turns whose reads do not taint (see Health wakes),
   so a Bot that reads outside text in one acts on it unheld.
 - A sibling thread a crew starts with `t3_thread_launch` has a raw shell of its own. Its merge tool
-  is guarded now, but what it runs is not. The Bot's hold tells it from the Bot's own crew by what
-  sent its first message, so a sibling launched with no prompt looks like the Bot's once the Bot
-  itself sends it a first message in a turn the user typed.
+  is guarded, but what it runs is not. The Bot's hold tells it from the Bot's own crew by what sent
+  its first message, and a crew cannot start a thread without one (`layerRepairCrewLaunchGuard`
+  refuses `t3_thread_launch` and `create_threads` calls that carry no message, from a crew or a
+  subagent of one), so a sibling cannot be made to look like the Bot's by the Bot sending it a
+  first message later. A promptless thread in the Bot's group was therefore made by a person or by
+  the Bot itself, never by a crew. A crew also cannot start a free Bot turn by messaging it: a turn
+  whose first message came from a crew or a subagent of one is influenced, so the Bot's launches and
+  its messages to other agents are held in it. What remains is a message a crew steers into a Bot
+  turn that is already running (`t3_thread_send` with `steer`, or `auto` while a turn runs): the
+  turn's first message is still the user's, so it stays free while the crew's text is in it.
 - A crew can read what the user's credentials can: tokens in the environment, the keychain, git
   and `gh` config, the T3 home (the signing key included, see Health wakes).
 - No bound on one crew's time or tokens: the daily start cap and the two failed attempts limit how
   many start, not how long one runs or what it costs.
+- A thread lookup that keeps failing blocks a signal's repair until it works: an attempt whose
+  thread cannot be looked up is kept as uncertain and the signal answers `already_started`, rather
+  than risk a second crew. The same holds for a client that creates a thread with a crew's
+  predictable id first (see Repair start).
 - The head can still be swapped inside the guard's window (see above), and what the protected
   list does not name merges when its checks pass.
 
@@ -397,7 +420,9 @@ no signal at all.
   email reaches the Bot: the digest names senders and subjects, and the reader's report is shaped
   by the body. [`BotHoldService`](../../apps/server/src/bots/BotHoldService.ts) calls a Bot's turn
   influenced when its run began with a mail digest (a `bot-wake:mail:` message) or a watcher wake
-  (`bot-wake:watcher`), began with a mail
+  (`bot-wake:watcher`), began with a message a repair crew or a subagent of one sent (a crew has
+  the user's reach and an easy id, so it must not be able to open a free turn by writing to the
+  Bot), began with a mail
   reader's report (the run's first message is the completion delivery of a task whose child is a
   `mailReader`), or has since searched mail or started a reader. Starting a reader taints the run that did
   it, so a Bot cannot read the child's thread or poll its task from a turn the user typed. In an
@@ -409,10 +434,12 @@ no signal at all.
   grouping alone does not say so: a repair crew has `t3_thread_launch`, and what it launches is
   grouped under the Bot, has the crew's runtime mode and runs just as unattended. So the hold
   follows a grouped thread's first message (the launch's prompt) to the thread that sent it, and on
-  while each step is in the Bot's group, until it reaches the Bot (free) or a repair crew (held).
-  A thread with no first message (a launch with no prompt), one whose sender cannot be read or is
-  not in the group, one more than eight launches down, and a repair crew and its subagents are all
-  held. `t3_thread_send`, `t3_thread_send_attachments` and `t3_thread_interrupt` aimed at one are
+  from there while each step is in the Bot's group, until it reaches the Bot (free) or a repair crew
+  (held). A thread a person made is free. A thread the Bot's launch made with no first message, one
+  whose sender cannot be read or is not in the group, one more than eight hops down, and a repair
+  crew and its subagents are all held. A repair crew cannot create a thread without a first message,
+  so one with none is a person's or the Bot's own, never a crew's. `t3_thread_send`,
+  `t3_thread_send_attachments` and `t3_thread_interrupt` aimed at one are
   held like any other thread's. That is a deny-by-default list, so a tool added later is held
   until someone decides it is free; anything naming a linked environment is held too. Thread
   launches, other delegations, messages outside the crew, schedules and project changes therefore
