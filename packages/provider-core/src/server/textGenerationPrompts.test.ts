@@ -130,15 +130,39 @@ describe("buildWatcherReviewPrompt", () => {
     expect(before).toContain(
       "- Reads or prints credentials or private files itself (cat, grep, cp or reading ~/.ssh, keychains, browser profiles, .env files, other apps' data, or a client's token file such as ~/.config/gh/hosts.yml), or passes a credential to anything but the client it belongs to.",
     );
-    expect(before).toContain("A client doing its normal work is not a reason to be unsure.");
-    // The rejections that keep the boundary stay.
+    expect(before).toContain("A client doing its normal work is not a reason to be unsure");
+  });
+
+  it("judges safety, not correctness: an imprecise or buggy but harmless script is not a reason to reject", () => {
+    const { before } = regionOf(buildWatcherReviewPrompt(watcher).prompt);
+    expect(before).toContain(
+      "APPROVE if the script is safe to run unattended and plausibly serves its stated purpose.",
+    );
+    expect(before).not.toContain("APPROVE only if the script does what its stated purpose says");
+    expect(before).not.toContain("and no more");
+    expect(before).toContain(
+      "Do not reject a script for being imprecise, inefficient, buggy, incomplete or only loosely matching its purpose (for example it also lists pull requests, it prints a failure, it does not yet find any items). Those are not safety problems; a script that misbehaves is detected and revised later. Reject only for the safety reasons listed below.",
+    );
+    // The purpose can name the service a script talks to; it never makes a listed behavior acceptable.
+    expect(before).toContain(
+      "A stated purpose never excuses a behavior on the list below; it only says which service the script may contact.",
+    );
+    // Being unsure is about safety, not about whether the script is right.
+    expect(before).toContain("When unsure about safety, reject and say what you could not verify.");
+    expect(before).not.toContain("When unsure, reject");
+  });
+
+  it("keeps every safety rejection", () => {
+    const { before } = regionOf(buildWatcherReviewPrompt(watcher).prompt);
     for (const text of [
       "- Writes, moves or deletes files outside $T3_WATCHER_STATE_DIR and its temp directory.",
+      "- Reads or prints credentials or private files itself (cat, grep, cp or reading ~/.ssh, keychains, browser profiles, .env files, other apps' data, or a client's token file such as ~/.config/gh/hosts.yml), or passes a credential to anything but the client it belongs to.",
       "- Sends data to any host that the purpose does not require, or sends anything it read from the user's computer to a network host.",
       "- Acts instead of reading: POST, PUT, PATCH or DELETE requests, sending mail or messages, git push, running other programs that change things.",
       "- Downloads and runs code, runs eval or an interpreter on fetched text, installs software, starts background or persistent processes, or changes system settings.",
-      "- Hides what it does: obfuscated, encoded or minified code, or behavior the stated purpose does not explain.",
-      "When unsure, reject and say what you could not verify.",
+      "- Hides what it does: obfuscated, encoded or minified code, or hidden or unexplained behavior that has a side effect, or network or file access, beyond what the purpose needs.",
+      "- Prints more than a short summary of new items (it must print only what is new, not dump a whole inbox).",
+      "- Has an Expect regular expression that could take exponential time on some input, such as nested or overlapping repeats like (a+)+ or (a|aa)+.",
     ]) {
       expect(before).toContain(text);
     }
