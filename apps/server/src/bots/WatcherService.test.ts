@@ -17,6 +17,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -127,9 +128,22 @@ const layerWatchers = (
   orchestration: ReturnType<typeof makeOrchestration>,
   runner: Layer.Layer<ProcessRunner.ProcessRunner>,
   peer: Layer.Layer<PeerMcpClient.PeerMcpClient> = noPeer,
+  environmentId?: string,
 ) =>
   WatcherService.layer.pipe(
-    Layer.provideMerge(Layer.mergeAll(runner, peer, Scheduler.layer)),
+    Layer.provideMerge(
+      Layer.mergeAll(
+        runner,
+        peer,
+        Scheduler.layer,
+        // Only the watchers see it: the Bot service keeps the testkit's own.
+        environmentId === undefined
+          ? Layer.empty
+          : Layer.mock(ServerEnvironment.ServerEnvironment)({
+              getEnvironmentId: Effect.succeed(EnvironmentId.make(environmentId)),
+            }),
+      ),
+    ),
     Layer.provideMerge(BotService.layer),
     Layer.provideMerge(orchestration.layer),
     Layer.provideMerge(ServerSettings.ServerSettingsService.layerTest()),
@@ -139,8 +153,11 @@ const provideWatchers = (
   orchestration: ReturnType<typeof makeOrchestration>,
   runner: Layer.Layer<ProcessRunner.ProcessRunner>,
   peer?: Layer.Layer<PeerMcpClient.PeerMcpClient>,
+  environmentId?: string,
 ) =>
-  Effect.provide(layerWatchers(orchestration, runner, peer).pipe(Layer.provideMerge(layerBase())));
+  Effect.provide(
+    layerWatchers(orchestration, runner, peer, environmentId).pipe(Layer.provideMerge(layerBase())),
+  );
 
 /** A Bot whose active turn began with the user typing, the only kind that may change watchers. */
 const addBot = (orchestration: ReturnType<typeof makeOrchestration>, id: string) => {
@@ -594,7 +611,7 @@ it.effect(
       // A scheduled run names its state folder on the laptop; the dry run above did not.
       assert.strictEqual(
         peer.state.calls.at(-1)?.arguments.stateKey,
-        sha256Hex(`${BotService.memoryFolderName(botThread.id)}/disk`),
+        sha256Hex(`env:here/${BotService.memoryFolderName(botThread.id)}/disk`),
       );
       assert.isUndefined(dryCall?.arguments.stateKey);
       assert.strictEqual(orchestration.sent.length, 1);
@@ -1590,14 +1607,96 @@ it.effect("gives a script run for a linked environment a state folder only when 
     yield* run({ stateKey });
     yield* run({});
     yield* run({ dryRun: true, stateKey });
-    yield* run({ stateKey: "../../escape" });
+    // The tool schema rejects a key that is not a sha256; a direct caller is told, not given a throwaway.
+    const malformed = yield* run({ stateKey: "../../escape" }).pipe(Effect.flip);
+    assert.strictEqual(malformed.reason, "invalid");
     assert.strictEqual(seen[0], seen[1]);
     assert.include(seen[0]!, stateKey);
-    // Without a key, on a dry run, or with a key that is not a sha256, the folder is a throwaway one.
+    // Without a key, or on a dry run, the folder is a throwaway one.
     for (const dir of seen.slice(2)) {
       assert.notStrictEqual(dir, seen[0]);
       assert.notInclude(dir, "watcher-data");
     }
-    assert.strictEqual(new Set(seen).size, 4);
+    assert.strictEqual(seen.length, 4);
+    assert.strictEqual(new Set(seen).size, 3);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+/** The state key the laptop is sent for one scheduled run of `home/disk`, from a server with this id. */
+const stateKeySentFrom = (environmentId: string) => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  const peer = makeFakePeer();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const target = { botThreadId: botThread.id, name: "disk" };
+    const { hash } = yield* proposeWatcher(botThread.id, "disk");
+    yield* watchers.dryRun({ ...target, hash, runsOn: LAPTOP });
+    yield* watchers.approve({ ...target, hash, runsOn: LAPTOP, approvedBy: "owner" });
+    yield* watchers.runDue;
+    return peer.state.calls.at(-1)?.arguments.stateKey;
+  }).pipe(provideWatchers(orchestration, runner.layer, peer.layer, environmentId));
+};
+
+it.effect("keys a linked environment's state folder by the calling environment", () =>
+  Effect.gen(function* () {
+    const first = yield* stateKeySentFrom("env:box-a");
+    // Two boxes with a watcher of the same name must not share one folder on the laptop.
+    assert.notStrictEqual(first, yield* stateKeySentFrom("env:box-b"));
+    // A restart of the same environment keeps its folder.
+    assert.strictEqual(first, yield* stateKeySentFrom("env:box-a"));
+  }),
+);
+
+it.effect("events mode: pausing and resuming still delivers a pending event once", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  runner.state.result = { code: ExitCode(0), stdout: "new assignment", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const target = { botThreadId: botThread.id, name: "inbox" };
+    yield* installWatcher(botThread.id, "inbox", { mode: "events", purpose: "New assignments" });
+    botThread.settledOverride = "settled";
+    yield* watchers.runDue;
+    yield* watchers.pause(target);
+    botThread.settledOverride = null;
+    yield* watchers.runDue;
+    assert.strictEqual(orchestration.sent.length, 0);
+
+    yield* watchers.resume(target);
+    yield* watchers.runDue;
+    yield* watchers.runDue;
+    assert.strictEqual(orchestration.sent.length, 1);
+    assert.include(orchestration.sent[0]?.text, "new assignment");
+    assert.strictEqual(runner.state.runs, 1);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("events mode: a dry run leaves a pending event where it is", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  runner.state.result = { code: ExitCode(0), stdout: "new assignment", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const options = { mode: "events", purpose: "New assignments" } as const;
+    yield* installWatcher(botThread.id, "inbox", options);
+    botThread.settledOverride = "settled";
+    yield* watchers.runDue;
+
+    const { hash } = yield* proposeWatcher(botThread.id, "inbox", {
+      ...options,
+      run: "echo two\n",
+    });
+    botThread.settledOverride = null;
+    yield* watchers.dryRun({ botThreadId: botThread.id, name: "inbox", hash });
+    assert.strictEqual(runner.state.dryInputs.length, 2);
+    assert.strictEqual(orchestration.sent.length, 0);
+
+    yield* watchers.runDue;
+    assert.strictEqual(orchestration.sent.length, 1);
+    assert.strictEqual(runner.state.runs, 1);
   }).pipe(provideWatchers(orchestration, runner.layer));
 });

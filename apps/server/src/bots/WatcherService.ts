@@ -36,6 +36,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as PayloadSigner from "../auth/PayloadSigner.ts";
 import * as ServerConfig from "../config.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -369,6 +370,7 @@ const make = Effect.gen(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
   const scheduler = yield* Scheduler.Scheduler;
   const peers = yield* PeerMcpClient.PeerMcpClient;
+  const localEnvironmentId = yield* (yield* ServerEnvironment.ServerEnvironment).getEnvironmentId;
   const random = yield* SecureRandom.SecureRandom;
   // A key in the server's secret store, which a Bot cannot read: the HMAC is what makes the
   // approvals file something only this server wrote.
@@ -596,6 +598,7 @@ const make = Effect.gen(function* () {
       Effect.map((output): RawRun => {
         const stderr = output.stderr.slice(0, STDERR_MAX_CHARS);
         if (output.timedOut) return { exit: "timeout", stdout: "", stderr };
+        // Not `stdoutTruncated`: a remote run result has no such flag, so `judge` counts bytes.
         return { exit: String(output.code), stdout: output.stdout, stderr };
       }),
       // A script that cannot start is as tripped as one that fails.
@@ -686,9 +689,11 @@ const make = Effect.gen(function* () {
       );
   });
 
-  // A linked environment that predates `stateKey` ignores it and gives the script a throwaway
-  // folder, and a watcher removed here leaves its folder on the laptop. Neither is handled yet.
-  /** `scheduled` names the watcher whose state folder a scheduled run gets; a dry run passes none. */
+  /**
+   * `scheduled` names the watcher whose state folder a scheduled run gets; a dry run passes none.
+   * A linked environment that predates `stateKey` ignores it and gives the script a throwaway
+   * folder, and a watcher removed here leaves its folder there. Neither is handled yet.
+   */
   const runPlaced = (
     version: Version,
     runsOn: BotWatcherRunsOn,
@@ -711,7 +716,11 @@ const make = Effect.gen(function* () {
           version,
           EnvironmentId.make(runsOn),
           scheduled === undefined,
-          scheduled === undefined ? undefined : sha256(`${scheduled.folder}/${scheduled.name}`),
+          // Every Home is the folder `home`, so the key names this environment too: two boxes
+          // linked to one laptop each get their own folder for a same-named watcher.
+          scheduled === undefined
+            ? undefined
+            : sha256(`${localEnvironmentId}/${scheduled.folder}/${scheduled.name}`),
         );
 
   const wakeText = Effect.fn("WatcherService.wakeText")(function* (
@@ -1302,15 +1311,20 @@ const make = Effect.gen(function* () {
     if (sha256(source) !== input.hash) {
       return yield* new BotWatcherPeerRunError({ reason: "hash_mismatch" });
     }
+    // The key is a path segment here. The tool schema already rejects a malformed one.
+    if (input.stateKey !== undefined && !isSha256Hex(input.stateKey)) {
+      return yield* new BotWatcherPeerRunError({
+        reason: "invalid",
+        detail: "stateKey is a sha256 hex string.",
+      });
+    }
     return yield* runScript({
       source,
       runtime: input.runtime,
       timeoutMs: Math.min(Math.max(input.timeoutMs, 1), MAX_TIMEOUT_MS),
       dryRun: input.dryRun,
-      // A dry run gets a throwaway folder, and so does a key that is not a sha256: the key is
-      // a path segment here.
       dataDir:
-        input.dryRun || input.stateKey === undefined || !isSha256Hex(input.stateKey)
+        input.dryRun || input.stateKey === undefined
           ? undefined
           : path.join(config.stateDir, "watcher-data", input.stateKey),
     });
