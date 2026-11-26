@@ -133,6 +133,21 @@ it.effect.each([
   ),
 );
 
+it.effect.each([
+  { startedBy: "bot-wake:watcher:home:calendar:event:1" },
+  { startedBy: "bot-wake:watcher:home:calendar:1700000000:2:abc" },
+  { startedBy: "bot-wake:watcher-review:home:calendar:abc" },
+] as const)("holds a consequential call in a turn a watcher wake began", ({ startedBy }) =>
+  run({ startedBy }, (holds) =>
+    Effect.gen(function* () {
+      const verdict = yield* holds.check(call("t3_thread_launch", { title: "Fix prod" }));
+      assert.isTrue(verdict.held);
+      assert.include((verdict as { message: string }).message, "a watcher's output");
+      assert.isFalse((yield* holds.check(call("t3_bot_mail_search", {}))).held);
+    }),
+  ),
+);
+
 it.effect("leaves reads, notes, tasks, the mail reader and crew messages free in that turn", () =>
   run({ startedBy: DIGEST }, (holds) =>
     Effect.gen(function* () {

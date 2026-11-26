@@ -18,6 +18,8 @@ import * as BotService from "./BotService.ts";
 
 /** The id every mail digest wake carries after `bot-wake:` (`BotMailService.digestFolder`). */
 const MAIL_WAKE_MESSAGE_PREFIX = "bot-wake:mail:";
+/** Every watcher wake and review verdict carries `bot-wake:watcher` (`WatcherService` wake keys). */
+const WATCHER_WAKE_MESSAGE_PREFIX = "bot-wake:watcher";
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const MAIL_READER_ROLE = "mail-reader";
 const MAX_HELD_PER_BOT = 20;
@@ -78,7 +80,7 @@ const summarize = (tool: string, params: Readonly<Record<string, unknown>>) => {
 };
 
 const heldMessage = (summary: string) =>
-  `Held for the user: ${summary}. This turn was influenced by email, so the user decides on this action. They allow or reject it in the Bot popover, and you are woken when they decide. Do not retry it now and do not look for another way to do it.`;
+  `Held for the user: ${summary}. This turn was influenced by outside content (email or a watcher's output), so the user decides on this action. They allow or reject it in the Bot popover, and you are woken when they decide. Do not retry it now and do not look for another way to do it.`;
 
 export class BotHoldService extends Context.Service<
   BotHoldService,
@@ -126,7 +128,7 @@ const make = Effect.gen(function* () {
     );
   };
 
-  /** The Bot's active run, which started with a mail digest or a mail reader's report. */
+  /** The Bot's active run, which started with a mail digest, a watcher wake or a mail reader's report. */
   const activeRun = Effect.fn("BotHoldService.activeRun")(function* (botThreadId: ThreadId) {
     const shell = yield* threads.getThreadShell(botThreadId);
     return shell?.activeRunId ?? null;
@@ -138,7 +140,13 @@ const make = Effect.gen(function* () {
     if (taintedRuns.has(runId)) return true;
     const { runs, subagents } = yield* threads.getThreadRecords(botThreadId, ["runs", "subagents"]);
     const run = runs.find((candidate) => candidate.id === runId);
-    if (run === undefined || run.userMessageId.startsWith(MAIL_WAKE_MESSAGE_PREFIX)) return true;
+    if (
+      run === undefined ||
+      run.userMessageId.startsWith(MAIL_WAKE_MESSAGE_PREFIX) ||
+      run.userMessageId.startsWith(WATCHER_WAKE_MESSAGE_PREFIX)
+    ) {
+      return true;
+    }
     // A finished task's report reaches its parent as the first message of a new run: the parent
     // run that spawned the task names that message and the tasks it carries.
     const reported = new Set(
