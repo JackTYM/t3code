@@ -2091,6 +2091,41 @@ it.effect(
 );
 
 it.effect(
+  "knows a crew, a subagent of one and a thread with a crew's id, and nothing else, as a crew thread",
+  () => {
+    const fixture = repairFixture();
+    const { orchestration, botThread } = fixture;
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(START);
+      const repair = yield* RepairService.RepairService;
+      const started = yield* start(botThread, yield* wakeBot(fixture));
+      const under = (id: ThreadId, root: ThreadId) =>
+        orchestration.addThread(id, {
+          lineage: { parentThreadId: root, relationshipToParent: "subagent", rootThreadId: root },
+        });
+      const subagent = under(ThreadId.make("thread:crew-subagent"), started.threadId);
+      // The registry can lose a crew; its id and its subagents' lineage still name it.
+      const forged = ThreadId.make(`repair-crew:${"f".repeat(12)}:3`);
+      const forgedSubagent = under(ThreadId.make("thread:forged-subagent"), forged);
+      const sibling = orchestration.addThread("thread:sibling", {
+        groupedUnderThreadId: botThread.id,
+      });
+      const ordinaryChild = under(ThreadId.make("thread:ordinary-child"), sibling.id);
+      const lookalike = orchestration.addThread(`repair-crew:${"f".repeat(12)}:0`);
+
+      for (const id of [started.threadId, subagent.id, forged, forgedSubagent.id]) {
+        assert.isTrue(yield* repair.isCrewThread(id), id);
+      }
+      for (const id of [botThread.id, sibling.id, ordinaryChild.id, lookalike.id]) {
+        assert.isFalse(yield* repair.isCrewThread(id), id);
+      }
+      // A thread nobody can read is not known to be a crew's.
+      assert.isFalse(yield* repair.isCrewThread(ThreadId.make("thread:gone")));
+    }).pipe(provideRepair(orchestration));
+  },
+);
+
+it.effect(
   "names the repair a branch was pushed for, and none for a branch that only looks like one",
   () => {
     const fixture = repairFixture();

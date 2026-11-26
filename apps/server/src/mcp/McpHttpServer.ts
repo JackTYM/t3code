@@ -100,6 +100,7 @@ import * as ToolSearchHandlers from "./toolkits/toolSearch/handlers.ts";
 import { ToolSearchToolkit } from "./toolkits/toolSearch/tools.ts";
 import * as BotHoldService from "../bots/BotHoldService.ts";
 import * as RepairMergeGuard from "../bots/RepairMergeGuard.ts";
+import * as RepairService from "../bots/RepairService.ts";
 import { BOT_MAIL_READ_TOOL, BOT_TOOL_PREFIX, BotToolkit } from "./toolkits/bot/tools.ts";
 import * as BotHandlers from "./toolkits/bot/handlers.ts";
 import { WatcherPeerToolkit } from "./toolkits/watcher/tools.ts";
@@ -1716,6 +1717,65 @@ export const layerRepairMergeGuard = McpServer.middleware(
   { global: true },
 );
 
+const REPAIR_CREW_LAUNCH_REFUSED =
+  "A repair crew launches a thread only with a first message (`message`, or `prompt` on every thread), because that message is what records who started it. No thread was created.";
+
+const argumentOf = (args: unknown, key: string): unknown =>
+  Predicate.hasProperty(args, key) ? args[key] : undefined;
+
+/**
+ * Whether a raw call would create a thread with no first message. Read before the tool decodes it:
+ * a call that does not name a message outright is one, whatever the tool would make of it.
+ */
+const createsPromptlessThread = (tool: string, args: unknown): boolean => {
+  if (tool === "t3_thread_launch") {
+    const attachments = argumentOf(args, "attachments");
+    return (
+      typeof argumentOf(args, "message") !== "string" &&
+      !(Array.isArray(attachments) && attachments.length > 0)
+    );
+  }
+  const threads = argumentOf(args, "threads");
+  return (
+    Array.isArray(threads) &&
+    threads.some((request) => typeof argumentOf(request, "prompt") !== "string")
+  );
+};
+
+/**
+ * A repair crew (or a subagent of one) cannot create a thread without a first message. Threads
+ * launched into a Bot's group count as the Bot's own crew when the launch's first message came
+ * from the Bot, so a promptless one, which the Bot could later give a first message, would pass
+ * for the Bot's. Every other caller launches as before.
+ */
+export const layerRepairCrewLaunchGuard = McpServer.middleware(
+  Effect.gen(function* () {
+    const repair = yield* RepairService.RepairService;
+    return (effect, { method, target, payload }) =>
+      method !== "tools/call" || (target !== "t3_thread_launch" && target !== "create_threads")
+        ? effect
+        : Effect.gen(function* () {
+            const scope = Option.getOrUndefined(
+              yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext),
+            );
+            const callerThreadId = scope?.thread?.threadId;
+            if (
+              callerThreadId === undefined ||
+              !createsPromptlessThread(target, argumentOf(payload, "arguments")) ||
+              !(yield* repair.isCrewThread(callerThreadId))
+            ) {
+              return yield* effect;
+            }
+            // The middleware's success type is opaque; a tool call's is this result.
+            return new McpSchema.CallToolResult({
+              content: [{ type: "text", text: REPAIR_CREW_LAUNCH_REFUSED }],
+              isError: true,
+            }) as never;
+          });
+  }),
+  { global: true },
+);
+
 /** Outside layerTools: only Bot threads list these, so ordinary threads pay nothing for them. */
 export const layerBotTools = Layer.mergeAll(
   toolkitRegistration(BotToolkit, BotHandlers.layer),
@@ -1798,6 +1858,7 @@ export const layer = layerMcpTransport(
     layerToolSearch,
     layerBotTools,
     layerRepairMergeGuard,
+    layerRepairCrewLaunchGuard,
     layerWatcherPeerTools,
     layerMailPeerTools,
     layerMilestoneEvents,

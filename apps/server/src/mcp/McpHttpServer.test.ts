@@ -2903,3 +2903,209 @@ it.effect(
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
+
+it.effect(
+  "refuses a repair crew's launch with no first message, and nobody else's, nor a launch with one",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const CREW = ThreadId.make("repair-crew:0123456789ab:1");
+        const CREW_HELPER = ThreadId.make("thread-crew-helper");
+        const threadFor = (token: string) =>
+          token === "crew"
+            ? CREW
+            : token === "helper"
+              ? CREW_HELPER
+              : ThreadId.make(`thread-${token}`);
+        const scopeFor = (token: string): McpInvocationContext.McpThreadInvocationScope => ({
+          environmentId,
+          requestNamespace: token,
+          thread: {
+            threadId: threadFor(token),
+            providerSessionId: token,
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          },
+          client: undefined,
+          capabilities: new Set(["orchestration"]),
+          issuedAt: 1,
+        });
+        const scopes = new Map(
+          ["crew", "helper", "plain"].map((token) => [token, scopeFor(token)]),
+        );
+        // An outside client names no thread, so there is no crew to ask about.
+        const clientScope: McpInvocationContext.McpInvocationScope = {
+          environmentId,
+          requestNamespace: "client:outside",
+          thread: undefined,
+          client: { sessionId: "outside", label: "Hosted agent", access: "full-access" },
+          capabilities: new Set(["orchestration"]),
+          issuedAt: 1,
+        };
+
+        const handled: Array<string> = [];
+        const tool = (name: string) =>
+          Tool.make(name, {
+            description: name,
+            parameters: Schema.Struct({
+              message: Schema.optional(Schema.String),
+              attachments: Schema.optional(Schema.Array(Schema.String)),
+              threads: Schema.optional(
+                Schema.Array(Schema.Struct({ prompt: Schema.optional(Schema.String) })),
+              ),
+            }),
+            success: Schema.Struct({ ok: Schema.Boolean }),
+            failure: OrchestratorMcpFailure,
+            failureMode: "return",
+          });
+        const LaunchToolkit = Toolkit.make(
+          tool("t3_thread_launch"),
+          tool("create_threads"),
+          tool("t3_thread_send"),
+        );
+        const handler = (name: string) =>
+          McpToolAccess.reads(() =>
+            Effect.sync(() => {
+              handled.push(name);
+              return { ok: true };
+            }),
+          );
+        const serverLayer = McpHttpServer.layerMcpTransport(
+          Layer.mergeAll(
+            McpHttpServer.toolkitRegistration(
+              LaunchToolkit,
+              McpToolAccess.toLayer(LaunchToolkit, {
+                t3_thread_launch: handler("t3_thread_launch"),
+                create_threads: handler("create_threads"),
+                t3_thread_send: handler("t3_thread_send"),
+              }),
+            ),
+            McpHttpServer.layerRepairCrewLaunchGuard,
+          ),
+        ).pipe(
+          Layer.provide(
+            Layer.mock(RepairService.RepairService)({
+              isCrewThread: (threadId) =>
+                Effect.succeed(threadId === CREW || threadId === CREW_HELPER),
+            }),
+          ),
+          Layer.provide(ServerSettings.layerTest()),
+          Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+          Layer.provide(
+            Layer.mock(McpSessionRegistry.McpSessionRegistry)({
+              resolve: (token) => Effect.succeed(scopes.get(token)),
+            }),
+          ),
+          Layer.provide(
+            Layer.succeed(McpHttpServer.McpClientAuthenticator)({
+              authenticate: (request) =>
+                Effect.succeed(
+                  request.headers.authorization === "Bearer client" ? clientScope : undefined,
+                ),
+            }),
+          ),
+        );
+        yield* HttpRouter.serve(serverLayer, { disableListenLog: true, disableLogger: true }).pipe(
+          Layer.build,
+        );
+        const httpClient = yield* HttpClient.HttpClient;
+        const session = (token: string) =>
+          Effect.gen(function* () {
+            const headers = {
+              accept: "application/json, text/event-stream",
+              authorization: `Bearer ${token}`,
+            };
+            const initialize = yield* httpClient.post("/mcp", {
+              headers,
+              body: HttpBody.text(
+                `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1.0.0"}}}`,
+                "application/json",
+              ),
+            });
+            return (name: string, args: object) =>
+              httpClient
+                .post("/mcp", {
+                  headers: {
+                    ...headers,
+                    "mcp-session-id": initialize.headers["mcp-session-id"]!,
+                    "mcp-protocol-version": "2025-06-18",
+                  },
+                  body: HttpBody.text(
+                    JSON.stringify({
+                      jsonrpc: "2.0",
+                      id: 2,
+                      method: "tools/call",
+                      params: { name, arguments: args },
+                    }),
+                    "application/json",
+                  ),
+                })
+                .pipe(
+                  Effect.flatMap((response) => response.text),
+                  Effect.map(
+                    (text) =>
+                      text
+                        .split("\n")
+                        .filter((line) => line.startsWith("data: ") || line.startsWith("{"))
+                        .map(
+                          (line) =>
+                            JSON.parse(line.replace(/^data: /u, "")) as {
+                              id?: number;
+                              result?: {
+                                isError?: boolean;
+                                content?: ReadonlyArray<{ text: string }>;
+                              };
+                            },
+                        )
+                        .find((message) => message.id === 2)!.result!,
+                  ),
+                );
+          });
+        const crew = yield* session("crew");
+        const helper = yield* session("helper");
+        const plain = yield* session("plain");
+        const client = yield* session("client");
+
+        const promptless = [
+          ["t3_thread_launch", {}],
+          ["t3_thread_launch", { attachments: [] }],
+          ["create_threads", { threads: [{ prompt: "Fix it." }, {}] }],
+        ] as const;
+        const prompted = [
+          ["t3_thread_launch", { message: "Fix it." }],
+          ["t3_thread_launch", { attachments: ["upload:1"] }],
+          ["create_threads", { threads: [{ prompt: "Fix it." }, { prompt: "And this." }] }],
+        ] as const;
+
+        // A crew, or a subagent of one, cannot start a thread nobody has written a first message to.
+        for (const caller of [crew, helper]) {
+          for (const [name, args] of promptless) {
+            const refused = yield* caller(name, args);
+            expect(refused.isError, name).toBe(true);
+            expect(refused.content?.[0]?.text, name).toContain("first message");
+          }
+        }
+        expect(handled).toEqual([]);
+
+        // One that carries its first message goes ahead, and so does any other tool.
+        for (const [name, args] of prompted) {
+          expect((yield* crew(name, args)).isError, name).not.toBe(true);
+        }
+        yield* crew("t3_thread_send", {});
+        expect(handled).toEqual([
+          "t3_thread_launch",
+          "t3_thread_launch",
+          "create_threads",
+          "t3_thread_send",
+        ]);
+
+        // Every other caller launches as before, with or without one.
+        handled.length = 0;
+        for (const caller of [plain, client]) {
+          for (const [name, args] of [...promptless, ...prompted]) {
+            expect((yield* caller(name, args)).isError, name).not.toBe(true);
+          }
+        }
+        expect(handled).toHaveLength(12);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);

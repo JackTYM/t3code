@@ -1,4 +1,9 @@
-import { CommandId, type MilestoneEvent, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  type MilestoneEvent,
+  type OrchestrationV2ThreadShell,
+  ThreadId,
+} from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -646,7 +651,11 @@ export class RepairService extends Context.Service<
      * `RepairMergeGuard` guards their merges, and `BotHoldService` never counts them as the Bot's
      * free crew: a repair crew has the user's reach.
      */
-    readonly crewOf: (threadId: ThreadId) => Effect.Effect<
+    readonly crewOf: (
+      threadId: ThreadId,
+      /** The thread's shell, when the caller has read it already. */
+      shell?: Pick<OrchestrationV2ThreadShell, "lineage">,
+    ) => Effect.Effect<
       | {
           /** The crew thread itself: `threadId`, or the root a subagent descends from. */
           readonly crewThreadId: ThreadId;
@@ -658,6 +667,12 @@ export class RepairService extends Context.Service<
         }
       | undefined
     >;
+    /**
+     * A repair crew or a subagent of one, by the registry or, when it has lost the crew, by the
+     * crew's id shape and a subagent's lineage root. Both `crewOf` and this treat an unreadable
+     * thread as no crew's.
+     */
+    readonly isCrewThread: (threadId: ThreadId) => Effect.Effect<boolean>;
     /**
      * The repair whose crew was told to push this exact branch, with that crew's thread, or
      * nothing: a branch that merely looks like a repair's, or one whose record has gone, is no
@@ -1005,16 +1020,34 @@ const make = Effect.gen(function* () {
         };
   };
 
-  const crewOfThread: RepairService["Service"]["crewOf"] = Effect.fn("RepairService.crewOf")(
-    function* (threadId) {
-      const own = recordedCrew((yield* Ref.get(state)).repairs, threadId);
-      if (own !== undefined) return own;
-      // A thread whose shell cannot be read is no crew's.
-      const shell = yield* threads.getThreadShell(threadId).pipe(Effect.orElseSucceed(() => null));
-      if (shell === null || shell.lineage.relationshipToParent === null) return undefined;
-      return recordedCrew((yield* Ref.get(state)).repairs, shell.lineage.rootThreadId);
-    },
-  );
+  // A thread whose shell cannot be read is no crew's.
+  const readShell = (threadId: ThreadId) =>
+    threads.getThreadShell(threadId).pipe(Effect.orElseSucceed(() => null));
+
+  /** `known` is a shell already read: null for one that could not be, undefined to read it here. */
+  const crewOfWith = Effect.fn("RepairService.crewOf")(function* (
+    threadId: ThreadId,
+    known: Pick<OrchestrationV2ThreadShell, "lineage"> | null | undefined,
+  ) {
+    const own = recordedCrew((yield* Ref.get(state)).repairs, threadId);
+    if (own !== undefined) return own;
+    const shell = known === undefined ? yield* readShell(threadId) : known;
+    if (shell === null || shell.lineage.relationshipToParent === null) return undefined;
+    return recordedCrew((yield* Ref.get(state)).repairs, shell.lineage.rootThreadId);
+  });
+
+  const isCrewThread: RepairService["Service"]["isCrewThread"] = Effect.fn(
+    "RepairService.isCrewThread",
+  )(function* (threadId) {
+    if (REPAIR_CREW_THREAD_ID.test(threadId)) return true;
+    const shell = yield* readShell(threadId);
+    if ((yield* crewOfWith(threadId, shell)) !== undefined) return true;
+    return (
+      shell !== null &&
+      shell.lineage.relationshipToParent !== null &&
+      REPAIR_CREW_THREAD_ID.test(shell.lineage.rootThreadId)
+    );
+  });
 
   const repairOfBranch: RepairService["Service"]["repairOfBranch"] = (branch) =>
     Ref.get(state).pipe(
@@ -1449,7 +1482,8 @@ const make = Effect.gen(function* () {
     clear,
     find,
     startRepair,
-    crewOf: crewOfThread,
+    crewOf: crewOfWith,
+    isCrewThread,
     repairOfBranch,
     reportMerge,
     handleMilestone,
