@@ -12,6 +12,7 @@ import {
   type ThreadBotConfig,
   ThreadId,
 } from "@t3tools/contracts";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -27,6 +28,9 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as HomeService from "../home/HomeService.ts";
+
+/** For tests whose grants are stored values, so the provider a reference would go through is never asked. */
+export const noSecretProviders = Layer.mock(SecretResolver.SecretResolver)({});
 
 export const model: ModelSelection = {
   instanceId: ProviderInstanceId.make("claudeAgent"),

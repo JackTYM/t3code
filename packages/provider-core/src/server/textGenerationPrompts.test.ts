@@ -168,6 +168,36 @@ describe("buildWatcherReviewPrompt", () => {
     }
   });
 
+  it("lists the declared secret names and hosts in the data region, and never a value", () => {
+    const { prompt } = buildWatcherReviewPrompt({
+      ...watcher,
+      secrets: ["GITHUB_TOKEN", "LINEAR_KEY"],
+      hosts: ["api.github.com", "api.linear.app"],
+    });
+    const { before, inside } = regionOf(prompt);
+    for (const text of [
+      'Secrets: ["GITHUB_TOKEN","LINEAR_KEY"]',
+      'Hosts: ["api.github.com","api.linear.app"]',
+    ]) {
+      expect(inside).toContain(text);
+      expect(before).not.toContain(text);
+    }
+    // A watcher that declares none has nothing to say about them.
+    const plain = buildWatcherReviewPrompt(watcher).prompt;
+    expect(plain).not.toContain("Secrets:");
+    expect(plain).not.toContain("Hosts:");
+  });
+
+  it("rejects a script that sends a secret to an undeclared host or writes it anywhere but memory", () => {
+    const { before } = regionOf(buildWatcherReviewPrompt(watcher).prompt);
+    for (const text of [
+      "- Sends a secret named in Secrets to any host other than one listed in Hosts.",
+      "- Writes a secret anywhere but memory: it prints it, saves it in a file (the state folder included), or puts it on a command line.",
+    ]) {
+      expect(before).toContain(text);
+    }
+  });
+
   it("includes the previous script and nothing the caller passes beyond the watcher fields", () => {
     const input = {
       ...watcher,

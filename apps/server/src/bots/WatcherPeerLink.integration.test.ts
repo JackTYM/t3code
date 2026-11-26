@@ -38,8 +38,9 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as BotSecretGrantService from "./BotSecretGrantService.ts";
 import * as BotService from "./BotService.ts";
-import { makeOrchestration } from "./BotTestkit.ts";
+import { makeOrchestration, noSecretProviders } from "./BotTestkit.ts";
 import * as RepairService from "./RepairService.ts";
 import * as WatcherService from "./WatcherService.ts";
 
@@ -102,6 +103,8 @@ const layerWatchers = (
         runner,
         peers,
         Scheduler.layer,
+        // Only needed to build the watchers: none of these declares a secret.
+        BotSecretGrantService.layer.pipe(Layer.provide(noSecretProviders)),
         // These tests are about where a watcher runs, not about telling the Bot of its failures.
         Layer.mock(RepairService.RepairService)({
           signal: () => Effect.void,

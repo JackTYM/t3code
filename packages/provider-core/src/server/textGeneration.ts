@@ -127,6 +127,9 @@ export interface WatcherReviewInput {
   intervalSeconds: number;
   /** The regular expression the script's healthy output must match, when it has one. */
   expect?: string | undefined;
+  /** Names of the granted secrets the script receives, and the hosts they may go to; never values. */
+  secrets?: ReadonlyArray<string> | undefined;
+  hosts?: ReadonlyArray<string> | undefined;
   source: string;
   previousSource?: string | undefined;
   /** Names the review's data markers; random per call, so a script cannot quote them. */

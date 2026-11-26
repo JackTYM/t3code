@@ -2,6 +2,11 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { EnvironmentId, IsoDateTime, ThreadId } from "./baseSchemas.ts";
+import {
+  BOT_SECRET_GRANT_MAX_HOSTS,
+  BotSecretGrantHost,
+  BotSecretGrantName,
+} from "./botSecretGrants.ts";
 
 /**
  * A watcher is a script a Bot proposes and a reviewer model approves, version by version. It polls
@@ -10,6 +15,8 @@ import { EnvironmentId, IsoDateTime, ThreadId } from "./baseSchemas.ts";
 export const BOT_WATCHER_SOURCE_MAX_BYTES = 64 * 1024;
 export const BOT_WATCHER_MIN_INTERVAL_SECONDS = 60;
 export const BOT_WATCHER_EXPECT_MAX_CHARS = 500;
+/** Granted secrets one watcher version may declare. */
+export const BOT_WATCHER_MAX_SECRETS = 4;
 
 export const BotWatcherName = Schema.String.check(
   Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u),
@@ -92,7 +99,7 @@ export const BotWatcher = Schema.Struct({
   hash: Schema.String,
   approvedHash: Schema.optional(Schema.String),
   pendingHash: Schema.optional(Schema.String),
-  /** `runtime`, `source`, `intervalSeconds`, `expect`, `mode`, `purpose` and `requestedRunsOn` are absent when that version's files are missing or changed on disk (`invalid`). */
+  /** `runtime`, `source`, `intervalSeconds`, `expect`, `mode`, `purpose`, `secrets`, `hosts` and `requestedRunsOn` are absent when that version's files are missing or changed on disk (`invalid`). */
   runtime: Schema.optional(BotWatcherRuntime),
   source: Schema.optional(Schema.String),
   intervalSeconds: Schema.optional(Schema.Int),
@@ -100,6 +107,14 @@ export const BotWatcher = Schema.Struct({
   /** Absent means `health`. */
   mode: Schema.optional(BotWatcherMode),
   purpose: Schema.optional(Schema.String),
+  /** The granted secrets this version declares, sorted; each reaches the script as an environment variable of that name. */
+  secrets: Schema.optional(
+    Schema.Array(BotSecretGrantName).check(Schema.isMaxLength(BOT_WATCHER_MAX_SECRETS)),
+  ),
+  /** The hosts those secrets may be sent to, sorted. */
+  hosts: Schema.optional(
+    Schema.Array(BotSecretGrantHost).check(Schema.isMaxLength(BOT_SECRET_GRANT_MAX_HOSTS)),
+  ),
   /** Where the Bot asked it to run. The user's choice is `runsOn`. */
   requestedRunsOn: Schema.optional(BotWatcherRunsOn),
   runsOn: BotWatcherRunsOn,

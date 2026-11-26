@@ -1,5 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import {
+  type BotSecretGrantListResult,
+  type BotWatcher,
   EnvironmentId,
   ProviderInstanceId,
   type OrchestrationV2ThreadShell,
@@ -63,9 +65,15 @@ const repairCalls: Array<{ readonly botThreadId: ThreadId; readonly signalId: st
 /** What the fake repair service answers with, so a test can have it refuse. */
 const repairAnswer: { error: RepairService.RepairError | undefined } = { error: undefined };
 
+/** What the fake watchers and grants answer a list with, for the one test that reads them. */
+const listings: {
+  watchers: ReadonlyArray<BotWatcher>;
+  grants: BotSecretGrantListResult["grants"];
+} = { watchers: [], grants: [] };
+
 const run = (
   fixture: Fixture,
-  tool: "t3_bot_mail_read" | "t3_bot_mail_search" | "t3_bot_repair_start",
+  tool: "t3_bot_mail_read" | "t3_bot_mail_search" | "t3_bot_repair_start" | "t3_bot_watcher_list",
   input: object,
 ) =>
   Effect.gen(function* () {
@@ -101,8 +109,12 @@ const run = (
       Layer.mock(BotService.BotService)({
         isBot: (threadId) => Effect.succeed(threadId === BOT),
       }),
-      Layer.mock(WatcherService.WatcherService)({}),
-      Layer.mock(BotSecretGrantService.BotSecretGrantService)({}),
+      Layer.mock(WatcherService.WatcherService)({
+        list: () => Effect.succeed({ watchers: listings.watchers, approvals: "ok" as const }),
+      }),
+      Layer.mock(BotSecretGrantService.BotSecretGrantService)({
+        list: () => Effect.succeed({ grants: listings.grants, approvals: "ok" as const }),
+      }),
       Layer.mock(RepairService.RepairService)({
         startRepair: (input) =>
           Effect.suspend(() => {
@@ -163,6 +175,11 @@ const run = (
         readonly results?: ReadonlyArray<{ readonly message: string }>;
         readonly threadId?: string;
         readonly branch?: string;
+        readonly watchers?: ReadonlyArray<{
+          readonly name: string;
+          readonly secrets?: ReadonlyArray<{ readonly name: string; readonly granted: boolean }>;
+          readonly hosts?: ReadonlyArray<string>;
+        }>;
       };
     }).pipe(
       Effect.provide(
@@ -395,4 +412,61 @@ it.effect.each([
     expect(result.code).toBe(code);
     expect(result.message).toBe(new RepairService.RepairError({ reason }).message);
   }),
+);
+
+it.effect(
+  "shows a Bot which secrets a watcher declares and whether each is granted, never more",
+  () =>
+    Effect.gen(function* () {
+      const watcher = (
+        name: string,
+        secrets: ReadonlyArray<string>,
+        hosts: ReadonlyArray<string>,
+      ) =>
+        ({
+          name,
+          status: "healthy",
+          hash: name,
+          runsOn: "local",
+          paused: false,
+          history: [],
+          reviews: [],
+          secrets,
+          hosts,
+        }) satisfies BotWatcher;
+      listings.watchers = [
+        watcher("covered", ["GITHUB_TOKEN"], ["api.github.com"]),
+        watcher("short", ["GITHUB_TOKEN", "LINEAR_KEY"], ["api.github.com", "uploads.github.com"]),
+        { ...watcher("plain", [], []), secrets: undefined, hosts: undefined },
+      ];
+      listings.grants = [
+        {
+          name: "GITHUB_TOKEN",
+          hosts: ["api.github.com"],
+          source: "reference",
+          lastUsedAt: "2026-11-25T10:00:00.000Z",
+        },
+      ];
+      const result = yield* run(
+        { caller: BOT, shells: { [BOT]: mode("full-access") } },
+        "t3_bot_watcher_list",
+        {},
+      );
+      expect(result.watchers?.map(({ name, secrets, hosts }) => [name, secrets, hosts])).toEqual([
+        ["covered", [{ name: "GITHUB_TOKEN", granted: true }], ["api.github.com"]],
+        [
+          "short",
+          [
+            { name: "GITHUB_TOKEN", granted: false },
+            { name: "LINEAR_KEY", granted: false },
+          ],
+          ["api.github.com", "uploads.github.com"],
+        ],
+        ["plain", undefined, undefined],
+      ]);
+      // What the grant is made of, and when it was used, stay with the user.
+      expect(JSON.stringify(result)).not.toMatch(/reference|lastUsedAt|stored/u);
+      listings.watchers = [];
+      listings.grants = [];
+    }),
 );

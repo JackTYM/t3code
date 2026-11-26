@@ -22,6 +22,7 @@ import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import { ExitCode } from "effect/process/ChildProcessSpawner";
 import * as Queue from "effect/Queue";
+import * as Redacted from "effect/Redacted";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
@@ -35,8 +36,9 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as BotSecretGrantService from "./BotSecretGrantService.ts";
 import * as BotService from "./BotService.ts";
-import { makeOrchestration, model } from "./BotTestkit.ts";
+import { makeOrchestration, model, noSecretProviders } from "./BotTestkit.ts";
 import * as RepairService from "./RepairService.ts";
 import * as WatcherService from "./WatcherService.ts";
 
@@ -270,6 +272,8 @@ const layerWatchers = (
         layerReviewer,
         Scheduler.layer,
         health ? RepairService.layer : noRepair,
+        // Grants are stored values here, so the provider the references would go through is never asked.
+        BotSecretGrantService.layer.pipe(Layer.provide(noSecretProviders)),
         // Only the watchers see it: the Bot service keeps the testkit's own.
         environmentId === undefined
           ? Layer.empty
@@ -325,6 +329,9 @@ const proposeWatcher = (
     readonly intervalSeconds?: number;
     readonly mode?: "health" | "events";
     readonly purpose?: string;
+    readonly secrets?: ReadonlyArray<string>;
+    readonly hosts?: ReadonlyArray<string>;
+    readonly runsOn?: EnvironmentId | "local";
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -338,6 +345,9 @@ const proposeWatcher = (
       expect: options.expect,
       mode: options.mode,
       purpose: options.purpose,
+      secrets: options.secrets,
+      hosts: options.hosts,
+      runsOn: options.runsOn,
     });
   });
 
@@ -3389,3 +3399,399 @@ it.effect(
     );
   },
 );
+
+// Secrets the user granted a Bot reach its watchers' scripts as environment variables, and nothing
+// the scripts print carries one back.
+const SECRET = "ghp_Sup3rS3cretValue-0123456789";
+const OTHER_SECRET = "lin_An0therSecretValue-9876543210";
+const GITHUB = ["api.github.com"] as const;
+const NEEDS_GRANT = "Secret GITHUB_TOKEN needs a grant for host api.github.com in Settings → Home.";
+
+const grantSecret = Effect.fn("grantSecret")(function* (
+  threadId: ThreadId,
+  name: string,
+  value: string = SECRET,
+  hosts: ReadonlyArray<string> = GITHUB,
+) {
+  const grants = yield* BotSecretGrantService.BotSecretGrantService;
+  yield* grants.set({
+    botThreadId: threadId,
+    name,
+    hosts,
+    value: { type: "stored", secret: Redacted.make(value) },
+  });
+});
+
+const declaresGithub = { secrets: ["GITHUB_TOKEN"], hosts: GITHUB } as const;
+
+it.effect("hashes secrets and hosts only when declared, sorted and without repeats", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const reviewer = yield* FakeReviewer;
+    const watchers = yield* WatcherService.WatcherService;
+    yield* grantSecret(botThread.id, "A_KEY", SECRET, ["api.github.com", "z.example.com"]);
+    yield* grantSecret(botThread.id, "B_KEY", OTHER_SECRET, ["api.github.com", "z.example.com"]);
+    const run = "echo one\n";
+
+    // A version without them keeps the hash it had before they existed, and empty lists are none.
+    const plain = yield* installWatcher(botThread.id, "plain", { run });
+    assert.strictEqual(plain, "af7718a0ac5452b7b3627bc84594f7e6ef48b287b69465fe619cd4c22f6a8164");
+    assert.strictEqual(
+      yield* installWatcher(botThread.id, "empty", { run, secrets: [], hosts: [] }),
+      plain,
+    );
+
+    const jumbled = yield* installWatcher(botThread.id, "jumbled", {
+      run,
+      secrets: ["B_KEY", "A_KEY", "B_KEY"],
+      hosts: ["z.example.com", "api.github.com", "z.example.com"],
+    });
+    const tidy = yield* installWatcher(botThread.id, "tidy", {
+      run,
+      secrets: ["A_KEY", "B_KEY"],
+      hosts: ["api.github.com", "z.example.com"],
+    });
+    assert.strictEqual(jumbled, tidy);
+    assert.notStrictEqual(jumbled, plain);
+    // Each is part of the version, so changing either is another one for the reviewer.
+    const fewerHosts = yield* installWatcher(botThread.id, "fewer-hosts", {
+      run,
+      secrets: ["A_KEY", "B_KEY"],
+      hosts: ["api.github.com"],
+    });
+    const fewerSecrets = yield* installWatcher(botThread.id, "fewer-secrets", {
+      run,
+      secrets: ["A_KEY"],
+      hosts: ["api.github.com", "z.example.com"],
+    });
+    assert.strictEqual(new Set([tidy, fewerHosts, fewerSecrets]).size, 3);
+
+    // The reviewer is told the names and hosts, and the version on disk and in the list carries them.
+    const reviewed = reviewer.calls.find(({ input }) => input.name === "jumbled")!.input;
+    assert.deepStrictEqual(
+      [reviewed.secrets, reviewed.hosts],
+      [
+        ["A_KEY", "B_KEY"],
+        ["api.github.com", "z.example.com"],
+      ],
+    );
+    assert.notProperty(reviewer.calls[0]!.input, "secrets");
+    const config = JSON.parse(
+      yield* fileSystem.readFileString(
+        path.join(yield* versionDirectory(botThread.id, "jumbled", jumbled), "watcher.json"),
+      ),
+    );
+    assert.deepStrictEqual(
+      [config.secrets, config.hosts],
+      [
+        ["A_KEY", "B_KEY"],
+        ["api.github.com", "z.example.com"],
+      ],
+    );
+    const listed = (yield* watchers.list(botThread.id)).watchers.find(
+      ({ name }) => name === "jumbled",
+    );
+    assert.deepStrictEqual(
+      [listed?.secrets, listed?.hosts],
+      [
+        ["A_KEY", "B_KEY"],
+        ["api.github.com", "z.example.com"],
+      ],
+    );
+    assert.isUndefined(
+      (yield* watchers.list(botThread.id)).watchers.find(({ name }) => name === "plain")?.secrets,
+    );
+    // No value is in what the reviewer was shown.
+    assert.notInclude(JSON.stringify(reviewer.calls.map(({ input }) => input)), SECRET);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("refuses secrets that are malformed, unhosted, too many, or for another machine", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const many = (count: number, make: (index: number) => string) =>
+      Array.from({ length: count }, (_, index) => make(index));
+    const refused = [
+      ["secrets without a host", { secrets: ["GITHUB_TOKEN"] }],
+      ["secrets with no host in the list", { secrets: ["GITHUB_TOKEN"], hosts: [] }],
+      ["a lowercase name", { secrets: ["github_token"], hosts: GITHUB }],
+      ["a name that starts with a digit", { secrets: ["1TOKEN"], hosts: GITHUB }],
+      ["a name the script already has", { secrets: ["PATH"], hosts: GITHUB }],
+      ["a name that is the state folder's", { secrets: ["T3_WATCHER_STATE_DIR"], hosts: GITHUB }],
+      ["a host with capitals", { secrets: ["GITHUB_TOKEN"], hosts: ["API.github.com"] }],
+      ["a host with a path", { secrets: ["GITHUB_TOKEN"], hosts: ["api.github.com/v3"] }],
+      ["a host without a dot", { secrets: ["GITHUB_TOKEN"], hosts: ["localhost"] }],
+      [
+        "five secrets",
+        {
+          secrets: many(5, (index) => `KEY_${index}`),
+          hosts: GITHUB,
+        },
+      ],
+      [
+        "nine hosts",
+        {
+          secrets: ["GITHUB_TOKEN"],
+          hosts: many(9, (index) => `h${index}.example.com`),
+        },
+      ],
+      ["a linked environment", { ...declaresGithub, runsOn: LAPTOP }],
+    ] as const;
+    for (const [label, options] of refused) {
+      const error = yield* proposeWatcher(botThread.id, "gh", options).pipe(Effect.flip);
+      assert.strictEqual(error.reason, "invalid", label);
+    }
+    assert.deepStrictEqual(yield* statuses(botThread.id), []);
+    // The most that is allowed is allowed.
+    const fullHosts = many(8, (index) => `h${index}.example.com`);
+    for (const name of many(4, (index) => `KEY_${index}`)) {
+      yield* grantSecret(botThread.id, name, `${name}-value-0123456789`, fullHosts);
+    }
+    yield* installWatcher(botThread.id, "full", {
+      secrets: many(4, (index) => `KEY_${index}`),
+      hosts: fullHosts,
+    });
+    assert.deepStrictEqual(yield* statuses(botThread.id), [["full", "healthy"]]);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("gives a script the secrets it declares as environment variables, and no others", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  runner.state.result = { code: ExitCode(0), stdout: "", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+    yield* grantSecret(botThread.id, "LINEAR_KEY", OTHER_SECRET, ["api.linear.app"]);
+    yield* installWatcher(botThread.id, "gh", declaresGithub);
+    yield* installWatcher(botThread.id, "plain", { run: "echo plain\n" });
+    yield* watchers.runDue;
+
+    const envs = runner.state.inputs.map(({ env }) => env ?? {});
+    assert.lengthOf(envs, 2);
+    const secretEnv = envs.find((env) => env.GITHUB_TOKEN !== undefined);
+    assert.strictEqual(secretEnv?.GITHUB_TOKEN, SECRET);
+    // Granted but not declared: absent. And a watcher that declares nothing gets nothing extra.
+    for (const env of envs) assert.notProperty(env, "LINEAR_KEY");
+    const allowed = new Set([
+      "PATH",
+      "HOME",
+      "USER",
+      "LANG",
+      "LC_ALL",
+      "TZ",
+      "TMPDIR",
+      "T3_WATCHER_STATE_DIR",
+      "GITHUB_TOKEN",
+    ]);
+    for (const env of envs)
+      for (const key of Object.keys(env)) assert.isTrue(allowed.has(key), key);
+    assert.isTrue(runner.state.inputs.every(({ inheritEnv }) => inheritEnv === false));
+    assert.strictEqual(
+      envs.filter((env) => env.GITHUB_TOKEN !== undefined).length,
+      1,
+      "only the watcher that declares it",
+    );
+    // The dry run that approved it needed the secret too, and had it.
+    assert.isTrue(runner.state.dryInputs.some(({ env }) => env?.GITHUB_TOKEN === SECRET));
+    assert.isTrue(runner.state.dryInputs.every(({ env }) => env?.LINEAR_KEY === undefined));
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("waits without spawning, failing or telling the Bot while a secret has no grant", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  runner.state.result = { code: ExitCode(0), stdout: "", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const grants = yield* BotSecretGrantService.BotSecretGrantService;
+    yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+    yield* installWatcher(botThread.id, "gh", declaresGithub);
+    const listed = () =>
+      watchers.list(botThread.id).pipe(Effect.map(({ watchers }) => watchers[0]!));
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 1);
+
+    // The user takes the grant back. Every pass after that waits, however many there are.
+    yield* grants.remove({ botThreadId: botThread.id, name: "GITHUB_TOKEN" });
+    for (let pass = 0; pass < 5; pass += 1) {
+      yield* TestClock.adjust(EVERY_MS);
+      yield* watchers.runDue;
+    }
+    assert.strictEqual(runner.state.runs, 1);
+    const waiting = yield* listed();
+    assert.strictEqual(waiting.status, "waiting");
+    assert.strictEqual(waiting.waiting?.reason, NEEDS_GRANT);
+    assert.isUndefined(waiting.failingSince);
+    assert.strictEqual(orchestration.sent.length, 0);
+    assert.strictEqual(healthWakes(orchestration).length, 0);
+
+    // A grant for other hosts does not cover this one.
+    yield* grantSecret(botThread.id, "GITHUB_TOKEN", SECRET, ["uploads.github.com"]);
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 1);
+    assert.strictEqual((yield* listed()).waiting?.reason, NEEDS_GRANT);
+
+    // Given again for this host, it runs at the next pass and the waiting ends.
+    yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 2);
+    const healthy = yield* listed();
+    assert.strictEqual(healthy.status, "healthy");
+    assert.isUndefined(healthy.waiting);
+    assert.strictEqual(orchestration.sent.length, 0);
+  }).pipe(provideWatchersWithHealth(orchestration, runner.layer));
+});
+
+it.effect("tells the Bot to look at its grants when a first run could not have the secret", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    yield* installWatcher(botThread.id, "gh", declaresGithub);
+    assert.strictEqual(runner.state.runs + runner.state.dryInputs.length, 0);
+    assert.deepStrictEqual(yield* statuses(botThread.id), []);
+    assert.strictEqual(orchestration.sent.length, 1);
+    assert.include(orchestration.sent[0]?.text, "first run could not complete");
+    assert.include(orchestration.sent[0]?.text, "granted");
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("keeps the old version's secrets running until the revised ones are approved", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  runner.state.result = { code: ExitCode(0), stdout: "", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const reviewer = yield* FakeReviewer;
+    yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+    yield* grantSecret(botThread.id, "LINEAR_KEY", OTHER_SECRET);
+    const approved = yield* installWatcher(botThread.id, "gh", declaresGithub);
+
+    const revised = yield* proposeWatcher(botThread.id, "gh", {
+      secrets: ["LINEAR_KEY"],
+      hosts: GITHUB,
+    });
+    assert.notStrictEqual(revised.hash, approved);
+    yield* watchers.runDue;
+    const during = runner.state.inputs.at(-1)?.env;
+    assert.deepStrictEqual([during?.GITHUB_TOKEN, during?.LINEAR_KEY], [SECRET, undefined]);
+
+    // The reviewer is asked about the new names, and the new version runs with them once approved.
+    yield* reviewer.answer(matchName("gh"), APPROVES);
+    yield* watchers.drainReviews;
+    assert.deepStrictEqual(reviewer.calls.at(-1)?.input.secrets, ["LINEAR_KEY"]);
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+    const after = runner.state.inputs.at(-1)?.env;
+    assert.deepStrictEqual([after?.GITHUB_TOKEN, after?.LINEAR_KEY], [undefined, OTHER_SECRET]);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("keeps a watcher that uses secrets on this machine", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  const peer = makeFakePeer();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+    const hash = yield* installWatcher(botThread.id, "gh", declaresGithub);
+    const target = { botThreadId: botThread.id, name: "gh" };
+
+    // Neither a dry run there nor a move: no script nor secret goes to a linked environment.
+    const dry = yield* watchers.dryRun({ ...target, hash, runsOn: LAPTOP }).pipe(Effect.flip);
+    const move = yield* watchers.setRunsOn({ ...target, runsOn: LAPTOP }).pipe(Effect.flip);
+    assert.deepStrictEqual([dry.reason, move.reason], ["invalid", "invalid"]);
+    assert.strictEqual(peer.state.calls.length, 0);
+    assert.strictEqual((yield* watchers.list(botThread.id)).watchers[0]?.runsOn, "local");
+
+    // A watcher the user already moved cannot be revised to take secrets with it.
+    const moved = yield* installRemoteWatcher(botThread.id, "disk");
+    assert.isString(moved);
+    const revision = yield* proposeWatcher(botThread.id, "disk", {
+      run: "echo two\n",
+      ...declaresGithub,
+    }).pipe(Effect.flip);
+    assert.strictEqual(revision.reason, "invalid");
+    assert.deepStrictEqual(
+      peer.state.calls
+        .map((call) => JSON.stringify(call.arguments))
+        .filter((json) => json.includes(SECRET)),
+      [],
+    );
+  }).pipe(provideWatchers(orchestration, runner.layer, peer.layer));
+});
+
+it.effect("never lets a value into what a run records or sends, whatever shape it printed", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+    const forms = [SECRET, Buffer.from(SECRET).toString("base64"), encodeURIComponent(SECRET)];
+    const leaks = (text: string) => forms.filter((form) => text.includes(form));
+    const prints =
+      '#!/bin/sh\necho "token=$GITHUB_TOKEN"\necho "b64=$(printf %s "$GITHUB_TOKEN" | base64)"\necho "err=$GITHUB_TOKEN" >&2\n';
+
+    // Events: what the script printed is the news, and the dry run that approved it printed it too.
+    const events = yield* installWatcher(botThread.id, "news", {
+      ...declaresGithub,
+      mode: "events",
+      run: prints,
+    });
+    // Health: a failing run's output goes in the wake, the state and the list.
+    const health = yield* installWatcher(botThread.id, "trip", {
+      ...declaresGithub,
+      run: `${prints}exit 1\n`,
+    });
+    // The Bot is not listening, so the event stays in the saved state.
+    botThread.settledOverride = "settled";
+    yield* watchers.runDue;
+    botThread.settledOverride = null;
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+
+    const texts = orchestration.sent.map(({ text }) => text);
+    assert.isAbove(texts.length, 0);
+    for (const text of texts) assert.deepStrictEqual(leaks(text), []);
+    assert.isTrue(texts.some((text) => text.includes("[secret GITHUB_TOKEN]")));
+    assert.isTrue(texts.some((text) => text.includes("reported new events")));
+    assert.isTrue(texts.some((text) => text.includes("tripped")));
+
+    for (const name of ["news", "trip"]) {
+      const directory = yield* watcherDirectory(botThread.id, name);
+      const state = yield* fileSystem.readFileString(path.join(directory, "state.json"));
+      assert.deepStrictEqual(leaks(state), [], name);
+    }
+    const listed = JSON.stringify(yield* watchers.list(botThread.id));
+    assert.deepStrictEqual(leaks(listed), []);
+    assert.include(listed, "[secret GITHUB_TOKEN]");
+
+    // The user's own dry run shows the same.
+    for (const [name, hash] of [
+      ["news", events],
+      ["trip", health],
+    ] as const) {
+      const run = yield* watchers.dryRun({ botThreadId: botThread.id, name, hash });
+      assert.deepStrictEqual(leaks(`${run.stdout}\n${run.stderr}`), [], name);
+      assert.include(run.stdout, "token=[secret GITHUB_TOKEN]");
+      assert.include(run.stderr, "err=[secret GITHUB_TOKEN]");
+    }
+  }).pipe(
+    provideWatchers(orchestration, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
+  );
+});

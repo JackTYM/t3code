@@ -1,9 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import {
+  BOT_SECRET_GRANT_MAX_HOSTS,
   BOT_WATCHER_EXPECT_MAX_CHARS,
+  BOT_WATCHER_MAX_SECRETS,
   BOT_WATCHER_MIN_INTERVAL_SECONDS,
   BOT_WATCHER_PURPOSE_MAX_CHARS,
   BOT_WATCHER_SOURCE_MAX_BYTES,
+  BotSecretGrantHost,
+  BotSecretGrantName,
   type BotWatcher,
   BotWatcherError,
   BotWatcherHistoryEntry,
@@ -35,6 +39,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
+import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
@@ -50,7 +55,9 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import { frameUntrustedText } from "../scheduledTasks/webhookTemplate.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as BotSecretGrantService from "./BotSecretGrantService.ts";
 import * as BotService from "./BotService.ts";
+import { redactSecrets } from "./redactSecrets.ts";
 import * as RepairService from "./RepairService.ts";
 
 // A version lives in `<bot folder>/watchers/<name>/<sha256>/` (`run` and `watcher.json`). What is
@@ -101,6 +108,14 @@ const quotesReviewerMarker = (...texts: ReadonlyArray<string | undefined>) =>
 // Everything else, API keys and tokens above all, stays out of a script the Bot wrote. TMPDIR is
 // not here: the script gets its scratch directory as its own.
 const ENV_ALLOWLIST = ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ"];
+// What the server sets itself, which a granted secret of the same name must not replace.
+const RESERVED_ENV = new Set([
+  ...ENV_ALLOWLIST,
+  "TMPDIR",
+  "T3_WATCHER_STATE_DIR",
+  "T3_WATCHER_DRY_RUN",
+]);
+const SECRETS_STAY_HERE = "A watcher that uses secrets runs only on this machine.";
 // What each runtime executes, and what the copy of the source is called so the interpreter
 // treats it right (a `.js` file may use either module syntax on current Node).
 const RUNTIMES = {
@@ -110,6 +125,8 @@ const RUNTIMES = {
 
 const Sha256Hex = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const isSha256Hex = Schema.is(Sha256Hex);
+const isGrantName = Schema.is(BotSecretGrantName);
+const isGrantHost = Schema.is(BotSecretGrantHost);
 const isTextGenerationError = Schema.is(TextGenerationError);
 
 /** What a version's `watcher.json` holds, and so what its hash covers besides the source. */
@@ -129,6 +146,13 @@ const VersionConfig = Schema.Struct({
   /** What the watcher is for, shown to the user and the reviewer. */
   purpose: Schema.optional(
     Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(BOT_WATCHER_PURPOSE_MAX_CHARS)),
+  ),
+  /** Absent when none, so a version without them keeps its hash. Sorted and without repeats. */
+  secrets: Schema.optional(
+    Schema.Array(BotSecretGrantName).check(Schema.isMaxLength(BOT_WATCHER_MAX_SECRETS)),
+  ),
+  hosts: Schema.optional(
+    Schema.Array(BotSecretGrantHost).check(Schema.isMaxLength(BOT_SECRET_GRANT_MAX_HOSTS)),
   ),
 });
 const decodeConfig = Schema.decodeUnknownEffect(VersionConfig);
@@ -235,6 +259,8 @@ const savedEvent = (
   return EVENT_TIME.test(time) ? { at: Number(time), output: event.text } : undefined;
 };
 
+const byCodeUnit = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
 /** Sorted keys, so the hash does not depend on how the file is formatted. */
 const canonicalJson = (value: unknown, space?: number): string =>
   JSON.stringify(
@@ -294,6 +320,12 @@ const keepApproved = <T extends { readonly hash: string }>(
   return entries.filter((entry) => entry.hash === approvedHash || others.has(entry));
 };
 
+/** A granted secret as one run has it: injected under `name`, and hidden from everything recorded. */
+interface InjectedSecret {
+  readonly name: string;
+  readonly value: string;
+}
+
 /** What one run of a script produced, before anyone judges it. */
 type RawRun = BotWatcherRemoteRun;
 
@@ -304,8 +336,9 @@ interface RunOutcome extends RawRun {
 }
 
 /**
- * A scheduled or dry run, wherever it happened: it ran and said something, or the environment it
- * runs on did not answer (waiting, not failing), or answered that it would not run it.
+ * A scheduled or dry run, wherever it happened: it ran and said something, or it could not start
+ * yet because the environment it runs on did not answer or a secret it declares has no grant
+ * (waiting, not failing), or the environment answered that it would not run it.
  */
 type Placed =
   | { readonly _tag: "Ran"; readonly outcome: RunOutcome }
@@ -397,6 +430,10 @@ export class WatcherService extends Context.Service<
       readonly runsOn?: BotWatcherRunsOn | undefined;
       readonly mode?: BotWatcherMode | undefined;
       readonly purpose?: string | undefined;
+      /** Granted secrets the script receives as environment variables of these names; local runs only. */
+      readonly secrets?: ReadonlyArray<string> | undefined;
+      /** The hosts those secrets may be sent to. */
+      readonly hosts?: ReadonlyArray<string> | undefined;
     }) => Effect.Effect<{ readonly hash: string; readonly pending: boolean }, BotWatcherError>;
     /** Deletes a watcher and every version of it. Refused to a turn the user did not start. */
     readonly remove: (input: {
@@ -468,6 +505,7 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const runner = yield* ProcessRunner.ProcessRunner;
   const bots = yield* BotService.BotService;
+  const grants = yield* BotSecretGrantService.BotSecretGrantService;
   const settings = yield* ServerSettings.ServerSettingsService;
   const scheduler = yield* Scheduler.Scheduler;
   const peers = yield* PeerMcpClient.PeerMcpClient;
@@ -674,7 +712,14 @@ const make = Effect.gen(function* () {
 
   // Only an allowlist reaches the script (`inheritEnv: false` below), so a variable added to the
   // server's environment later is out by default.
-  const scrubbedEnv = (scratch: string, stateDir: string, dryRun: boolean): NodeJS.ProcessEnv => ({
+  const scrubbedEnv = (
+    scratch: string,
+    stateDir: string,
+    dryRun: boolean,
+    secrets: ReadonlyArray<InjectedSecret>,
+  ): NodeJS.ProcessEnv => ({
+    // First, so nothing the server sets below can be replaced by a secret of the same name.
+    ...Object.fromEntries(secrets.map(({ name, value }) => [name, value])),
     ...Object.fromEntries(
       ENV_ALLOWLIST.flatMap((key) => {
         const value = process.env[key];
@@ -697,6 +742,8 @@ const make = Effect.gen(function* () {
     readonly dryRun: boolean;
     /** The persistent state folder; without one the script gets a throwaway under its scratch directory. */
     readonly dataDir?: string | undefined;
+    /** Only a local watcher passes any: a script run for a linked environment never has a secret. */
+    readonly secrets?: ReadonlyArray<InjectedSecret> | undefined;
   }) {
     const runtime = RUNTIMES[input.runtime];
     return yield* Effect.gen(function* () {
@@ -711,7 +758,7 @@ const make = Effect.gen(function* () {
         command: runtime.command,
         args: [file],
         cwd: scratch,
-        env: scrubbedEnv(scratch, stateDir, input.dryRun),
+        env: scrubbedEnv(scratch, stateDir, input.dryRun, input.secrets ?? []),
         inheritEnv: false,
         // Closed at once, so a script that reads stdin sees the end instead of waiting.
         stdin: "",
@@ -752,13 +799,18 @@ const make = Effect.gen(function* () {
     return outcome === "match";
   };
 
-  /** Whether a run is healthy is judged here, from what the environment it ran on reported. */
-  const judge = (version: Version, raw: RawRun): RunOutcome => {
+  const cutAtCap = (stdout: string) => Buffer.byteLength(stdout) >= STDOUT_MAX_BYTES;
+
+  /**
+   * Whether a run is healthy is judged here, from what the environment it ran on reported.
+   * `cut`: the output reached the cap before anything was hidden from it, which hiding can undo.
+   */
+  const judge = (version: Version, raw: RawRun, cut = cutAtCap(raw.stdout)): RunOutcome => {
     // Events mode: exit 0 is the only health there is, and what it printed is the news.
     if (version.config.mode === "events") {
       // Output that hit the cap was cut after the script's cursor moved, so what is left is not
       // the whole event: a failure the Bot can act on, not news with a hole in it.
-      if (raw.exit === "0" && Buffer.byteLength(raw.stdout) >= STDOUT_MAX_BYTES) {
+      if (raw.exit === "0" && cut) {
         return {
           ...raw,
           stderr: `Output was cut at ${STDOUT_MAX_BYTES} bytes; some events may be missing. Print only a short line per new item.`,
@@ -825,38 +877,80 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * The values this version's script is to receive, each read through the grants for the hosts it
+   * declares; or why it cannot start yet. Nothing is read for a version that declares no secrets.
+   */
+  const injectSecrets = Effect.fn("WatcherService.injectSecrets")(function* (
+    botThreadId: ThreadId,
+    version: Version,
+  ) {
+    const hosts = version.config.hosts ?? [];
+    const injected: Array<InjectedSecret> = [];
+    for (const name of version.config.secrets ?? []) {
+      const resolved = yield* grants.resolve({ botThreadId, name, hosts });
+      if (resolved._tag === "Missing") {
+        // One fixed text whatever the reason: it says what to do, and nothing of the grant.
+        return {
+          _tag: "Waiting",
+          reason: `Secret ${name} needs a grant for ${hosts.length === 1 ? "host" : "hosts"} ${hosts.join(", ")} in Settings → Home.`,
+        } as const;
+      }
+      injected.push({ name, value: Redacted.value(resolved.value) });
+    }
+    return { _tag: "Ready", injected } as const;
+  });
+
+  /**
    * `scheduled` names the watcher whose state folder a scheduled run gets; a dry run passes none.
    * A linked environment that predates `stateKey` ignores it and gives the script a throwaway
    * folder, and a watcher removed here leaves its folder there. Neither is handled yet.
    */
-  const runPlaced = (
+  const runPlaced = Effect.fn("WatcherService.runPlaced")(function* (
+    botThreadId: ThreadId,
     version: Version,
     runsOn: BotWatcherRunsOn,
     scheduled: { readonly folder: string; readonly name: string } | undefined,
-  ) =>
-    runsOn === "local"
-      ? runScript({
-          source: version.source,
-          runtime: version.config.runtime,
-          timeoutMs: version.config.timeoutMs,
-          dryRun: scheduled === undefined,
-          dataDir: scheduled === undefined ? undefined : dataDir(scheduled.folder, scheduled.name),
-        }).pipe(
-          Effect.map((raw): Placed => ({
-            _tag: "Ran",
-            outcome: judge(version, raw),
-          })),
-        )
-      : runRemote(
-          version,
-          EnvironmentId.make(runsOn),
-          scheduled === undefined,
-          // Every Home is the folder `home`, so the key names this environment too: two boxes
-          // linked to one laptop each get their own folder for a same-named watcher.
-          scheduled === undefined
-            ? undefined
-            : sha256(`${localEnvironmentId}/${scheduled.folder}/${scheduled.name}`),
-        );
+  ) {
+    if (runsOn !== "local") {
+      // A secret is read here and goes only into a script run here.
+      if ((version.config.secrets ?? []).length > 0) {
+        return { _tag: "Refused", reason: SECRETS_STAY_HERE } as const satisfies Placed;
+      }
+      return yield* runRemote(
+        version,
+        EnvironmentId.make(runsOn),
+        scheduled === undefined,
+        // Every Home is the folder `home`, so the key names this environment too: two boxes
+        // linked to one laptop each get their own folder for a same-named watcher.
+        scheduled === undefined
+          ? undefined
+          : sha256(`${localEnvironmentId}/${scheduled.folder}/${scheduled.name}`),
+      );
+    }
+    const secrets = yield* injectSecrets(botThreadId, version);
+    if (secrets._tag === "Waiting") {
+      return { _tag: "Unreachable", reason: secrets.reason } as const satisfies Placed;
+    }
+    const raw = yield* runScript({
+      source: version.source,
+      runtime: version.config.runtime,
+      timeoutMs: version.config.timeoutMs,
+      dryRun: scheduled === undefined,
+      dataDir: scheduled === undefined ? undefined : dataDir(scheduled.folder, scheduled.name),
+      secrets: secrets.injected,
+    });
+    // Hidden before anything is judged, recorded or sent, so no later step can carry a value. What
+    // the output cap cut off is not seen here, so a value split by it can lose its tail unhidden.
+    const hidden: RawRun = {
+      ...raw,
+      stdout: redactSecrets(raw.stdout, secrets.injected),
+      stderr: redactSecrets(raw.stderr, secrets.injected),
+    };
+    return {
+      _tag: "Ran",
+      outcome: judge(version, hidden, cutAtCap(raw.stdout)),
+    } as const satisfies Placed;
+  });
 
   const wakeText = Effect.fn("WatcherService.wakeText")(function* (
     name: string,
@@ -933,7 +1027,7 @@ const make = Effect.gen(function* () {
     if (previous !== undefined && startedAt < previous.lastRunAt + spacing) {
       return;
     }
-    const placed = yield* runPlaced(version, runsOn, { folder, name });
+    const placed = yield* runPlaced(botThreadId, version, runsOn, { folder, name });
     if (placed._tag === "Unreachable") {
       // Nothing about the watcher itself is known, so its failure and backoff stay as they were.
       return yield* writeState(directory, {
@@ -1112,6 +1206,8 @@ const make = Effect.gen(function* () {
             ...(shown.config.expect === undefined ? {} : { expect: shown.config.expect }),
             ...(shown.config.mode === undefined ? {} : { mode: shown.config.mode }),
             ...(shown.config.purpose === undefined ? {} : { purpose: shown.config.purpose }),
+            ...(shown.config.secrets === undefined ? {} : { secrets: shown.config.secrets }),
+            ...(shown.config.hosts === undefined ? {} : { hosts: shown.config.hosts }),
             requestedRunsOn: shown.config.runsOn,
           }),
       runsOn: record.runsOn,
@@ -1274,6 +1370,36 @@ const make = Effect.gen(function* () {
           "A watcher's source, purpose and expect cannot contain the reviewer's marker text (SCRIPT UNDER REVIEW, === END SCRIPT).",
         );
       }
+      const secrets = [...new Set(input.secrets ?? [])].toSorted(byCodeUnit);
+      const hosts = [...new Set(input.hosts ?? [])].toSorted(byCodeUnit);
+      if (!secrets.every((secret) => isGrantName(secret))) {
+        return yield* invalid(
+          "A secret name is capital letters, digits and _, starts with a letter, and has at most 64 characters.",
+        );
+      }
+      if (secrets.some((secret) => RESERVED_ENV.has(secret))) {
+        return yield* invalid(
+          "A secret cannot be named for a variable the server sets for the script (PATH, HOME, TMPDIR, T3_WATCHER_STATE_DIR and the like).",
+        );
+      }
+      if (!hosts.every((host) => isGrantHost(host))) {
+        return yield* invalid("A host is a lowercase DNS name such as api.github.com.");
+      }
+      if (secrets.length > BOT_WATCHER_MAX_SECRETS || hosts.length > BOT_SECRET_GRANT_MAX_HOSTS) {
+        return yield* invalid(
+          `A watcher declares at most ${BOT_WATCHER_MAX_SECRETS} secrets and ${BOT_SECRET_GRANT_MAX_HOSTS} hosts.`,
+        );
+      }
+      if (secrets.length > 0 && hosts.length === 0) {
+        return yield* invalid("Secrets need at least one host to be sent to.");
+      }
+      // The record's place is the user's, so a watcher the user moved cannot take secrets either.
+      if (
+        secrets.length > 0 &&
+        ((input.runsOn ?? "local") !== "local" || (existing?.runsOn ?? "local") !== "local")
+      ) {
+        return yield* invalid(SECRETS_STAY_HERE);
+      }
       const versionConfig = {
         runtime: input.runtime,
         everyMs: input.intervalSeconds * 1000,
@@ -1283,6 +1409,8 @@ const make = Effect.gen(function* () {
         // Only what differs from before is written, so a version without them keeps its hash.
         ...(input.mode === "events" ? { mode: input.mode } : {}),
         ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
+        ...(secrets.length === 0 ? {} : { secrets }),
+        ...(hosts.length === 0 ? {} : { hosts }),
       } satisfies typeof VersionConfig.Type;
       const hash = computeHash({ run: source, config: versionConfig });
       const siblings = Object.keys((yield* Ref.get(approvals))[folder] ?? {});
@@ -1418,7 +1546,7 @@ const make = Effect.gen(function* () {
       );
     }
     const where = runsOn ?? "local";
-    const placed = yield* runPlaced(version, where, undefined);
+    const placed = yield* runPlaced(botThreadId, version, where, undefined);
     // Not a completed dry run, so nothing is recorded and approval stays closed.
     if (placed._tag === "Unreachable") {
       return yield* failure(botThreadId, name, "unreachable", placed.reason);
@@ -1703,6 +1831,9 @@ const make = Effect.gen(function* () {
             mode: version.config.mode ?? "health",
             intervalSeconds: version.config.everyMs / 1000,
             expect: version.config.expect,
+            // Left out when none, so what a review is given stays what it was before they existed.
+            ...(version.config.secrets === undefined ? {} : { secrets: version.config.secrets }),
+            ...(version.config.hosts === undefined ? {} : { hosts: version.config.hosts }),
             source: decode(version.source),
             previousSource: previous === undefined ? undefined : decode(previous.source),
             tag,
@@ -1808,14 +1939,17 @@ const make = Effect.gen(function* () {
       const current = yield* recordOf(folder, name);
       if (current?.pendingHash !== hash) return;
       const dry = yield* runDry({ botThreadId, name, hash, runsOn: current.runsOn }).pipe(
-        Effect.option,
+        Effect.result,
       );
-      if (dry._tag === "None") {
+      if (dry._tag === "Failure") {
         return yield* failVersion(
           botThreadId,
           name,
           hash,
-          "The first run could not complete where the watcher will run.",
+          // A grant that is missing is the one cause the Bot can say something about.
+          dry.failure.reason === "unreachable" && (version.config.secrets ?? []).length > 0
+            ? "The first run could not complete where the watcher will run. A secret it declares may not be granted yet for its hosts."
+            : "The first run could not complete where the watcher will run.",
         );
       }
       // The dry run took a while, and a newer proposal may have come in: that one needs its own review.
@@ -1904,6 +2038,15 @@ const make = Effect.gen(function* () {
   const setRunsOn: WatcherService["Service"]["setRunsOn"] = Effect.fn("WatcherService.setRunsOn")(
     function* ({ botThreadId, name, runsOn }) {
       const { folder, record } = yield* requireRecord(botThreadId, name);
+      if (runsOn !== "local") {
+        // Either version may be the one that runs next, so both are looked at.
+        for (const hash of [record.approvedHash, record.pendingHash]) {
+          const version = hash === undefined ? undefined : yield* readVersion(folder, name, hash);
+          if ((version?.config.secrets ?? []).length > 0) {
+            return yield* failure(botThreadId, name, "invalid", SECRETS_STAY_HERE);
+          }
+        }
+      }
       // Moving an approved watcher is a first run in a new place, so it needs a dry run there.
       if (
         record.approvedHash !== undefined &&

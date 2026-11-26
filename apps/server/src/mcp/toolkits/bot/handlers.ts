@@ -208,6 +208,8 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
     Effect.gen(function* () {
       const { threadId } = yield* callerBot;
       const watchers = yield* WatcherService.WatcherService;
+      const grants = yield* BotSecretGrantService.BotSecretGrantService;
+      const granted = (yield* grants.list(threadId)).grants;
       // The source is the Bot's own text, so it may re-read it to revise; the verdicts say which
       // version was turned down, not why: the reason reaches it framed, in the wake. The diff, dry
       // run and history stay in the client.
@@ -223,6 +225,8 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
             expect,
             mode,
             purpose,
+            secrets,
+            hosts,
             runsOn,
             approvedHash,
             pendingHash,
@@ -247,6 +251,23 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
             ...(expect === undefined ? {} : { expect }),
             ...(mode === undefined ? {} : { mode }),
             ...(purpose === undefined ? {} : { purpose }),
+            // Whether, not what: a grant counts only if it covers every host the version names,
+            // as the server's own check at run time does.
+            ...(secrets === undefined
+              ? {}
+              : {
+                  secrets: secrets.map((secret) => ({
+                    name: secret,
+                    granted:
+                      (hosts ?? []).length > 0 &&
+                      granted.some(
+                        (grant) =>
+                          grant.name === secret &&
+                          (hosts ?? []).every((host) => grant.hosts.includes(host)),
+                      ),
+                  })),
+                }),
+            ...(hosts === undefined ? {} : { hosts }),
           }),
         ),
       };

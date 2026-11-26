@@ -552,6 +552,10 @@ export interface WatcherReviewPromptInput {
   intervalSeconds: number;
   /** A regular expression the script's healthy output must match. */
   expect?: string | undefined;
+  /** Granted secrets the script receives as environment variables of these names; never their values. */
+  secrets?: ReadonlyArray<string> | undefined;
+  /** The hosts those secrets may be sent to. */
+  hosts?: ReadonlyArray<string> | undefined;
   source: string;
   previousSource?: string | undefined;
   /** Unique to this review and unknown to whoever wrote the script; it names the data region's markers. */
@@ -576,12 +580,16 @@ Do not reject a script for being imprecise, inefficient, buggy, incomplete or on
 
 A script may run the standard command-line client for the source named in its purpose (for example gh for GitHub, or curl for that service's documented read-only HTTP API), and that client reading its own saved login from its normal config location is expected: that is not the script reading a credential. Writing item ids, timestamps, cursors and short summaries of what it fetched into $T3_WATCHER_STATE_DIR is fine.
 
+A script whose Secrets are listed below receives each one as an environment variable of that name, which the user granted for the listed Hosts. Using it as a credential for a request to a listed host is expected; for curl that means a header read from standard input or a config file, or an HTTP client library, rather than an argument.
+
 REJECT if it does any of these:
 - Writes, moves or deletes files outside $T3_WATCHER_STATE_DIR and its temp directory.
 - Reads or prints credentials or private files itself (cat, grep, cp or reading ~/.ssh, keychains, browser profiles, .env files, other apps' data, or a client's token file such as ~/.config/gh/hosts.yml), or passes a credential to anything but the client it belongs to.
 - Sends data to any host that the purpose does not require, or sends anything it read from the user's computer to a network host.
 - Acts instead of reading: POST, PUT, PATCH or DELETE requests, sending mail or messages, git push, running other programs that change things.
 - Downloads and runs code, runs eval or an interpreter on fetched text, installs software, starts background or persistent processes, or changes system settings.
+- Sends a secret named in Secrets to any host other than one listed in Hosts.
+- Writes a secret anywhere but memory: it prints it, saves it in a file (the state folder included), or puts it on a command line.
 - Hides what it does: obfuscated, encoded or minified code, or hidden or unexplained behavior that has a side effect, or network or file access, beyond what the purpose needs.
 - Prints more than a short summary of new items (it must print only what is new, not dump a whole inbox).
 - Has an Expect regular expression that could take exponential time on some input, such as nested or overlapping repeats like (a+)+ or (a|aa)+.
@@ -600,6 +608,13 @@ export function buildWatcherReviewPrompt(input: WatcherReviewPromptInput) {
     `Mode: ${input.mode}`,
     `Interval: ${input.intervalSeconds} seconds`,
     ...(input.expect === undefined ? [] : [`Expect: ${JSON.stringify(input.expect)}`]),
+    // JSON arrays, so nothing in a name or host can start a line of its own.
+    ...(input.secrets === undefined || input.secrets.length === 0
+      ? []
+      : [`Secrets: ${JSON.stringify(input.secrets)}`]),
+    ...(input.hosts === undefined || input.hosts.length === 0
+      ? []
+      : [`Hosts: ${JSON.stringify(input.hosts)}`]),
     `Script:\n${input.source}`,
     ...(input.previousSource === undefined
       ? []

@@ -1,11 +1,14 @@
 import {
   BOT_FILE_MAX_CHARS,
   BOT_MAIL_MAX_SEARCH_RESULTS,
+  BOT_SECRET_GRANT_MAX_HOSTS,
   BOT_WATCHER_EXPECT_MAX_CHARS,
+  BOT_WATCHER_MAX_SECRETS,
   BOT_WATCHER_MIN_INTERVAL_SECONDS,
   BOT_WATCHER_PURPOSE_MAX_CHARS,
   BOT_WATCHER_SOURCE_MAX_BYTES,
   BotSecretGrant,
+  BotSecretGrantHost,
   BotSecretGrantName,
   BotWatch,
   BotWatcherMode,
@@ -164,7 +167,7 @@ const WatchRemove = Tool.make("t3_bot_watch_remove", {
 const WatcherPropose = Tool.make("t3_bot_watcher_propose", {
   ...shared,
   description:
-    "Propose a watcher: a script that polls for free and wakes you only when it trips. A reviewer model checks the script and the server runs it once and approves it; a rejection is reported to you in a wake with the reason. Revisions keep the old version running meanwhile. You cannot approve or dry-run it yourself. Runs on an interval, with no stdin, a minimal environment, and a short timeout. Healthy is exit 0 and, when `expect` is set, stdout matching it; anything else trips and wakes you with the output. mode `events`: exit 0 with empty stdout means nothing happened; exit 0 with output means news and wakes you once with that output. Keep a cursor in $T3_WATCHER_STATE_DIR so you only print what is new. Stdout is capped at 4096 bytes. In events mode, output that reaches the cap counts as a failure, so print a short line per new item. A new watcher is refused in a turn that began with a wake or any message the user did not type; a revision of one the user already approved is not.",
+    "Propose a watcher: a script that polls for free and wakes you only when it trips. A reviewer model checks the script and the server runs it once and approves it; a rejection is reported to you in a wake with the reason. Revisions keep the old version running meanwhile. You cannot approve or dry-run it yourself. Runs on an interval, with no stdin, a minimal environment, and a short timeout. Healthy is exit 0 and, when `expect` is set, stdout matching it; anything else trips and wakes you with the output. mode `events`: exit 0 with empty stdout means nothing happened; exit 0 with output means news and wakes you once with that output. Keep a cursor in $T3_WATCHER_STATE_DIR so you only print what is new. Stdout is capped at 4096 bytes. In events mode, output that reaches the cap counts as a failure, so print a short line per new item. To use a secret the user granted you (see t3_bot_secret_grants_list), name it in `secrets` and the hosts it may be sent to in `hosts`: the script gets it as an environment variable of that name, only on this machine, and only once the grant covers every host you list. Use it only as a credential for a request to a listed host, never print or save it or put it on a command line (curl -H @- or --config - reads headers from stdin). Whatever the script prints has the value replaced by [secret NAME]. Changing `secrets` or `hosts` is a new version for the reviewer. A new watcher is refused in a turn that began with a wake or any message the user did not type; a revision of one the user already approved is not.",
   parameters: Schema.Struct({
     name: BotWatcherName.annotate({
       description:
@@ -202,6 +205,20 @@ const WatcherPropose = Tool.make("t3_bot_watcher_propose", {
       Schema.isMinLength(1),
       Schema.isMaxLength(BOT_WATCHER_PURPOSE_MAX_CHARS),
     ).annotate({ description: "What this watcher is for, in a sentence." }),
+    secrets: Schema.optional(
+      Schema.Array(BotSecretGrantName).check(Schema.isMaxLength(BOT_WATCHER_MAX_SECRETS)).annotate({
+        description:
+          "Names of secrets the user granted you that the script needs, at most 4. Needs `hosts`, and a watcher that runs here.",
+      }),
+    ),
+    hosts: Schema.optional(
+      Schema.Array(BotSecretGrantHost)
+        .check(Schema.isMaxLength(BOT_SECRET_GRANT_MAX_HOSTS))
+        .annotate({
+          description:
+            "Hosts the secrets may be sent to, at most 8, each one the grant covers (for example api.github.com).",
+        }),
+    ),
   }),
   success: Schema.Struct({
     hash: Schema.String,
@@ -249,6 +266,11 @@ const WatcherList = Tool.make("t3_bot_watcher_list", {
         expect: Schema.optional(Schema.String),
         mode: Schema.optional(BotWatcherMode),
         purpose: Schema.optional(Schema.String),
+        /** The names the shown version declares, and whether each is granted for all its hosts. */
+        secrets: Schema.optional(
+          Schema.Array(Schema.Struct({ name: BotSecretGrantName, granted: Schema.Boolean })),
+        ),
+        hosts: Schema.optional(Schema.Array(BotSecretGrantHost)),
         runsOn: BotWatcherRunsOn,
         approvedHash: Schema.optional(Schema.String),
         pendingHash: Schema.optional(Schema.String),
