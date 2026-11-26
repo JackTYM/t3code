@@ -120,6 +120,16 @@ jobs:
       - name: Build JS bundle
         run: vp run build:desktop
 
+      # Upload only the expected hidden file, as release.yml does;
+      # release-desktop.yml restores it.
+      - name: Stage web asset manifest
+        shell: bash
+        run: |
+          manifest=apps/server/dist/client/.vite/manifest.json
+          if [[ -f "$manifest" ]]; then
+            cp "$manifest" apps/server/dist/client/vite-manifest.release.json
+          fi
+
       # Same layout as the release workflow's js-bundle, so release-desktop.yml
       # packages it unchanged.
       - name: Upload JS bundle
@@ -487,6 +497,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
+      actions: write
       contents: read
       pages: write
       id-token: write
@@ -552,6 +563,25 @@ jobs:
           ls -R site | head -20 || true
 
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
+
+      # A re-run of this job (gh run rerun --failed) uploads a second
+      # `github-pages` artifact, and deploy-pages then refuses to pick one.
+      - name: Delete a stale github-pages artifact from this run
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          ids="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?name=github-pages&per_page=100" \
+            --jq '.artifacts[] | select(.name == "github-pages" and .workflow_run.id == (env.RUN_ID | tonumber)) | .id' || true)"
+          deleted=0
+          for id in $ids; do
+            if gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}" >/dev/null; then
+              deleted=$((deleted + 1))
+            fi
+          done
+          echo "deleted ${deleted} stale github-pages artifact(s)"
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:

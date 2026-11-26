@@ -321,6 +321,10 @@ function escapeLength(input: string, index: number): number {
   if (next === "[") {
     for (let cursor = index + 2; cursor < input.length; cursor += 1) {
       const code = input.charCodeAt(cursor);
+      // Like xterm.js, a new ESC cancels an unfinished CSI so the next sequence parses intact.
+      if (code === 0x1b) return cursor - index;
+      // CAN and SUB cancel the CSI and are consumed.
+      if (code === 0x18 || code === 0x1a) return cursor - index + 1;
       if (code >= 0x40 && code <= 0x7e) return cursor - index + 1;
     }
     return -1;
@@ -329,6 +333,7 @@ function escapeLength(input: string, index: number): number {
     // BEL/ST ends string sequences; also stop at newlines so stray binary introducers cannot hide later output.
     for (let cursor = index + 2; cursor < input.length; cursor += 1) {
       if (input[cursor] === "\u0007") return cursor - index + 1;
+      if (input[cursor] === "\u0018" || input[cursor] === "\u001a") return cursor - index + 1;
       if (input[cursor] === "\n") return cursor - index;
       // Like xterm.js, an ESC that does not start ST ends the string and begins the next sequence.
       if (input[cursor] === ESC) {
@@ -351,6 +356,11 @@ function escapeLength(input: string, index: number): number {
   // After intermediates, a control or ESC is not a final byte; end before it so it is still processed.
   const final = input.charCodeAt(cursor);
   if (cursor > index + 1 && (final < 0x30 || final > 0x7e)) return cursor - index;
+  if (final >= 0xd800 && final <= 0xdbff) {
+    if (cursor + 1 >= input.length) return -1;
+    const low = input.charCodeAt(cursor + 1);
+    if (low >= 0xdc00 && low <= 0xdfff) return cursor - index + 2;
+  }
   return cursor - index + 1;
 }
 
