@@ -65,6 +65,9 @@ const RUN_NAME = /^[A-Za-z0-9][A-Za-z0-9_.:%~-]{0,255}$/u;
 // A thread id is whatever its creator chose, so one only goes into a brief when it is this plain.
 const THREAD_ID = RUN_NAME;
 const LATEST_TIME_MS = Date.UTC(9999, 11, 31);
+/** A state file the service set aside: `repair-state.json.rejected.<ms>`, then `-<n>` for one made in the same millisecond. */
+const REJECTED_STATE_FILE = /^repair-state\.json\.rejected\.(\d+)(?:-(\d+))?$/u;
+const MAX_REJECTED_STATE_FILES = 5;
 
 /**
  * What a crew's merge is refused over (`RepairMergeGuard`), matched without regard to case: `*`
@@ -748,7 +751,8 @@ const make = Effect.gen(function* () {
   );
 
   const empty = (version: number): State => ({ episodes: {}, repairs: {}, limits: {}, version });
-  const rejectedPath = `${statePath}.rejected`;
+  const rejectedAt = (at: number, copy: number) =>
+    `${statePath}.rejected.${at}${copy === 0 ? "" : `-${copy}`}`;
 
   // Read once at start, like the watchers' approvals: every change is saved before it is used. The
   // newest version this server saved is kept outside the state file, in the secret store: an older
@@ -765,12 +769,21 @@ const make = Effect.gen(function* () {
         () => Effect.undefined,
       ),
     );
-    if (text === undefined) return { lastVersion, state: empty(lastVersion), rejected: false };
-    const { data, signature } = yield* decodeSignedFile(text);
-    if (!(yield* signer.verify(data, signature))) {
-      return { lastVersion, state: empty(lastVersion), rejected: true };
+    const rejected = (reason: string) => ({ lastVersion, state: empty(lastVersion), reason });
+    if (text === undefined) return { lastVersion, state: empty(lastVersion), reason: undefined };
+    // What was read but is not a signed state will not become one by waiting. A read, the secret
+    // store or the key that fail may pass, and are left to the caller.
+    const signed = yield* decodeSignedFile(text).pipe(
+      Effect.catchIf(Schema.isSchemaError, () => Effect.undefined),
+    );
+    if (signed === undefined) return rejected("is not a signed state file");
+    if (!(yield* signer.verify(signed.data, signed.signature))) {
+      return rejected("failed its signature");
     }
-    const decoded = yield* decodeState(data);
+    const decoded = yield* decodeState(signed.data).pipe(
+      Effect.catchIf(Schema.isSchemaError, () => Effect.undefined),
+    );
+    if (decoded === undefined) return rejected("is not a state");
     const state: State = isState(decoded)
       ? {
           episodes: decoded.episodes,
@@ -780,27 +793,57 @@ const make = Effect.gen(function* () {
         }
       : { episodes: decoded, repairs: {}, limits: {}, version: 0 };
     return state.version >= lastVersion
-      ? { lastVersion, state, rejected: false }
-      : { lastVersion, state: empty(lastVersion), rejected: true };
+      ? { lastVersion, state, reason: undefined }
+      : rejected("is older than the last save");
   });
-  // A file that cannot be vouched for (a bad signature, or older than the last save) is dropped:
-  // the count goes on from the newest one, so later saves are newer, and the file is moved aside
-  // first so a later save cannot write over it. A file or secret that could not be read or decoded
-  // is not evidence of anything: it is left untouched, and this run keeps its state in memory.
+  /**
+   * Moves the file to `repair-state.json.rejected.<time>`, never over an earlier one, and keeps the
+   * newest few. Failing to tidy older ones is not a reason to stay without a state.
+   */
+  const setAsideRejected = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    let target = rejectedAt(now, 0);
+    for (let copy = 1; yield* fileSystem.exists(target); copy += 1) target = rejectedAt(now, copy);
+    yield* fileSystem.rename(statePath, target);
+    yield* fileSystem.readDirectory(config.stateDir).pipe(
+      Effect.flatMap((names) => {
+        const kept = names
+          .flatMap((name) => {
+            const match = REJECTED_STATE_FILE.exec(name);
+            return match === null
+              ? []
+              : [{ name, at: Number(match[1]), copy: Number(match[2] ?? 0) }];
+          })
+          .toSorted((a, b) => b.at - a.at || b.copy - a.copy);
+        return Effect.forEach(
+          kept.slice(MAX_REJECTED_STATE_FILES),
+          ({ name }) => fileSystem.remove(path.join(config.stateDir, name)),
+          { discard: true },
+        );
+      }),
+      Effect.catch((cause) =>
+        Effect.logWarning("Older rejected repair state could not be removed.", { cause }),
+      ),
+    );
+  });
+  // A file that cannot be vouched for (a bad signature, older than the last save, or not a state at
+  // all) is dropped: the count goes on from the newest one, so later saves are newer, and the file
+  // is moved aside first so a later save cannot write over it. A file or secret that could not be
+  // read is not evidence of anything: it is left untouched, and this run keeps its state in memory.
   const initial = yield* verifiedLoad.pipe(
     Effect.flatMap((loaded) =>
-      loaded.rejected
+      loaded.reason !== undefined
         ? Effect.logWarning(
-            "Repair state failed verification or is older than the last save; it was set aside and the service starts without it.",
+            `Repair state ${loaded.reason}; it was set aside and the service starts without it.`,
           ).pipe(
-            Effect.andThen(fileSystem.rename(statePath, rejectedPath)),
+            Effect.andThen(setAsideRejected),
             Effect.as({ state: loaded.state, writable: true }),
           )
         : Effect.succeed({ state: loaded.state, writable: true }),
     ),
     Effect.catch((cause) =>
       Effect.logWarning(
-        "Repair state could not be read; it was left as it is and this run keeps none on disk.",
+        "Repair state could not be read or set aside; it was left as it is and this run keeps none on disk.",
         { cause },
       ).pipe(Effect.as({ state: empty(0), writable: false })),
     ),

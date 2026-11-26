@@ -627,6 +627,22 @@ const overwrite = (restarts: Restarts, text: string) =>
     Effect.orDie,
   );
 
+/** The state files set aside, oldest name first, with what each holds. */
+const rejectedFiles = (restarts: Restarts) =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = path.dirname(restarts.stateFile);
+    const names = (yield* fileSystem.readDirectory(directory))
+      .filter((name) => name.startsWith("repair-state.json.rejected"))
+      .toSorted();
+    return yield* Effect.forEach(names, (name) =>
+      fileSystem
+        .readFileString(path.join(directory, name))
+        .pipe(Effect.map((text) => ({ name, text }))),
+    );
+  }).pipe(Effect.orDie);
+
 // A file the server could not read is not a file it may replace: the failure may be a passing one
 // (a permission, a disk), and the file may hold the only record of a crew that is still running.
 it.effect.each([
@@ -636,17 +652,6 @@ it.effect.each([
       FileSystem.FileSystem.pipe(
         Effect.flatMap((fs) => fs.chmod(restarts.stateFile, 0o000)),
         Effect.as(saved),
-        Effect.orDie,
-      ),
-  },
-  { name: "is not JSON", damage: (restarts: Restarts) => overwrite(restarts, "{not json") },
-  {
-    name: "is signed but is not a state",
-    damage: (restarts: Restarts) =>
-      restarts.sign('{"unknown":1}').pipe(
-        Effect.flatMap((signature) =>
-          overwrite(restarts, JSON.stringify({ data: '{"unknown":1}', signature })),
-        ),
         Effect.orDie,
       ),
   },
@@ -674,7 +679,7 @@ it.effect.each([
     // Not rewritten, not moved aside, no half-written file left next to it.
     yield* fileSystem.chmod(restarts.stateFile, 0o600);
     assert.strictEqual(yield* fileSystem.readFileString(restarts.stateFile), damaged);
-    assert.isFalse(yield* fileSystem.exists(`${restarts.stateFile}.rejected`));
+    assert.deepStrictEqual(yield* rejectedFiles(restarts), []);
     assert.isFalse(yield* fileSystem.exists(`${restarts.stateFile}.tmp`));
 
     // Once the file reads again, the next start believes it and the old episode is back.
@@ -684,6 +689,80 @@ it.effect.each([
       const repair = yield* RepairService.RepairService;
       assert.strictEqual((yield* repair.find(diskId))?.name, "disk");
     }).pipe(third);
+  }).pipe(Effect.provide(NodeServices.layer));
+});
+
+// A file that reads but is not a state will not become one by waiting, so keeping it in place
+// would leave the service without a state file for as long as that file stays.
+it.effect.each([
+  { name: "is not JSON", damage: (restarts: Restarts) => overwrite(restarts, "{not json") },
+  {
+    name: "is signed but is not a state",
+    damage: (restarts: Restarts) =>
+      restarts.sign('{"unknown":1}').pipe(
+        Effect.flatMap((signature) =>
+          overwrite(restarts, JSON.stringify({ data: '{"unknown":1}', signature })),
+        ),
+        Effect.orDie,
+      ),
+  },
+])("sets a state file that $name aside, and starts with a state it can write", ({ damage }) => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    const { restarts, fileSystem, damaged, diskId } = yield* saveThenDamage(
+      orchestration,
+      botThread.id,
+      damage,
+    );
+
+    const second = yield* restarts.boot;
+    assert.isFalse(yield* fileSystem.exists(restarts.stateFile));
+    assert.deepStrictEqual(yield* rejectedFiles(restarts), [
+      { name: `repair-state.json.rejected.${START}`, text: damaged },
+    ]);
+    yield* Effect.gen(function* () {
+      const repair = yield* RepairService.RepairService;
+      assert.isUndefined(yield* repair.find(diskId));
+      yield* repair.signal(watcherSignal(botThread.id, { name: "mail" }));
+    }).pipe(second);
+
+    // The service writes again, and the next start reads what it wrote.
+    const fresh = JSON.parse(yield* fileSystem.readFileString(restarts.stateFile));
+    assert.deepStrictEqual(Object.keys(JSON.parse(fresh.data).episodes).length, 1);
+    const third = yield* restarts.boot;
+    yield* Effect.gen(function* () {
+      const mailId = wakeId(orchestration.sent.at(-1)!.commandId)![1]!;
+      assert.strictEqual((yield* (yield* RepairService.RepairService).find(mailId))?.name, "mail");
+    }).pipe(third);
+    assert.lengthOf(yield* rejectedFiles(restarts), 1);
+  }).pipe(Effect.provide(NodeServices.layer));
+});
+
+it.effect("keeps the state files it set aside before, and only the five newest", () => {
+  const orchestration = makeOrchestration();
+  return Effect.gen(function* () {
+    const restarts = yield* makeRestarts(orchestration);
+    // Two rejections in one millisecond must not share a name.
+    const times = [0, 0, 1, 1, 2, 2, 3].map((hours) => START + hours * HOUR);
+    for (const [index, at] of times.entries()) {
+      yield* TestClock.setTime(at);
+      yield* overwrite(restarts, `{not json ${index}`);
+      yield* restarts.boot;
+      if (index === 1) {
+        assert.deepStrictEqual(
+          (yield* rejectedFiles(restarts)).map(({ text }) => text),
+          ["{not json 0", "{not json 1"],
+        );
+      }
+    }
+    assert.deepStrictEqual(yield* rejectedFiles(restarts), [
+      { name: `repair-state.json.rejected.${START + HOUR}`, text: "{not json 2" },
+      { name: `repair-state.json.rejected.${START + HOUR}-1`, text: "{not json 3" },
+      { name: `repair-state.json.rejected.${START + 2 * HOUR}`, text: "{not json 4" },
+      { name: `repair-state.json.rejected.${START + 2 * HOUR}-1`, text: "{not json 5" },
+      { name: `repair-state.json.rejected.${START + 3 * HOUR}`, text: "{not json 6" },
+    ]);
   }).pipe(Effect.provide(NodeServices.layer));
 });
 
@@ -740,10 +819,9 @@ it.effect("sets a file that fails its signature aside before it writes a fresh o
     const second = yield* restarts.boot;
     // Moved at the start, so no later save can write over it.
     assert.isFalse(yield* fileSystem.exists(restarts.stateFile));
-    assert.strictEqual(
-      yield* fileSystem.readFileString(`${restarts.stateFile}.rejected`),
-      tampered,
-    );
+    assert.deepStrictEqual(yield* rejectedFiles(restarts), [
+      { name: `repair-state.json.rejected.${START}`, text: tampered },
+    ]);
     yield* Effect.gen(function* () {
       const repair = yield* RepairService.RepairService;
       assert.isUndefined(yield* repair.find(diskId));
@@ -753,10 +831,9 @@ it.effect("sets a file that fails its signature aside before it writes a fresh o
     // The fresh file is the new one, signed, and the rejected one is still what was rejected.
     const fresh = JSON.parse(yield* fileSystem.readFileString(restarts.stateFile));
     assert.deepStrictEqual(Object.keys(JSON.parse(fresh.data).episodes).length, 1);
-    assert.strictEqual(
-      yield* fileSystem.readFileString(`${restarts.stateFile}.rejected`),
-      tampered,
-    );
+    assert.deepStrictEqual(yield* rejectedFiles(restarts), [
+      { name: `repair-state.json.rejected.${START}`, text: tampered },
+    ]);
     const third = yield* restarts.boot;
     yield* Effect.gen(function* () {
       const repair = yield* RepairService.RepairService;
@@ -1030,7 +1107,9 @@ it.effect("ignores an older copy of the state file, as a restored backup would b
       const ids = orchestration.sent.map((message) => wakeId(message.commandId)![1]!);
       assert.isUndefined(yield* repair.find(ids[0]!));
       // Set aside rather than overwritten, so what it held can still be looked at.
-      assert.strictEqual(yield* fileSystem.readFileString(`${restarts.stateFile}.rejected`), older);
+      assert.deepStrictEqual(yield* rejectedFiles(restarts), [
+        { name: `repair-state.json.rejected.${START}`, text: older },
+      ]);
       // Starting empty, the same failure is news again, with a new id.
       yield* repair.signal(watcherSignal(botThread.id, { name: "disk" }));
       assert.strictEqual(orchestration.sent.length, 3);
