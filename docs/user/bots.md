@@ -49,16 +49,22 @@ needs you.
 
 - **Nothing repairs until you choose a Repair project** in **Settings → Home**: a checkout of T3
   Code itself. To turn self-repair off, set it back to **None**.
-- A repair fix never builds, installs or releases anything; the app you run does not change until
-  you update it yourself.
-- A fix waits for you as an open pull request when it touches the parts that guard the Bot (its
-  own safety machinery, CI and scripts, dependencies, the desktop updater and signing) or when any
-  of its checks has not passed. A pull request with no checks counts as not passed.
+- The crew is told not to build, install or release anything, and it merges through a tool that
+  T3 Code checks. That is all that holds it: the crew gets your Bot's access, which on full access
+  is a shell with your own logins, so "do not build or release" is an instruction it follows, not a
+  block.
+- T3 Code refuses the crew's merge, and the fix waits for you as an open pull request, when it
+  touches the parts that guard the Bot (its own safety machinery, how it connects, updates and
+  releases, CI and scripts, dependencies, the desktop updater and signing) or when any of its checks
+  has not passed. A pull request with no checks counts as not passed. This is a check on the merge
+  tool only: a crew that merges another way, through its shell, is not stopped by it.
 - Automatic merging needs the repository's checks to run on pull requests. Without that, every
   fix waits for you.
 
 For a hard limit that does not depend on the crew following its instructions, turn on branch
-protection for the default branch on GitHub, requiring a pull request and its checks.
+protection for the default branch on GitHub, requiring a pull request and its checks, and keep
+secrets out of workflows that run on pull requests: a pull request from the repository itself runs
+its own edited workflows as soon as it is pushed.
 
 ## Email
 

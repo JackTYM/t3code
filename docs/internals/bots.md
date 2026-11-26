@@ -73,21 +73,26 @@ failing to run, or a Bot run that ended `failed`. One failure from first report 
 episode. The first report wakes the Bot at once, later ones back off, and recovery clears the
 episode. The wake id is `bot-wake:health:<signalId>:<n>`.
 
-- **Not influenced, so it carries no outside text.** A health wake is the one wake `BotHoldService`
-  does not treat like mail or a watcher: its prefix matches neither check, so a turn it starts is as
-  free as one the user typed. That is safe only because
+- **Not influenced, so it carries no outside text.** `BotHoldService` calls a turn influenced when
+  its first message is a mail digest or a watcher wake, or when it has read mail or started a mail
+  reader. A health wake matches neither prefix, so a turn it starts is as free as one the user
+  typed. It is not the only wake that does: the user's allow or reject of a held call
+  (`hold-allow:`, `hold-reject:`), a milestone wake, and the give-up, merge and limit wakes start
+  free turns too. A health wake is safe only because
   [`healthText`](../../apps/server/src/bots/RepairService.ts) is built from numbers, ISO times, a
   hex id and literals, never from script output, a reviewer's reason or a purpose. It leaves out
   the watcher's name too: a Bot chose it, a model reads this wake as the server's own words, and a
   name can read like an order, so the signal id and kind say what failed. A name that does not pass
   a no-whitespace pattern is refused, not cleaned, and the crew's brief gets it only as data. Do not
   add a field a stranger could have written.
-- **Free until it reads outside text.** In a health turn, any read beyond the Bot's own memory (a
-  thread's history holds old watcher output and mail, an issue or a PR is a stranger's words,
-  `t3_bot_watcher_list` returns source an influenced turn may have written) taints the run like
-  `t3_bot_mail_search`, so its consequential calls are held from then on. The set is "every
-  read-only tool that is not a `t3_bot_*` tool", not a list of names, so a later tool is covered.
-  In other turns reading is not a taint.
+- **Free until it reads outside text.** In a turn that began with a health wake id
+  (`bot-wake:health:<signalId>:<n>`), any read beyond the Bot's own memory (a thread's history holds
+  old watcher output and mail, an issue or a PR is a stranger's words, `t3_bot_watcher_list` returns
+  source an influenced turn may have written) taints the run like `t3_bot_mail_search`, so its
+  consequential calls are held from then on. The set is "every read-only tool that is not a
+  `t3_bot_*` tool", not a list of names, so a later tool is covered. In every other turn reading is
+  not a taint, which includes the turns the give-up, merge and limit wakes start: their ids do not
+  have the health shape.
 - **A Bot hears a bounded number of them.** Backoff quiets one failure, but a watcher that fails
   three times, works once and fails again is a new episode each time. So each Bot gets a fixed cap
   of health wakes an hour and a day across all its episodes, counted in the signed state. Over it,
@@ -249,12 +254,24 @@ request's number, merged or left open, and the reason code, and no title, body o
 sent once for each pull request and result and is capped per repair.
 
 **What it does not stop.** The guard binds the `pull_request_merge` tool and the workflow merge
-route. It does not see a shell. A crew is an ordinary full-access thread: a shell as the user,
-with the user's `gh` login, git credentials and whatever secrets that account can read, and no
-provider adapter asks a full-access thread whether a command may run. So these remain open:
+route. It does not see a shell. A crew is an ordinary thread with the Bot's runtime mode
+(`startRepair` copies it, so a Bot below full access starts a crew no higher), and only a
+full-access Bot's crew is a shell as the user, with the user's `gh` login, git credentials and
+whatever secrets that account can read. No provider adapter asks a full-access thread whether a
+command may run. So these remain open:
 
 - Raw shell: `gh pr merge` of any pull request, a push to the default branch (or a force-push),
   `gh api` calls that merge, post a passing commit status or dismiss a review.
+- A pull request from a branch in the repository itself runs its own edited `.github/workflows`,
+  with the repository's secrets, as soon as it is pushed and before any merge decision. The guard
+  decides about merging, so it cannot prevent that. Branch protection and keeping secrets out of
+  workflows that run on pull requests can.
+- Outside text can reach a full-access crew. The brief sends it to read the Bot's thread and the
+  failing watcher's folder (script, `state.json`, data), and a hostile email, watcher or reviewer
+  output can make a watcher or the reviewer fail and so be in what it reads. The brief calls it
+  data and a model may still follow it.
+- The give-up, merge and limit wakes start free turns whose reads do not taint (see Health wakes),
+  so a Bot that reads outside text in one acts on it unheld.
 - A sibling thread a crew starts with `t3_thread_launch` has a raw shell of its own. Its merge tool
   is guarded now, but what it runs is not. The Bot's hold tells it from the Bot's own crew by what
   sent its first message, so a sibling launched with no prompt looks like the Bot's once the Bot
