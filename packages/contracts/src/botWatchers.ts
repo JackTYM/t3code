@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { EnvironmentId, IsoDateTime, ThreadId } from "./baseSchemas.ts";
@@ -71,8 +72,16 @@ export const BotWatcherReview = Schema.Struct({
   verdict: Schema.Literals(["approve", "reject"]),
   /** The reviewer's own words, or why it could not run; at most 300 characters. */
   reason: Schema.String,
-  /** The model that judged it. */
+  /** The model that judged it, or `server` when the server ruled without asking one. */
   model: Schema.String,
+  /**
+   * `model`: the reviewer gave this verdict. `error`: the server made it up because the review or
+   * the first run could not finish, which says nothing about the script and is never reused.
+   * Entries saved before this field existed read as `error`, so none of them is reused.
+   */
+  source: Schema.Literals(["model", "error"]).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("error" as const)),
+  ),
 });
 export type BotWatcherReview = typeof BotWatcherReview.Type;
 

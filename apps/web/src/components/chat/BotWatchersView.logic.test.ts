@@ -50,6 +50,7 @@ const review = (overrides: Partial<BotWatcherReview> = {}): BotWatcherReview => 
   verdict: "approve",
   reason: "Reads only.",
   model: "reviewer-model",
+  source: "model",
   ...overrides,
 });
 
@@ -199,10 +200,32 @@ describe("botWatcherControls", () => {
   });
 
   it("runs a version once when the files are there, and only with terminal access", () => {
-    expect(botWatcherControls(revising(), "local", both).runOnce).toEqual({ enabled: true });
+    const approved = revising({ reviews: [review()] });
+    expect(botWatcherControls(approved, "local", both).runOnce).toEqual({ enabled: true });
     expect(
-      botWatcherControls(revising(), "local", { runCode: false, operate: true }).runOnce,
+      botWatcherControls(approved, "local", { runCode: false, operate: true }).runOnce,
     ).toEqual({ enabled: false, reason: "needs_terminal_access" });
+    // The version that runs needs no verdict of its own.
+    expect(botWatcherControls(watcher({ name: "a" }), "local", both).runOnce).toEqual({
+      enabled: true,
+    });
+  });
+
+  it("will not run a new version before the reviewer has approved that version itself", () => {
+    const notReviewed = { enabled: false, reason: "not_reviewed" };
+    expect(botWatcherControls(revising(), "local", both).runOnce).toEqual(notReviewed);
+    for (const reviews of [
+      [review({ verdict: "reject" })],
+      // The server's own rejection and a verdict about some other version are not approvals.
+      [review({ source: "error" })],
+      [review({ hash: "cccccccccccccccccccc" })],
+    ]) {
+      expect(botWatcherControls(revising({ reviews }), "local", both).runOnce).toEqual(notReviewed);
+    }
+    expect(botWatcherControls(proposed(), "local", both).runOnce).toEqual(notReviewed);
+    expect(botWatcherControls(proposed({ reviews: [review()] }), "local", both).runOnce).toEqual({
+      enabled: true,
+    });
   });
 
   it("cannot run a version whose files are missing", () => {

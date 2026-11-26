@@ -125,8 +125,12 @@ export interface WatcherReviewInput {
   runtime: "node" | "sh";
   mode: "health" | "events";
   intervalSeconds: number;
+  /** The regular expression the script's healthy output must match, when it has one. */
+  expect?: string | undefined;
   source: string;
   previousSource?: string | undefined;
+  /** Names the review's data markers; random per call, so a script cannot quote them. */
+  tag: string;
   modelSelection: ModelSelection;
   projectId?: ProjectId | null | undefined;
 }

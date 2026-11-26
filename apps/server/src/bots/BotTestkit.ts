@@ -70,6 +70,11 @@ export const makeOrchestration = () => {
     { readonly createdBy: "user" | "agent" | "system"; readonly scheduledTaskId?: string }
   >();
 
+  /** Runs before each message is sent, so a test can hold a send where a server could stop. */
+  const hooks: { beforeSend: (message: SentMessage) => Effect.Effect<void> } = {
+    beforeSend: () => Effect.void,
+  };
+
   /** Makes `message` the one that began the thread's active run. */
   const startRun = (
     thread: FakeThread,
@@ -149,11 +154,17 @@ export const makeOrchestration = () => {
           }
           return { sequence: dispatched.length, storedEvents: [] };
         }),
-      sendToThread: (input) =>
-        Effect.sync(() => {
-          sent.push({ threadId: input.threadId, commandId: input.commandId, text: input.text });
-          return {} as ThreadManagementService.ThreadManagementSendResult;
-        }),
+      sendToThread: (input) => {
+        const message = { threadId: input.threadId, commandId: input.commandId, text: input.text };
+        return hooks.beforeSend(message).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              sent.push(message);
+              return {} as ThreadManagementService.ThreadManagementSendResult;
+            }),
+          ),
+        );
+      },
     }),
     Layer.mock(ProjectionStore.ProjectionStoreV2)({
       findThread: (threadId) => Effect.succeed(asAppThread(threads.get(threadId))),
@@ -173,7 +184,7 @@ export const makeOrchestration = () => {
       getEnvironmentId: Effect.succeed(EnvironmentId.make("env:here")),
     }),
   );
-  return { threads, dispatched, sent, launched, addThread, startRun, layer };
+  return { threads, dispatched, sent, launched, hooks, addThread, startRun, layer };
 };
 
 /** Home and the Bot service over one fake orchestration and a fresh base directory. */

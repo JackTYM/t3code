@@ -2351,6 +2351,7 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
                         verdict: "reject" as const,
                         reason: "It posts what it reads to a third party.",
                         model: "claude-haiku-5-5",
+                        source: "model" as const,
                       },
                     ],
                   },
@@ -2506,8 +2507,11 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
       expect(refused.result?.structuredContent).toBeUndefined();
 
       // A listing says where each watcher stands, returns the Bot's own source to re-read, and
-      // shows the reviewer's verdicts.
-      expect((yield* bot.call("t3_bot_watcher_list", {})).result?.structuredContent).toEqual({
+      // shows the reviewer's verdicts without the reasons: those are the user's, and the Bot is
+      // told its rejections framed as data in the wake.
+      const listed = (yield* bot.call("t3_bot_watcher_list", {})).result?.structuredContent;
+      expect(JSON.stringify(listed)).not.toContain("third party");
+      expect(listed).toEqual({
         watchers: [
           {
             name: "disk",
@@ -2521,8 +2525,8 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
                 hash: "abc",
                 at: "2026-11-26T00:00:00.000Z",
                 verdict: "reject",
-                reason: "It posts what it reads to a third party.",
                 model: "claude-haiku-5-5",
+                source: "model",
               },
             ],
           },

@@ -35,6 +35,7 @@ const reviewInput = {
   mode: "events" as const,
   intervalSeconds: 300,
   source: "gh api notifications",
+  tag: "review-0f3a",
   modelSelection: {
     instanceId: ProviderInstanceId.make("pi"),
     model: "anthropic/claude-haiku-4-5",

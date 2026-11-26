@@ -42,6 +42,8 @@ const shared = {
   ],
 };
 const Saved = Schema.Struct({ saved: Schema.Boolean });
+const { reason: _reviewerReason, ...reviewVerdictFields } = BotWatcherReview.fields;
+const BotWatcherReviewVerdict = Schema.Struct(reviewVerdictFields);
 const Watches = Schema.Struct({ watches: Schema.Array(BotWatch) });
 const WatchTargetInput = Schema.Struct({
   threadId: Schema.optional(ThreadId),
@@ -244,8 +246,11 @@ const WatcherList = Tool.make("t3_bot_watcher_list", {
         runsOn: BotWatcherRunsOn,
         approvedHash: Schema.optional(Schema.String),
         pendingHash: Schema.optional(Schema.String),
-        /** Oldest first, the last 20: each says which version it judged. */
-        reviews: Schema.Array(BotWatcherReview),
+        /**
+         * Oldest first, the last 20: each says which version it judged. Without the reasons, which
+         * may carry the script's own words: the Bot is told a rejection's reason in its wake.
+         */
+        reviews: Schema.Array(BotWatcherReviewVerdict),
       }),
     ),
   }),

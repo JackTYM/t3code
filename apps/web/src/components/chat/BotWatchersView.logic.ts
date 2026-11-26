@@ -105,6 +105,7 @@ export type BotWatcherBlock =
   | "needs_terminal_access"
   | "needs_operate_access"
   | "no_source"
+  | "not_reviewed"
   | "run_once_there_first"
   | "nothing_to_approve"
   | "already_there";
@@ -142,11 +143,20 @@ export function botWatcherControls(
   const needsCode = grants.runCode ? allowed : blocked("needs_terminal_access");
   const needsOperate = grants.operate ? allowed : blocked("needs_operate_access");
 
+  // The server runs a new version for nobody, the user included, until the reviewer approved it.
+  const reviewed = watcher.reviews.some(
+    (review) =>
+      review.hash === watcher.pendingHash &&
+      review.verdict === "approve" &&
+      review.source === "model",
+  );
   const runOnce = !grants.runCode
     ? blocked("needs_terminal_access")
     : watcher.source === undefined || runnableHash === undefined
       ? blocked("no_source")
-      : allowed;
+      : pending && !reviewed
+        ? blocked("not_reviewed")
+        : allowed;
 
   const move = !grants.runCode
     ? blocked("needs_terminal_access")

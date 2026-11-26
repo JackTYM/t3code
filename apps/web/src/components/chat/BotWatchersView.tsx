@@ -126,6 +126,8 @@ function useBlockedReason() {
         return gt("This connection cannot change threads on this environment.");
       case "no_source":
         return gt("The files for this version are missing or were changed on disk.");
+      case "not_reviewed":
+        return gt("The reviewer has not approved this version yet, so it cannot be run.");
       case "run_once_there_first":
         return gt("Run it once where it will run first.");
       case "nothing_to_approve":

@@ -22,6 +22,7 @@ import {
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { createTwoFilesPatch } from "diff";
 import * as NodeCrypto from "node:crypto";
+import * as NodeVM from "node:vm";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -73,6 +74,17 @@ const REVIEWS_MAX = 20;
 const REVIEW_TIMEOUT = Duration.seconds(120);
 const REVIEW_CAUSE_MAX_CHARS = 150;
 const REVIEW_REASON_MAX_CHARS = 300;
+const MAX_REVIEWS_PER_BOT = 3;
+const MAX_REVIEWS_PER_SERVER = 6;
+// After a version is rejected a wake turn may not propose that watcher again for this long, so a
+// Bot cannot answer each rejection with another proposal and keep the reviewer busy.
+const REJECTION_COOLDOWN = Duration.minutes(15);
+const REGEX_TIMEOUT_MS = 50;
+// Text the reviewer's prompt uses to mark its data: a watcher that quotes it is trying to talk to
+// the reviewer, so it is never stored. The prompt's markers also carry a tag nobody can predict.
+const REVIEWER_MARKER = /script\s+under\s+review|===\s*end\s+script/iu;
+const quotesReviewerMarker = (...texts: ReadonlyArray<string | undefined>) =>
+  texts.some((text) => text !== undefined && REVIEWER_MARKER.test(text));
 // Everything else, API keys and tokens above all, stays out of a script the Bot wrote. TMPDIR is
 // not here: the script gets its scratch directory as its own.
 const ENV_ALLOWLIST = ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ"];
@@ -201,6 +213,37 @@ const computeHash = (input: {
 
 const sha256 = (data: string | Uint8Array) =>
   NodeCrypto.createHash("sha256").update(data).digest("hex");
+
+const regexSandbox: { expect?: RegExp; text?: string } = {};
+NodeVM.createContext(regexSandbox);
+/**
+ * Whether `text` matches a regular expression the Bot wrote. Matching can backtrack for longer
+ * than the server's lifetime on input like `(a+)+$` against "aaaa…!", and a script's output is not
+ * the Bot's to choose, so the match runs in a V8 context the engine interrupts after a moment;
+ * giving up counts as no match, which is an unhealthy run.
+ */
+const matchesWithinTime = (expect: RegExp, text: string): boolean => {
+  regexSandbox.expect = expect;
+  regexSandbox.text = text;
+  try {
+    return NodeVM.runInContext("expect.test(text)", regexSandbox, { timeout: REGEX_TIMEOUT_MS });
+  } catch {
+    return false;
+  } finally {
+    delete regexSandbox.expect;
+    delete regexSandbox.text;
+  }
+};
+
+/** The last `max` entries not about `approvedHash`, and every entry that is: that one must stay. */
+const keepApproved = <T extends { readonly hash: string }>(
+  entries: ReadonlyArray<T>,
+  approvedHash: string | undefined,
+  max: number,
+) => {
+  const others = new Set(entries.filter((entry) => entry.hash !== approvedHash).slice(-max));
+  return entries.filter((entry) => entry.hash === approvedHash || others.has(entry));
+};
 
 /** What one run of a script produced, before anyone judges it. */
 type RawRun = BotWatcherRemoteRun;
@@ -389,9 +432,14 @@ const make = Effect.gen(function* () {
   const lock = (yield* Semaphore.make(1)).withPermits(1);
   // One script at a time: watchers are polls, and a runaway one must not run beside others.
   const oneRunAtATime = (yield* Semaphore.make(1)).withPermits(1);
-  // The reviews in flight, by Bot folder, watcher and version: one per version, and a Bot that
-  // proposes the same bytes again does not start a second.
+  // The reviews in flight, one per watcher: a newer version takes its older one's place, so what
+  // the caps count is watchers waiting on the reviewer. `reviewingHash` says which version each
+  // is about, and a Bot that proposes the same bytes again does not start a second.
   const reviewing = yield* FiberMap.make<string, void, never>();
+  const reviewingHash = new Map<string, string>();
+  // When a version of a watcher was last dropped. Lost on a restart: that costs one more round.
+  const droppedAt = new Map<string, number>();
+  const watcherKey = (folder: string, name: string) => `${folder}/${name}`;
 
   const watchersDir = (folder: string) => path.join(botsDir, folder, "watchers");
   const watcherDir = (folder: string, name: string) => path.join(watchersDir(folder), name);
@@ -482,7 +530,8 @@ const make = Effect.gen(function* () {
     yield* fileSystem.writeFileString(temporary, text, { mode: 0o600 });
     yield* fileSystem.rename(temporary, approvalsPath);
     yield* Ref.set(approvals, next);
-  });
+    // Uninterruptible: a review cut short for a newer version must not leave the file ahead of memory.
+  }, Effect.uninterruptible);
 
   // `hasOwn`: a watcher may be called `constructor`, which a plain lookup would find on the prototype.
   const recordOf = (folder: string, name: string) =>
@@ -519,6 +568,13 @@ const make = Effect.gen(function* () {
     const decoded = yield* decodeConfig(parsed.value).pipe(Effect.option);
     if (decoded._tag === "None") return undefined;
     const pattern = decoded.value.expect;
+    // The same rules a proposal meets, in case what is on disk did not come through one.
+    if (
+      (pattern?.length ?? 0) > BOT_WATCHER_EXPECT_MAX_CHARS ||
+      quotesReviewerMarker(new TextDecoder().decode(run), decoded.value.purpose, pattern)
+    ) {
+      return undefined;
+    }
     const expect = pattern === undefined ? Effect.undefined : compilePattern(pattern);
     const compiled = yield* expect.pipe(Effect.option);
     if (compiled._tag === "None") return undefined;
@@ -647,7 +703,9 @@ const make = Effect.gen(function* () {
     }
     return {
       ...raw,
-      healthy: raw.exit === "0" && (expect === undefined || expect.test(raw.stdout.trimEnd())),
+      healthy:
+        raw.exit === "0" &&
+        (expect === undefined || matchesWithinTime(expect, raw.stdout.trimEnd())),
       news: false,
     };
   };
@@ -1060,15 +1118,27 @@ const make = Effect.gen(function* () {
     function* (input) {
       const { botThreadId, name } = input;
       const existing = yield* recordOf(BotService.memoryFolderName(botThreadId), name);
+      const folder = BotService.memoryFolderName(botThreadId);
+      const invalid = (detail: string) => failure(botThreadId, name, "invalid", detail);
       if (existing?.approvedHash !== undefined) {
         // A revision to a watcher the user already has: the running version is untouched and the
         // reviewer judges the new one, so a wake turn may repair a script.
         if (!(yield* bots.isBot(botThreadId)))
           return yield* failure(botThreadId, name, "not_a_bot");
+        // But not again at once after a rejection: that answers the wake with another review.
+        const dropped = droppedAt.get(watcherKey(folder, name));
+        if (
+          dropped !== undefined &&
+          (yield* Clock.currentTimeMillis) - dropped < Duration.toMillis(REJECTION_COOLDOWN) &&
+          (yield* bots.startedByWake(botThreadId))
+        ) {
+          return yield* invalid(
+            "The reviewer turned down a version of this watcher a moment ago. Tell the user why, and revise it in a turn they start; a turn that began with a wake has to wait 15 minutes.",
+          );
+        }
       } else {
         yield* requireUserStartedBot(botThreadId, name);
       }
-      const invalid = (detail: string) => failure(botThreadId, name, "invalid", detail);
       if (!isWatcherName(name)) {
         return yield* invalid(
           "A watcher name is letters, digits, - and _, starts with a letter or digit, and has at most 64 characters.",
@@ -1100,6 +1170,11 @@ const make = Effect.gen(function* () {
       ) {
         return yield* invalid(`purpose is 1 to ${BOT_WATCHER_PURPOSE_MAX_CHARS} characters.`);
       }
+      if (quotesReviewerMarker(input.source, input.purpose, input.expect)) {
+        return yield* invalid(
+          "A watcher's source, purpose and expect cannot contain the reviewer's marker text (SCRIPT UNDER REVIEW, === END SCRIPT).",
+        );
+      }
       const versionConfig = {
         runtime: input.runtime,
         everyMs: input.intervalSeconds * 1000,
@@ -1111,7 +1186,6 @@ const make = Effect.gen(function* () {
         ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
       } satisfies typeof VersionConfig.Type;
       const hash = computeHash({ run: source, config: versionConfig });
-      const folder = BotService.memoryFolderName(botThreadId);
       const siblings = Object.keys((yield* Ref.get(approvals))[folder] ?? {});
       if (existing === undefined && siblings.length >= MAX_WATCHERS_PER_BOT) {
         return yield* invalid(`A Bot has at most ${MAX_WATCHERS_PER_BOT} watchers.`);
@@ -1120,11 +1194,17 @@ const make = Effect.gen(function* () {
       if (existing?.approvedHash === hash) {
         // Back to the approved bytes: the user approved these already, so they resume.
         if (existing.pendingHash !== undefined) {
+          yield* stopReview(folder, name);
           yield* removeQuietly(versionDir(folder, name, existing.pendingHash));
           const { pendingHash: _discarded, ...resumed } = existing;
           yield* commit(folder, name, resumed).pipe(Effect.mapError(ioError(botThreadId, name)));
         }
         return { hash, pending: false };
+      }
+      if (reviewsFull(folder, name)) {
+        return yield* invalid(
+          "Reviews are busy: too many watchers are waiting on the reviewer. Try again in a few minutes.",
+        );
       }
       if (existing?.pendingHash === hash) {
         // Still waiting: make sure its review is, in case an earlier one gave up.
@@ -1148,8 +1228,15 @@ const make = Effect.gen(function* () {
         runsOn: existing?.runsOn ?? "local",
         ...(existing?.paused === true ? { paused: true } : {}),
         pendingHash: hash,
-        history: [...(existing?.history ?? []), { hash, proposedAt }].slice(-HISTORY_MAX),
-        ...(existing?.reviews === undefined ? {} : { reviews: existing.reviews }),
+        history: keepApproved(
+          [...(existing?.history ?? []), { hash, proposedAt }],
+          existing?.approvedHash,
+          HISTORY_MAX,
+        ),
+        // Whatever was said about these bytes before is not this proposal's verdict.
+        ...(existing?.reviews === undefined
+          ? {}
+          : { reviews: existing.reviews.filter((review) => review.hash !== hash) }),
       }).pipe(Effect.mapError(ioError(botThreadId, name)));
       // The newer proposal replaces an older one that was never approved.
       if (existing?.pendingHash !== undefined) {
@@ -1166,6 +1253,7 @@ const make = Effect.gen(function* () {
     name: string,
   ) {
     const { folder } = yield* requireRecord(botThreadId, name);
+    yield* stopReview(folder, name);
     yield* commit(folder, name, undefined).pipe(Effect.mapError(ioError(botThreadId, name)));
     yield* removeQuietly(watcherDir(folder, name));
   });
@@ -1212,31 +1300,57 @@ const make = Effect.gen(function* () {
     );
   }, lock);
 
+  const runDry = Effect.fn("WatcherService.runDry")(function* (input: {
+    readonly botThreadId: ThreadId;
+    readonly name: string;
+    readonly hash: string;
+    readonly runsOn?: BotWatcherRunsOn | undefined;
+  }) {
+    const { botThreadId, name, hash, runsOn } = input;
+    const { folder } = yield* requireRunnableVersion(botThreadId, name, hash);
+    const version = yield* readVersion(folder, name, hash);
+    if (version === undefined) {
+      return yield* failure(
+        botThreadId,
+        name,
+        "invalid",
+        "The stored files for this version were changed or are missing.",
+      );
+    }
+    const where = runsOn ?? "local";
+    const placed = yield* runPlaced(version, where, undefined);
+    // Not a completed dry run, so nothing is recorded and approval stays closed.
+    if (placed._tag === "Unreachable") {
+      return yield* failure(botThreadId, name, "unreachable", placed.reason);
+    }
+    if (placed._tag === "Refused")
+      return yield* failure(botThreadId, name, "invalid", placed.reason);
+    const { news: _news, ...outcome } = placed.outcome;
+    const run: BotWatcherRun = { hash, runsOn: where, ranAt: yield* isoNow, ...outcome };
+    // A newer proposal may have replaced this one while it ran; its dry run is then unknown.
+    yield* recordDryRun(botThreadId, name, run);
+    return run;
+  });
+
+  /** Whether the reviewer itself, not the server in its place, approved exactly this version. */
+  const hasModelApproval = (record: WatcherRecord, hash: string) =>
+    (record.reviews ?? []).some(
+      (review) => review.hash === hash && review.verdict === "approve" && review.source === "model",
+    );
+
   const dryRun: WatcherService["Service"]["dryRun"] = Effect.fn("WatcherService.dryRun")(
-    function* ({ botThreadId, name, hash, runsOn }) {
-      const { folder } = yield* requireRunnableVersion(botThreadId, name, hash);
-      const version = yield* readVersion(folder, name, hash);
-      if (version === undefined) {
+    function* (input) {
+      const { record } = yield* requireRunnableVersion(input.botThreadId, input.name, input.hash);
+      // The reviewer reads a version before any script of it runs, for the user as for the server.
+      if (record.pendingHash === input.hash && !hasModelApproval(record, input.hash)) {
         return yield* failure(
-          botThreadId,
-          name,
+          input.botThreadId,
+          input.name,
           "invalid",
-          "The stored files for this version were changed or are missing.",
+          "The reviewer has not approved this version yet, so it is not run.",
         );
       }
-      const where = runsOn ?? "local";
-      const placed = yield* runPlaced(version, where, undefined);
-      // Not a completed dry run, so nothing is recorded and approval stays closed.
-      if (placed._tag === "Unreachable") {
-        return yield* failure(botThreadId, name, "unreachable", placed.reason);
-      }
-      if (placed._tag === "Refused")
-        return yield* failure(botThreadId, name, "invalid", placed.reason);
-      const { news: _news, ...outcome } = placed.outcome;
-      const run: BotWatcherRun = { hash, runsOn: where, ranAt: yield* isoNow, ...outcome };
-      // A newer proposal may have replaced this one while it ran; its dry run is then unknown.
-      yield* recordDryRun(botThreadId, name, run);
-      return run;
+      return yield* runDry(input);
     },
   );
 
@@ -1251,9 +1365,7 @@ const make = Effect.gen(function* () {
   }) {
     const { botThreadId, name, hash, runsOn, approvedBy } = input;
     const { folder, record } = yield* requirePending(botThreadId, name, hash);
-    if (
-      !(record.reviews ?? []).some((review) => review.hash === hash && review.verdict === "approve")
-    ) {
+    if (!hasModelApproval(record, hash)) {
       return yield* failure(
         botThreadId,
         name,
@@ -1296,7 +1408,8 @@ const make = Effect.gen(function* () {
 
   /**
    * Drops `hash` if it is still the pending version, so the approved one, if there is one, goes on
-   * alone. A watcher that never had an approved version is gone with it.
+   * alone. A watcher that never had an approved version is gone with it, and with it its record of
+   * verdicts: for that case the "Watcher review" log line and the wake are all that remain.
    */
   const discard = Effect.fn("WatcherService.discard")(function* (
     botThreadId: ThreadId,
@@ -1340,42 +1453,82 @@ const make = Effect.gen(function* () {
   });
 
   // Tells the Bot first and drops the version second: a crash in between replays the same wake
-  // key on the restart, whereas dropping first could leave a Bot that never heard why.
+  // key on the restart, whereas dropping first could leave a Bot that never heard why. The key
+  // carries the verdict's time, so a version rejected again after being proposed again is news.
   const discardPending = Effect.fn("WatcherService.discardPending")(function* (
     botThreadId: ThreadId,
     name: string,
     hash: string,
     reason: string,
     cause: "rejected" | "discarded",
+    at: string,
   ) {
     const folder = BotService.memoryFolderName(botThreadId);
     const record = yield* recordOf(folder, name);
     // A newer proposal took its place meanwhile: this verdict is about a version that is gone.
     if (record?.pendingHash !== hash) return;
-    yield* bots.wakeWith({
+    droppedAt.set(watcherKey(folder, name), yield* Clock.currentTimeMillis);
+    const queued = yield* bots.wakeWith({
       botThreadId,
-      key: `watcher-review:${folder}:${name}:${hash}`,
+      key: `watcher-review:${folder}:${name}:${hash}:${at}`,
       text: yield* discardText(name, reason, cause, record.approvedHash === undefined),
     });
+    if (!queued) {
+      yield* Effect.logWarning("Watcher rejection could not be sent to the Bot.", {
+        folder,
+        name,
+        hash,
+      });
+    }
     yield* discard(botThreadId, name, hash);
   });
 
-  const recordReview = Effect.fn("WatcherService.recordReview")(function* (
+  /** Saves a verdict on the pending version; false when that version is no longer the pending one. */
+  const recordVerdict = Effect.fn("WatcherService.recordVerdict")(function* (
     botThreadId: ThreadId,
     name: string,
     review: BotWatcherReview,
   ) {
     const folder = BotService.memoryFolderName(botThreadId);
+    yield* Effect.logInfo("Watcher review", {
+      folder,
+      name,
+      hash: review.hash,
+      model: review.model,
+      verdict: review.verdict,
+      reason: review.reason,
+      source: review.source,
+    });
     const record = yield* recordOf(folder, name);
-    // The same check as after the model call, under the lock: a verdict for a version a newer
-    // proposal replaced is dropped, not kept in the history of one it never judged.
+    // Checked under the lock: a verdict for a version a newer proposal replaced is dropped, not
+    // kept in the history of one it never judged.
     if (record?.pendingHash !== review.hash) return false;
     yield* commit(folder, name, {
       ...record,
-      reviews: [...(record.reviews ?? []), review].slice(-REVIEWS_MAX),
+      reviews: keepApproved([...(record.reviews ?? []), review], record.approvedHash, REVIEWS_MAX),
     }).pipe(Effect.mapError(ioError(botThreadId, name)));
     return true;
   }, lock);
+
+  /** The server's own rejection, when a version could not get to a verdict or to a first run. */
+  const failVersion = Effect.fn("WatcherService.failVersion")(function* (
+    botThreadId: ThreadId,
+    name: string,
+    hash: string,
+    reason: string,
+  ) {
+    const review: BotWatcherReview = {
+      hash,
+      at: yield* isoNow,
+      verdict: "reject",
+      reason,
+      model: "server",
+      source: "error",
+    };
+    if (yield* recordVerdict(botThreadId, name, review)) {
+      yield* discardPending(botThreadId, name, hash, reason, "discarded", review.at);
+    }
+  });
 
   const reviewTimeoutText = "it gave no answer within two minutes";
   const couldNotRun = (cause: string) =>
@@ -1394,7 +1547,7 @@ const make = Effect.gen(function* () {
     return "it failed unexpectedly";
   };
 
-  /** The reviewer's verdict on one version, and the model that gave it. A failure is a rejection. */
+  /** The reviewer's verdict on one version. A failure is a rejection, marked as the server's. */
   const askReviewer = Effect.fn("WatcherService.askReviewer")(function* (
     botThreadId: ThreadId,
     name: string,
@@ -1417,9 +1570,11 @@ const make = Effect.gen(function* () {
         model: "unknown",
         verdict: "reject" as const,
         reason: couldNotRun("the server's settings could not be read"),
+        source: "error" as const,
       };
     }
     const decode = (source: Uint8Array) => new TextDecoder().decode(source);
+    const tag = yield* random.uuidV4().pipe(Effect.orDie);
     const reviewed = yield* Effect.scoped(
       Effect.gen(function* () {
         // An empty folder of its own: the reviewer is shown a script, not the Bots' files.
@@ -1432,12 +1587,17 @@ const make = Effect.gen(function* () {
             runtime: version.config.runtime,
             mode: version.config.mode ?? "health",
             intervalSeconds: version.config.everyMs / 1000,
+            expect: version.config.expect,
             source: decode(version.source),
             previousSource: previous === undefined ? undefined : decode(previous.source),
+            tag,
             modelSelection: selection.value,
             projectId: projectId ?? null,
           })
-          .pipe(Effect.timeout(REVIEW_TIMEOUT));
+          .pipe(
+            Effect.map((answer) => ({ ...answer, source: "model" as const })),
+            Effect.timeout(REVIEW_TIMEOUT),
+          );
       }),
     ).pipe(
       // Every way of not getting a verdict is a rejection, so a version is never left waiting on a
@@ -1448,12 +1608,14 @@ const make = Effect.gen(function* () {
           Effect.succeed({
             verdict: "reject" as const,
             reason: couldNotRun(whyReviewerFailed(cause)),
+            source: "error" as const,
           }),
       ),
     );
     return {
       verdict: reviewed.verdict,
       reason: reviewed.reason.slice(0, REVIEW_REASON_MAX_CHARS),
+      source: reviewed.source,
       model: selection.value.model,
     };
   });
@@ -1468,16 +1630,18 @@ const make = Effect.gen(function* () {
     if (record?.pendingHash !== hash) return;
     const version = yield* readVersion(folder, name, hash);
     if (version === undefined) {
-      return yield* discardPending(
+      return yield* failVersion(
         botThreadId,
         name,
         hash,
         "The stored files for this version were changed or are missing.",
-        "discarded",
       );
     }
-    // A verdict saved before a restart stands: the reviewer is asked once per version.
-    let verdict = record.reviews?.find((review) => review.hash === hash);
+    // A verdict the reviewer gave before a restart stands. One the server made up because the
+    // review could not finish says nothing about the script, so that one is asked for again.
+    let verdict = record.reviews?.find(
+      (review) => review.hash === hash && review.source === "model",
+    );
     if (verdict === undefined) {
       const previous =
         record.approvedHash === undefined
@@ -1485,25 +1649,23 @@ const make = Effect.gen(function* () {
           : yield* readVersion(folder, name, record.approvedHash);
       const asked = yield* askReviewer(botThreadId, name, version, previous);
       verdict = { hash, at: yield* isoNow, ...asked };
-      // A newer proposal may have replaced this version while the model worked. Checked once more
-      // under the lock as the verdict is saved, so a late answer changes nothing.
-      if (!(yield* recordReview(botThreadId, name, verdict))) return;
+      // A newer proposal may have replaced this version while the model worked.
+      if (!(yield* recordVerdict(botThreadId, name, verdict))) return;
     }
     if (verdict.verdict === "reject") {
-      return yield* discardPending(botThreadId, name, hash, verdict.reason, "rejected");
+      return yield* discardPending(botThreadId, name, hash, verdict.reason, "rejected", verdict.at);
     }
     const current = yield* recordOf(folder, name);
     if (current?.pendingHash !== hash) return;
-    const dry = yield* dryRun({ botThreadId, name, hash, runsOn: current.runsOn }).pipe(
+    const dry = yield* runDry({ botThreadId, name, hash, runsOn: current.runsOn }).pipe(
       Effect.option,
     );
     if (dry._tag === "None") {
-      return yield* discardPending(
+      return yield* failVersion(
         botThreadId,
         name,
         hash,
         "The first run could not complete where the watcher will run.",
-        "discarded",
       );
     }
     // The dry run took a while, and a newer proposal may have come in: that one needs its own review.
@@ -1521,30 +1683,56 @@ const make = Effect.gen(function* () {
           error.reason === "no_pending" ||
           error.reason === "not_found"
             ? Effect.void
-            : discardPending(
+            : failVersion(
                 botThreadId,
                 name,
                 hash,
                 "The version could not be made live. Propose it again.",
-                "discarded",
               ),
       }),
     );
   });
 
-  const startReview = (botThreadId: ThreadId, name: string, hash: string) =>
-    FiberMap.run(
+  /** Whether another watcher's review would take the Bot or the server past what they may have in flight. */
+  const reviewsFull = (folder: string, name: string) => {
+    if (reviewingHash.has(watcherKey(folder, name))) return false;
+    const ofBot = [...reviewingHash.keys()].filter((key) => key.startsWith(`${folder}/`)).length;
+    return ofBot >= MAX_REVIEWS_PER_BOT || reviewingHash.size >= MAX_REVIEWS_PER_SERVER;
+  };
+
+  const stopReview = (folder: string, name: string) =>
+    Effect.suspend(() => {
+      reviewingHash.delete(watcherKey(folder, name));
+      return FiberMap.remove(reviewing, watcherKey(folder, name));
+    });
+
+  // One review per watcher: starting one for a newer version interrupts the one for its
+  // predecessor, which is then of no use to anyone.
+  const startReview = Effect.fn("WatcherService.startReview")(function* (
+    botThreadId: ThreadId,
+    name: string,
+    hash: string,
+  ) {
+    const key = watcherKey(BotService.memoryFolderName(botThreadId), name);
+    if (reviewingHash.get(key) === hash) return;
+    reviewingHash.set(key, hash);
+    yield* FiberMap.run(
       reviewing,
-      `${BotService.memoryFolderName(botThreadId)}/${name}/${hash}`,
+      key,
       reviewPending(botThreadId, name, hash).pipe(
         // A review that cannot finish leaves its version waiting, which the next restart or
         // proposal of it tries again.
         Effect.catchCause((cause) =>
           Effect.logWarning("Watcher review failed.", { watcher: name, cause }),
         ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (reviewingHash.get(key) === hash) reviewingHash.delete(key);
+          }),
+        ),
       ),
-      { onlyIfMissing: true },
-    ).pipe(Effect.asVoid);
+    );
+  });
 
   const setRunsOn: WatcherService["Service"]["setRunsOn"] = Effect.fn("WatcherService.setRunsOn")(
     function* ({ botThreadId, name, runsOn }) {
@@ -1614,9 +1802,17 @@ const make = Effect.gen(function* () {
             ? yield* homeThreadId
             : BotService.memoryFolderThreadId(folder);
         if (botThreadId === undefined || !(yield* bots.isBot(botThreadId))) return;
-        yield* Effect.forEach(pending, ({ name, hash }) => startReview(botThreadId, name, hash), {
-          discard: true,
-        });
+        yield* Effect.forEach(
+          pending,
+          ({ name, hash }) =>
+            reviewsFull(folder, name)
+              ? Effect.logWarning("Watcher left waiting for the reviewer, which is busy.", {
+                  folder,
+                  name,
+                })
+              : startReview(botThreadId, name, hash),
+          { discard: true },
+        );
       }),
       { discard: true },
     );
