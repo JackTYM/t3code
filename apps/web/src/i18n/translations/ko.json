@@ -8877,6 +8877,8 @@
   "538f9f1292ad5fdc": "이 환경에서 프로젝트와 연결된 환경 전반에 걸쳐 일하는 에이전트입니다.",
   "7f15dd3afd2bd8fc": "모델",
   "31a5a3e95ec36b30": "Home이 사용하는 모델입니다.",
+  "ff872198f7e03074": "Repair project",
+  "bdef734d3e8d6cce": "Where a repair crew works when something in how a Bot runs keeps failing: a checkout of T3 Code itself. The crew fixes it on a new branch and opens a pull request; changes to the parts that guard the Bot are left for you to merge. None turns repairs off.",
   "b0d038fc0511ad65": "새로 시작",
   "4aa5ad6099942650": "새 Home 대화를 시작합니다. 메모, 선호 사항, 크루는 유지됩니다.",
   "5fc35138b0ff1aea": "새로 시작",

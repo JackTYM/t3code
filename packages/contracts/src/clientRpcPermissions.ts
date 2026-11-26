@@ -148,6 +148,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.homeDisable]: AuthOrchestrationOperateScope,
   [WS_METHODS.homeReset]: AuthOrchestrationOperateScope,
   [WS_METHODS.homeSetModel]: AuthOrchestrationOperateScope,
+  // Names where a Bot's repair crew gets to work on code, so it sits at the bar of enabling Home.
+  [WS_METHODS.homeSetRepairProject]: AuthOrchestrationOperateScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 

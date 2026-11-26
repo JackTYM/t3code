@@ -255,6 +255,7 @@ describe("command permissions", () => {
     WS_METHODS.homeDisable,
     WS_METHODS.homeReset,
     WS_METHODS.homeSetModel,
+    WS_METHODS.homeSetRepairProject,
     WS_METHODS.botWatcherPause,
     WS_METHODS.botWatcherRemove,
     WS_METHODS.botHoldReject,

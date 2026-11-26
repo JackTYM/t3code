@@ -2442,6 +2442,7 @@ export const layerWsRpc = (
         [WS_METHODS.homeDisable]: (_input) => home.disable,
         [WS_METHODS.homeReset]: (_input) => home.reset,
         [WS_METHODS.homeSetModel]: (input) => home.setModel(input.modelSelection),
+        [WS_METHODS.homeSetRepairProject]: (input) => home.setRepairProject(input.projectId),
         [WS_METHODS.workflowsSubscribe]: (input) =>
           input.changes === true ? workflows.watch : Workflows.wholeLists(workflows.watch),
         [WS_METHODS.workflowsCounts]: (_input) => workflows.counts,

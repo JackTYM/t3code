@@ -8934,6 +8934,8 @@
   "538f9f1292ad5fdc": "此环境中跨你的项目和关联环境工作的智能体。",
   "7f15dd3afd2bd8fc": "模型",
   "31a5a3e95ec36b30": "Home 使用的模型。",
+  "ff872198f7e03074": "Repair project",
+  "bdef734d3e8d6cce": "Where a repair crew works when something in how a Bot runs keeps failing: a checkout of T3 Code itself. The crew fixes it on a new branch and opens a pull request; changes to the parts that guard the Bot are left for you to merge. None turns repairs off.",
   "b0d038fc0511ad65": "重新开始",
   "4aa5ad6099942650": "开始新的 Home 对话。笔记、偏好和成员会保留。",
   "5fc35138b0ff1aea": "重新开始",

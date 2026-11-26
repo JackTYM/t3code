@@ -15,6 +15,7 @@ import * as Schema from "effect/Schema";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as BotService from "./BotService.ts";
+import { HEALTH_WAKE_ID, REPAIR_START_TOOL } from "./RepairService.ts";
 
 /** The id every mail digest wake carries after `bot-wake:` (`BotMailService.digestFolder`). */
 const MAIL_WAKE_MESSAGE_PREFIX = "bot-wake:mail:";
@@ -22,6 +23,7 @@ const MAIL_WAKE_MESSAGE_PREFIX = "bot-wake:mail:";
 const WATCHER_WAKE_MESSAGE_PREFIX = "bot-wake:watcher";
 // A health wake (`bot-wake:health:`, `RepairService`) is deliberately in neither list: it holds no
 // outside text. Keep both prefixes as specific as they are; a bare `bot-wake:` would hold it.
+const REPAIR_REFUSED_MESSAGE = `${REPAIR_START_TOOL} works only in a turn that began with a Health wake from the server, and this turn did not. Do not retry it and do not look for another way to start a repair.`;
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const MAIL_READER_ROLE = "mail-reader";
 const MAX_HELD_PER_BOT = 20;
@@ -56,6 +58,14 @@ const startsMailReader = (params: Readonly<Record<string, unknown>>, local: Envi
 
 /** Tools that only touch the Bot's own memory or tasks, whatever turn they are in. */
 const isBotOwnTool = (tool: string) => tool.startsWith("t3_bot_") || tool === "task_cancel";
+
+/**
+ * A health wake carries no outside text, so its turn is free until it reads some. Anything that
+ * reads beyond the Bot's own memory may (a thread's history, an issue, a watcher's source), and
+ * counting every such tool covers one added later. Reads in other turns are unchanged.
+ */
+const readsBeyondOwnMemory = (call: HoldCall) =>
+  call.tool === "t3_bot_watcher_list" || (call.readonly && !isBotOwnTool(call.tool));
 
 /** Tools that talk to a thread named by `threadId`, free when that thread is the Bot's crew. */
 const CREW_TOOLS = new Set(["t3_thread_send", "t3_thread_send_attachments", "t3_thread_interrupt"]);
@@ -167,6 +177,27 @@ const make = Effect.gen(function* () {
     return false;
   });
 
+  // One entry per Bot, its latest run: a run's first message never changes, and every read-only
+  // call of a Bot asks, so the answer is kept rather than read again.
+  const latestRunKind = new Map<ThreadId, { readonly runId: string; readonly health: boolean }>();
+
+  /** The Bot's active run began with the server's own health wake. `RepairService` checks the rest. */
+  const startedByHealthWake = Effect.fn("BotHoldService.startedByHealthWake")(
+    function* (botThreadId: ThreadId) {
+      const runId = yield* activeRun(botThreadId);
+      if (runId === null) return false;
+      const known = latestRunKind.get(botThreadId);
+      if (known?.runId === runId) return known.health;
+      const { runs } = yield* threads.getThreadRecords(botThreadId, ["runs"], { runIds: [runId] });
+      const run = runs.find((candidate) => candidate.id === runId);
+      const health = run !== undefined && HEALTH_WAKE_ID.test(run.userMessageId);
+      // A run that cannot be found is not remembered: it may be one that has not been written yet.
+      if (run !== undefined) latestRunKind.set(botThreadId, { runId, health });
+      return health;
+    },
+    Effect.orElseSucceed(() => false),
+  );
+
   const taint = (botThreadId: ThreadId) =>
     activeRun(botThreadId).pipe(
       Effect.tap((runId) => Effect.sync(() => runId !== null && taintedRuns.add(runId))),
@@ -217,9 +248,21 @@ const make = Effect.gen(function* () {
   const check: BotHoldService["Service"]["check"] = Effect.fn("BotHoldService.check")(
     function* (call) {
       const params = record(call.params);
+      // Before the Bot's-own-tool pass below: a repair is a crew with the user's reach, so it is
+      // refused outright outside a health turn rather than held for a user who could only allow a
+      // call the next turn would refuse again. Inside one it stays allowed even after the turn read
+      // outside text, since it takes no free text to be steered with.
+      if (call.tool === REPAIR_START_TOOL) {
+        return (yield* startedByHealthWake(call.botThreadId))
+          ? { held: false }
+          : { held: true, message: REPAIR_REFUSED_MESSAGE };
+      }
       if (call.tool === "t3_bot_mail_search" || startsMailReader(params, call.environmentId)) {
         yield* taint(call.botThreadId);
         return { held: false };
+      }
+      if (readsBeyondOwnMemory(call) && (yield* startedByHealthWake(call.botThreadId))) {
+        yield* taint(call.botThreadId);
       }
       if (
         call.readonly ||

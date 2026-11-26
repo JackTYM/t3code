@@ -37,6 +37,8 @@ export class HomeService extends Context.Service<
     /** Moves Home to a new thread and stops and settles the old one. */
     readonly reset: Effect.Effect<HomeThreadResult, HomeError>;
     readonly setModel: (modelSelection: ModelSelection) => Effect.Effect<void, HomeError>;
+    /** Where a Bot's repair crew works; null turns repairs off. Kept while Home is off. */
+    readonly setRepairProject: (projectId: ProjectId | null) => Effect.Effect<void, HomeError>;
   }
 >()("t3/home/HomeService") {}
 
@@ -176,7 +178,11 @@ const make = Effect.gen(function* () {
   const disable: HomeService["Service"]["disable"] = Effect.gen(function* () {
     const home = yield* read;
     // The grant goes first; stopping the old run comes after.
-    yield* write({ ...DEFAULT_HOME_SETTINGS, modelSelection: home.modelSelection });
+    yield* write({
+      ...DEFAULT_HOME_SETTINGS,
+      modelSelection: home.modelSelection,
+      repairProjectId: home.repairProjectId,
+    });
     if (home.threadId !== null) {
       yield* bots.clearWatches(home.threadId);
       yield* stopFormerHome(home.threadId);
@@ -221,12 +227,19 @@ const make = Effect.gen(function* () {
       .pipe(Effect.mapError(failWith("launch-failed")));
   }, locked);
 
+  const setRepairProject: HomeService["Service"]["setRepairProject"] = Effect.fn(
+    "HomeService.setRepairProject",
+  )(function* (repairProjectId) {
+    yield* write({ ...(yield* read), repairProjectId });
+  }, locked);
+
   return HomeService.of({
     read,
     enable,
     disable,
     reset,
     setModel,
+    setRepairProject,
   });
 });
 

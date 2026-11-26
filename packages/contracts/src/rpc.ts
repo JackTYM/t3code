@@ -468,7 +468,13 @@ import {
   UsageThreadCosts,
   UsageThreadCostsInput,
 } from "./usage.ts";
-import { HomeEnableInput, HomeError, HomeSetModelInput, HomeThreadResult } from "./home.ts";
+import {
+  HomeEnableInput,
+  HomeError,
+  HomeSetModelInput,
+  HomeSetRepairProjectInput,
+  HomeThreadResult,
+} from "./home.ts";
 import {
   StorageCleanupReport,
   DatabaseReclaimError,
@@ -756,6 +762,7 @@ export const WS_METHODS = {
   homeDisable: "home.disable",
   homeReset: "home.reset",
   homeSetModel: "home.setModel",
+  homeSetRepairProject: "home.setRepairProject",
 
   pullRequestsList: "pullRequests.list",
   pullRequestsListStats: "pullRequests.listStats",
@@ -2659,6 +2666,11 @@ const WsHomeSetModelRpc = Rpc.make(WS_METHODS.homeSetModel, {
   error: HomeRpcError,
 });
 
+const WsHomeSetRepairProjectRpc = Rpc.make(WS_METHODS.homeSetRepairProject, {
+  payload: HomeSetRepairProjectInput,
+  error: HomeRpcError,
+});
+
 const WsWorkflowsGetRpc = Rpc.make(WS_METHODS.workflowsGet, {
   payload: WorkflowRunGetInput,
   success: WorkflowRunDetail,
@@ -2879,6 +2891,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsHomeDisableRpc,
   WsHomeResetRpc,
   WsHomeSetModelRpc,
+  WsHomeSetRepairProjectRpc,
   WsWorkflowsSubscribeRpc,
   WsWorkflowsCountsRpc,
   WsWorkflowsGetRpc,

@@ -79,6 +79,12 @@ to 24, for as long as reports keep coming; recovery clears the episode. The wake
   number, ISO times, a hex id and a name that passed a no-whitespace pattern, never from script
   output, a reviewer's reason or a purpose. A signal whose name does not pass is refused, not
   cleaned. Do not add a field to it that a stranger could have written.
+- **Free until it reads outside text.** In a health turn any read beyond the Bot's own memory (a
+  thread's history holds old watcher output and mail, an issue or a PR is a stranger's words, and
+  `t3_bot_watcher_list` returns source a turn that was influenced may have written) taints the run
+  like `t3_bot_mail_search` does, so its consequential calls are held from then on. The list is
+  "every read-only tool that is not a `t3_bot_*` tool", not names, so a tool added later is covered.
+  Other turns are unchanged: reading is not a taint there.
 - **A health turn's own failure is not a signal.** A failed run that began with a health wake would
   wake the Bot into the same failure again, so `handleMilestone` skips it, and a failed run it
   cannot find.
@@ -88,9 +94,39 @@ to 24, for as long as reports keep coming; recovery clears the episode. The wake
   news, starts over. A run where the linked environment did not answer is neither: `waiting` leaves
   the count as it was. A new approved version or a move starts clean.
 - **State** is `<stateDir>/repair-state.json`, signed like the watchers' approvals with a key a Bot
-  and a script cannot read, because a later step trusts it to say which signals the server wrote.
-  A signal's episode is saved with the wake before it is queued and settled after, so a restart
-  resends the same key instead of waking twice. A file that fails its signature is dropped whole.
+  and a script cannot read, because a later step trusts it to say which signals the server wrote
+  and which threads are repair crews. It holds `episodes` and `repairs`; a file from before
+  `repairs` existed (the episodes alone) still reads. A signal's episode is saved with the wake
+  before it is queued and settled after, so a restart resends the same key instead of waking twice.
+  A file that fails its signature is dropped whole.
+
+### Repair start
+
+`t3_bot_repair_start({ signalId })` starts a crew that fixes the failure a health wake named. The
+Bot supplies the id and nothing else; the project (`home.repairProjectId`, set in Settings → Home),
+branch (`repair/<signalId>`, `-2` for the retry), model, isolation and brief are the server's. The
+crew is an ordinary crew thread in a worktree, grouped under the Bot, no higher in runtime mode
+than the Bot.
+
+- **The turn proves itself three ways, because a client picks its own message ids.** The Bot's
+  active run began with a message whose id is exactly `bot-wake:health:<12 hex>:<n>`, that message
+  is `createdBy: "system"` (everything a client sends is `user`), and the id's signal is the tool's
+  argument and is in the signed registry for this Bot. `BotHoldService` checks only the id shape,
+  to refuse early outside a health turn and to leave the tool allowed after the turn was tainted;
+  `RepairService.startRepair` is the check that counts.
+- **The brief is a constant plus fixed fields** ([`briefText`](../../apps/server/src/bots/RepairService.ts)):
+  a signal id, a pattern-checked name and thread id, a count, ISO times, an evidence pointer and
+  the Bot's thread and folder. Nothing a script printed, a reviewer said or a Bot wrote enters it.
+  The crew reads the evidence itself and is told it may hold outside text. The protected paths in
+  the brief are `PROTECTED_PATHS`, the one list the merge guard reuses.
+- **Bounds live outside the episode map**, because an episode goes when the failure recovers and
+  is swept a day after its last wake. One crew runs per signal; a Bot gets three starts in any
+  24 hours; a crew thread whose run ends `failed` (or that was deleted unfinished) is a failed
+  attempt, and the second one gives the signal up with one wake, `bot-wake:health:<id>:gaveup`.
+  That id does not match the health pattern, so the turn it starts cannot start a repair.
+- **Crew thread ids are written before the launch** (`repair-crew:<signalId>:<n>`, also the launch's
+  command id, so a retry replays), and rolled back if the launch is refused. `repairOf(threadId)`
+  says which repair a thread belongs to.
 
 ## Model
 

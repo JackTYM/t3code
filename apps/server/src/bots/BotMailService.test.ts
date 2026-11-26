@@ -966,7 +966,12 @@ it.effect("shows when the hook last heard from the Worker and how it ended", () 
 it.effect("keeps Home's hook and store through Start fresh, which gives Home a new thread", () => {
   const orchestration = makeOrchestration();
   const tasks = makeFakeTasks();
-  const home = { enabled: true, threadId: "home:one" as ThreadId | null, modelSelection: null };
+  const home = {
+    enabled: true,
+    threadId: "home:one" as ThreadId | null,
+    modelSelection: null,
+    repairProjectId: null,
+  };
   const settingsLayer = Layer.mock(ServerSettings.ServerSettingsService)({
     getSettings: Effect.sync(() => ({ ...DEFAULT_SERVER_SETTINGS, home: { ...home } })),
   });

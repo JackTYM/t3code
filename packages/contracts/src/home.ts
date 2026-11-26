@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import { ThreadId } from "./baseSchemas.ts";
+import { ProjectId, ThreadId } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
 
 /**
@@ -24,6 +24,11 @@ export const HomeSettings = Schema.Struct({
   modelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /**
+   * The project a repair crew works in: a checkout of T3 Code itself. A Bot can start a repair only
+   * here, and cannot choose it. Null means repairs are off.
+   */
+  repairProjectId: Schema.NullOr(ProjectId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 });
 export type HomeSettings = typeof HomeSettings.Type;
 
@@ -31,6 +36,7 @@ export const DEFAULT_HOME_SETTINGS: HomeSettings = {
   enabled: false,
   threadId: null,
   modelSelection: null,
+  repairProjectId: null,
 };
 
 export const HomeEnableInput = Schema.Struct({
@@ -40,6 +46,9 @@ export type HomeEnableInput = typeof HomeEnableInput.Type;
 
 export const HomeSetModelInput = Schema.Struct({ modelSelection: ModelSelection });
 export type HomeSetModelInput = typeof HomeSetModelInput.Type;
+
+export const HomeSetRepairProjectInput = Schema.Struct({ projectId: Schema.NullOr(ProjectId) });
+export type HomeSetRepairProjectInput = typeof HomeSetRepairProjectInput.Type;
 
 export const HomeThreadResult = Schema.Struct({ threadId: ThreadId });
 export type HomeThreadResult = typeof HomeThreadResult.Type;

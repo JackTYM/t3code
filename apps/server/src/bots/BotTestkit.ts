@@ -13,10 +13,12 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import * as BotService from "./BotService.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -56,6 +58,8 @@ export interface LaunchedThread {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
   readonly text: string | undefined;
+  /** Everything the launch was asked for. */
+  readonly input: ThreadLaunchService.ThreadLaunchInput;
 }
 
 /** The orchestration Bots and Home drive, recording what they were asked to do. */
@@ -69,10 +73,20 @@ export const makeOrchestration = () => {
     string,
     { readonly createdBy: "user" | "agent" | "system"; readonly scheduledTaskId?: string }
   >();
+  /** Projects a launch can name, by id: their folders and the branch each is on. */
+  const projects = new Map<ProjectId, { readonly title: string; readonly workspaceRoot: string }>();
+  const git: { branch: string | null } = { branch: "main" };
 
   /** Runs before each message is sent, so a test can hold a send where a server could stop. */
-  const hooks: { beforeSend: (message: SentMessage) => Effect.Effect<void> } = {
+  const hooks: {
+    beforeSend: (message: SentMessage) => Effect.Effect<void>;
+    /** Runs before each launch records itself, so a test can make one fail. */
+    beforeLaunch: (
+      input: ThreadLaunchService.ThreadLaunchInput,
+    ) => Effect.Effect<void, ThreadLaunchService.ThreadLaunchError>;
+  } = {
     beforeSend: () => Effect.void,
+    beforeLaunch: () => Effect.void,
   };
 
   /** Makes `message` the one that began the thread's active run. */
@@ -116,16 +130,27 @@ export const makeOrchestration = () => {
   const layer = Layer.mergeAll(
     Layer.mock(ThreadLaunchService.ThreadLaunchService)({
       launch: (input) =>
-        Effect.sync(() => {
-          const threadId = input.threadId!;
-          addThread(threadId, {
-            projectId: input.projectId,
-            title: input.title,
-            botConfig: input.botConfig ?? null,
-          });
-          launched.push({ threadId, projectId: input.projectId, text: input.initialMessage?.text });
-          return { threadId } as ThreadLaunchService.ThreadLaunchResult;
-        }),
+        hooks.beforeLaunch(input).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              const threadId = input.threadId!;
+              addThread(threadId, {
+                projectId: input.projectId,
+                title: input.title,
+                botConfig: input.botConfig ?? null,
+                groupedUnderThreadId: input.groupedUnderThreadId ?? null,
+              });
+              launched.push({
+                threadId,
+                projectId: input.projectId,
+                text: input.initialMessage?.text,
+                input,
+              });
+              return { threadId } as ThreadLaunchService.ThreadLaunchResult;
+            }),
+          ),
+        ),
+      checkWorktreeBase: () => Effect.void,
     }),
     Layer.mock(ThreadManagementService.ThreadManagementService)({
       getThreadShell: (threadId) => Effect.succeed((threads.get(threadId) ?? null) as never),
@@ -179,12 +204,21 @@ export const makeOrchestration = () => {
     Layer.mock(ProjectService.ProjectService)({
       bootstrap: (input) =>
         Effect.succeed({ project: { id: input.projectId }, created: true } as never),
+      getById: (projectId) =>
+        Effect.succeed(
+          Option.fromNullishOr(
+            projects.has(projectId) ? { id: projectId, ...projects.get(projectId)! } : undefined,
+          ) as never,
+        ),
+    }),
+    Layer.mock(GitWorkflow.GitWorkflowService)({
+      currentBranch: () => Effect.succeed(git.branch),
     }),
     Layer.mock(ServerEnvironment.ServerEnvironment)({
       getEnvironmentId: Effect.succeed(EnvironmentId.make("env:here")),
     }),
   );
-  return { threads, dispatched, sent, launched, hooks, addThread, startRun, layer };
+  return { threads, dispatched, sent, launched, hooks, projects, git, addThread, startRun, layer };
 };
 
 /** Home and the Bot service over one fake orchestration and a fresh base directory. */

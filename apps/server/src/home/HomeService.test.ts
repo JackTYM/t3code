@@ -1,5 +1,11 @@
 import { assert, it } from "@effect/vitest";
-import { ClientServerSettingsPatch, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  ClientServerSettingsPatch,
+  HomeSettings,
+  ProjectId,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -12,6 +18,7 @@ import * as ServerConfig from "../config.ts";
 import * as HomeService from "./HomeService.ts";
 
 const decodeClientPatch = Schema.decodeUnknownSync(ClientServerSettingsPatch);
+const decodeHomeSettings = Schema.decodeSync(HomeSettings);
 
 it.effect("enables Home as a Bot in its own folder, with no stale instructions file left", () => {
   const orchestration = makeOrchestration();
@@ -32,7 +39,12 @@ it.effect("enables Home as a Bot in its own folder, with no stale instructions f
     });
     // Enabling again returns the running Home.
     assert.strictEqual((yield* home.enable({})).threadId, threadId);
-    assert.deepStrictEqual(yield* home.read, { enabled: true, threadId, modelSelection: model });
+    assert.deepStrictEqual(yield* home.read, {
+      enabled: true,
+      threadId,
+      modelSelection: model,
+      repairProjectId: null,
+    });
     assert.isFalse(yield* fileSystem.exists(agents));
   }).pipe(provideBots(orchestration));
 });
@@ -107,4 +119,40 @@ it("drops `home` from client settings patches", () => {
     home: { enabled: true, threadId: "home:forged", modelSelection: null },
   });
   assert.deepStrictEqual(patch, { defaultRuntimeMode: "full-access" });
+});
+
+it.effect(
+  "remembers the repair project whether or not Home is on, and a client cannot patch it",
+  () => {
+    const orchestration = makeOrchestration();
+    const project = ProjectId.make("project:t3code");
+    return Effect.gen(function* () {
+      const home = yield* HomeService.HomeService;
+      assert.isNull((yield* home.read).repairProjectId);
+
+      yield* home.setRepairProject(project);
+      assert.strictEqual((yield* home.read).repairProjectId, project);
+
+      // Home on and off again does not forget where repairs go: Bots other than Home use it too.
+      yield* home.enable({ modelSelection: model });
+      yield* home.disable;
+      assert.deepStrictEqual(yield* home.read, {
+        enabled: false,
+        threadId: null,
+        modelSelection: model,
+        repairProjectId: project,
+      });
+
+      yield* home.setRepairProject(null);
+      assert.isNull((yield* home.read).repairProjectId);
+
+      // Only the Home RPCs write `home`, so a settings patch cannot aim a repair crew.
+      assert.deepStrictEqual(decodeClientPatch({ home: { repairProjectId: project } }), {});
+    }).pipe(provideBots(orchestration));
+  },
+);
+
+it("reads Home settings saved before there was a repair project as none", () => {
+  const saved = { enabled: true, threadId: ThreadId.make("home:one"), modelSelection: null };
+  assert.isNull(decodeHomeSettings(saved).repairProjectId);
 });

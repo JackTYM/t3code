@@ -146,6 +146,7 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.homeDisable,
       WS_METHODS.homeReset,
       WS_METHODS.homeSetModel,
+      WS_METHODS.homeSetRepairProject,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }

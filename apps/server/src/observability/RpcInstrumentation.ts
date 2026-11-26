@@ -119,6 +119,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.homeDisable]: "home",
   [WS_METHODS.homeReset]: "home",
   [WS_METHODS.homeSetModel]: "home",
+  [WS_METHODS.homeSetRepairProject]: "home",
   [WS_METHODS.workflowsGetDefinition]: "workflows",
   [WS_METHODS.workflowsSaveDefinition]: "workflows",
   [WS_METHODS.workflowsDeleteDefinition]: "workflows",

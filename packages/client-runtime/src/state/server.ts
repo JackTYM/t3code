@@ -2053,6 +2053,12 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    setHomeRepairProject: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:home:set-repair-project",
+      tag: WS_METHODS.homeSetRepairProject,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
     createGuestShare: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:guest-share:create",
       tag: WS_METHODS.guestShareCreate,

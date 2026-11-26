@@ -21,6 +21,7 @@ import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import * as BotMailService from "../../../bots/BotMailService.ts";
 import * as BotService from "../../../bots/BotService.ts";
+import * as RepairService from "../../../bots/RepairService.ts";
 import * as WatcherService from "../../../bots/WatcherService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -39,6 +40,7 @@ const shared = {
     BotService.BotService,
     BotMailService.BotMailService,
     WatcherService.WatcherService,
+    RepairService.RepairService,
   ],
 };
 const Saved = Schema.Struct({ saved: Schema.Boolean });
@@ -262,6 +264,30 @@ const WatcherList = Tool.make("t3_bot_watcher_list", {
   .annotate(Tool.OpenWorld, false)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromNonBots);
 
+// The Bot's only part in a repair is saying it should start: the server writes the rest. The tool
+// takes no text, so nothing a hostile message says can steer what the crew is asked to do.
+const RepairStart = Tool.make(RepairService.REPAIR_START_TOOL, {
+  ...shared,
+  description:
+    "Start a repair crew for the failure a Health wake named. Only in a turn that began with that Health wake, and only for the signal id on its first line; anywhere else it is refused. The crew works in an isolated worktree of the repair project the user chose in Settings → Home, on a new branch, and gets a brief the server writes: you cannot choose the project, branch, model or brief, and you give no text. It reproduces the failure, writes a failing test, fixes it, pushes the branch and opens a pull request. One repair runs per signal, you get three a day, and after two failed crews for a signal no more start and you are woken once to tell the user. Then tell the user in one line and add a task; do not start other crew in that turn.",
+  parameters: Schema.Struct({
+    signalId: Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u)).annotate({
+      description: "The signal id from the first line of the Health wake: 12 hex characters.",
+    }),
+  }),
+  success: Schema.Struct({
+    threadId: ThreadId.annotate({ description: "The crew thread. It joins your crew." }),
+    branch: Schema.String,
+    attempt: Schema.Int.annotate({ description: "1 for the first crew, 2 for the retry." }),
+  }),
+})
+  .annotate(Tool.Title, "Start a repair")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromNonBots);
+
 const MailFound = Schema.Struct({
   id: Schema.Int.annotate({ description: "The number to read it with." }),
   mailbox: Schema.String,
@@ -348,6 +374,7 @@ export const BotToolkit = Toolkit.make(
   WatcherPropose,
   WatcherRemove,
   WatcherList,
+  RepairStart,
   MailSearch,
   MailRead,
 );

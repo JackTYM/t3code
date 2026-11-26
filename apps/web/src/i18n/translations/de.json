@@ -8919,6 +8919,8 @@
   "538f9f1292ad5fdc": "Ein Agent in dieser Umgebung, der über deine Projekte und verknüpften Umgebungen hinweg arbeitet.",
   "7f15dd3afd2bd8fc": "Modell",
   "31a5a3e95ec36b30": "Das Modell, mit dem Home läuft.",
+  "ff872198f7e03074": "Repair project",
+  "bdef734d3e8d6cce": "Where a repair crew works when something in how a Bot runs keeps failing: a checkout of T3 Code itself. The crew fixes it on a new branch and opens a pull request; changes to the parts that guard the Bot are left for you to merge. None turns repairs off.",
   "b0d038fc0511ad65": "Neu beginnen",
   "4aa5ad6099942650": "Eine neue Home-Unterhaltung beginnen. Notizen, Vorlieben und Crew bleiben erhalten.",
   "5fc35138b0ff1aea": "Neu beginnen",

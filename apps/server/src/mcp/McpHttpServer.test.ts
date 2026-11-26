@@ -62,6 +62,7 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as BotService from "../bots/BotService.ts";
 import * as BotHoldService from "../bots/BotHoldService.ts";
 import * as BotMailService from "../bots/BotMailService.ts";
+import * as RepairService from "../bots/RepairService.ts";
 import * as WatcherService from "../bots/WatcherService.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -2329,6 +2330,7 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
               }),
           }),
         ),
+        Layer.provide(Layer.mock(RepairService.RepairService)({})),
         Layer.provide(
           Layer.mock(WatcherService.WatcherService)({
             list: () =>
@@ -2431,6 +2433,7 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
         "t3_bot_memory_read",
         "t3_bot_notes_write",
         "t3_bot_preferences_append",
+        "t3_bot_repair_start",
         "t3_bot_tasks_write",
         "t3_bot_watch_add",
         "t3_bot_watch_remove",

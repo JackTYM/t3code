@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 
 import * as BotMailService from "../../../bots/BotMailService.ts";
 import * as BotService from "../../../bots/BotService.ts";
+import * as RepairService from "../../../bots/RepairService.ts";
 import { frameUntrustedText } from "../../../scheduledTasks/webhookTemplate.ts";
 import * as WatcherService from "../../../bots/WatcherService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -35,6 +36,19 @@ const watcherFailure = (error: BotWatcherError) =>
 const mailFailure = (error: BotMailError) =>
   new OrchestratorMcpFailure({
     code: error.reason === "not_a_bot" ? "capability_denied" : "invalid_request",
+    message: error.message,
+  });
+
+const repairFailure = (error: RepairService.RepairError) =>
+  new OrchestratorMcpFailure({
+    code:
+      error.reason === "not_health_turn" ||
+      error.reason === "wrong_signal" ||
+      error.reason === "unknown_signal"
+        ? "capability_denied"
+        : error.reason === "launch_failed"
+          ? "orchestration_error"
+          : "invalid_request",
     message: error.message,
   });
 
@@ -225,6 +239,15 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
           }),
         ),
       };
+    }),
+  ),
+  t3_bot_repair_start: McpToolAccess.actsAsCaller(({ signalId }) =>
+    Effect.gen(function* () {
+      const { threadId } = yield* callerBot;
+      const repair = yield* RepairService.RepairService;
+      return yield* repair
+        .startRepair({ botThreadId: threadId, signalId })
+        .pipe(Effect.mapError(repairFailure));
     }),
   ),
   t3_bot_mail_search: McpToolAccess.readsAsCaller((input) =>
