@@ -18,6 +18,12 @@ export type BotWatcherName = typeof BotWatcherName.Type;
 export const BotWatcherRuntime = Schema.Literals(["node", "sh"]);
 export type BotWatcherRuntime = typeof BotWatcherRuntime.Type;
 
+/** `health`: a trip is a failure (the original behavior). `events`: output on exit 0 is news, delivered once. */
+export const BotWatcherMode = Schema.Literals(["health", "events"]);
+export type BotWatcherMode = typeof BotWatcherMode.Type;
+
+export const BOT_WATCHER_PURPOSE_MAX_CHARS = 300;
+
 /** `local` is the environment that holds the watcher; anything else names a linked environment. */
 export const BotWatcherRunsOn = Schema.Union([Schema.Literal("local"), EnvironmentId]);
 export type BotWatcherRunsOn = typeof BotWatcherRunsOn.Type;
@@ -66,11 +72,14 @@ export const BotWatcher = Schema.Struct({
   hash: Schema.String,
   approvedHash: Schema.optional(Schema.String),
   pendingHash: Schema.optional(Schema.String),
-  /** `runtime`, `source`, `intervalSeconds`, `expect` and `requestedRunsOn` are absent when that version's files are missing or changed on disk (`invalid`). */
+  /** `runtime`, `source`, `intervalSeconds`, `expect`, `mode`, `purpose` and `requestedRunsOn` are absent when that version's files are missing or changed on disk (`invalid`). */
   runtime: Schema.optional(BotWatcherRuntime),
   source: Schema.optional(Schema.String),
   intervalSeconds: Schema.optional(Schema.Int),
   expect: Schema.optional(Schema.String),
+  /** Absent means `health`. */
+  mode: Schema.optional(BotWatcherMode),
+  purpose: Schema.optional(Schema.String),
   /** Where the Bot asked it to run. The user's choice is `runsOn`. */
   requestedRunsOn: Schema.optional(BotWatcherRunsOn),
   runsOn: BotWatcherRunsOn,

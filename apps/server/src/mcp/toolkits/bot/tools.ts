@@ -3,8 +3,10 @@ import {
   BOT_MAIL_MAX_SEARCH_RESULTS,
   BOT_WATCHER_EXPECT_MAX_CHARS,
   BOT_WATCHER_MIN_INTERVAL_SECONDS,
+  BOT_WATCHER_PURPOSE_MAX_CHARS,
   BOT_WATCHER_SOURCE_MAX_BYTES,
   BotWatch,
+  BotWatcherMode,
   BotWatcherName,
   BotWatcherRunsOn,
   BotWatcherRuntime,
@@ -152,7 +154,7 @@ const WatchRemove = Tool.make("t3_bot_watch_remove", {
 const WatcherPropose = Tool.make("t3_bot_watcher_propose", {
   ...shared,
   description:
-    "Propose a watcher: a script that polls for free and wakes you only when it trips. It does NOT run until the user has read its source, run it once, and approved that exact version; proposing a changed version stops the approved one until the user approves again. You cannot approve or dry-run it yourself. Runs on an interval, with no stdin, a minimal environment, and a short timeout. Healthy is exit 0 and, when `expect` is set, stdout matching it; anything else trips and wakes you with the output. Refused in a turn that began with a wake or any message the user did not type.",
+    "Propose a watcher: a script that polls for free and wakes you only when it trips. It does NOT run until the user has read its source, run it once, and approved that exact version; proposing a changed version stops the approved one until the user approves again. You cannot approve or dry-run it yourself. Runs on an interval, with no stdin, a minimal environment, and a short timeout. Healthy is exit 0 and, when `expect` is set, stdout matching it; anything else trips and wakes you with the output. mode `events`: exit 0 with empty stdout means nothing happened; exit 0 with output means news and wakes you once with that output. Keep a cursor in $T3_WATCHER_STATE_DIR so you only print what is new. Refused in a turn that began with a wake or any message the user did not type.",
   parameters: Schema.Struct({
     name: BotWatcherName.annotate({
       description:
@@ -180,6 +182,16 @@ const WatcherPropose = Tool.make("t3_bot_watcher_propose", {
           "`local` (default) or a linked environment's id. A request: the user chooses where it runs when approving.",
       }),
     ),
+    mode: Schema.optional(
+      BotWatcherMode.annotate({
+        description:
+          "`health` (default): a trip is a failure. `events`: output on exit 0 is news, delivered once.",
+      }),
+    ),
+    purpose: Schema.String.check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(BOT_WATCHER_PURPOSE_MAX_CHARS),
+    ).annotate({ description: "What this watcher is for, in a sentence." }),
   }),
   success: Schema.Struct({
     hash: Schema.String,
@@ -224,6 +236,8 @@ const WatcherList = Tool.make("t3_bot_watcher_list", {
         source: Schema.optional(Schema.String),
         intervalSeconds: Schema.optional(Schema.Int),
         expect: Schema.optional(Schema.String),
+        mode: Schema.optional(BotWatcherMode),
+        purpose: Schema.optional(Schema.String),
         runsOn: BotWatcherRunsOn,
       }),
     ),

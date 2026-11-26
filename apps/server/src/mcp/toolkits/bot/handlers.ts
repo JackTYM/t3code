@@ -187,7 +187,18 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
       // (diff, dry run, history) stays in the client.
       return {
         watchers: (yield* watchers.list(threadId)).watchers.map(
-          ({ name, status, hash, runtime, source, intervalSeconds, expect, runsOn }) => ({
+          ({
+            name,
+            status,
+            hash,
+            runtime,
+            source,
+            intervalSeconds,
+            expect,
+            mode,
+            purpose,
+            runsOn,
+          }) => ({
             name,
             status,
             hash,
@@ -196,6 +207,8 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
             ...(source === undefined ? {} : { source }),
             ...(intervalSeconds === undefined ? {} : { intervalSeconds }),
             ...(expect === undefined ? {} : { expect }),
+            ...(mode === undefined ? {} : { mode }),
+            ...(purpose === undefined ? {} : { purpose }),
           }),
         ),
       };

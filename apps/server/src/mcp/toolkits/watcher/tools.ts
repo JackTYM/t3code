@@ -14,7 +14,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 // the user approved this exact script, so nothing else may ask this environment to run one.
 const WatcherRun = Tool.make("t3_watcher_run", {
   description:
-    "Run a watcher's script here for the linked environment that holds its approval. `hash` is the sha256 of the source's UTF-8 bytes; a source that does not match is refused. Runs from a private copy with no stdin and a minimal environment, and returns the exit and output.",
+    "Run a watcher's script here for the linked environment that holds its approval. `hash` is the sha256 of the source's UTF-8 bytes; a source that does not match is refused. Runs from a private copy with no stdin and a minimal environment, and returns the exit and output. A `stateKey` (a sha256 hex) names the watcher's persistent state folder here; without one the script gets a throwaway.",
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies: [McpInvocationContext.McpInvocationContext, WatcherService.WatcherService],
@@ -27,6 +27,7 @@ const WatcherRun = Tool.make("t3_watcher_run", {
     runtime: BotWatcherRuntime,
     timeoutMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
     dryRun: Schema.optional(Schema.Boolean),
+    stateKey: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u))),
   }),
   success: BotWatcherRemoteRun,
 })

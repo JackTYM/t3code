@@ -159,6 +159,8 @@ const proposeWatcher = (
     readonly expect?: string;
     readonly runtime?: "node" | "sh";
     readonly intervalSeconds?: number;
+    readonly mode?: "health" | "events";
+    readonly purpose?: string;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -170,6 +172,8 @@ const proposeWatcher = (
       source: options.run ?? SHELL_FAILS,
       intervalSeconds: options.intervalSeconds ?? EVERY_MS / 1000,
       expect: options.expect,
+      mode: options.mode,
+      purpose: options.purpose,
     });
   });
 
@@ -177,12 +181,7 @@ const proposeWatcher = (
 const installWatcher = Effect.fn("installWatcher")(function* (
   threadId: ThreadId,
   name: string,
-  options: {
-    readonly run?: string;
-    readonly expect?: string;
-    readonly runtime?: "node" | "sh";
-    readonly approve?: boolean;
-  } = {},
+  options: Parameters<typeof proposeWatcher>[2] & { readonly approve?: boolean } = {},
 ) {
   const watchers = yield* WatcherService.WatcherService;
   const { hash } = yield* proposeWatcher(threadId, name, options);
@@ -534,6 +533,12 @@ it.effect(
       yield* watchers.runDue;
       assert.strictEqual(runner.state.runs, 0);
       assert.strictEqual(peer.state.calls.at(-1)?.arguments.dryRun, false);
+      // A scheduled run names its state folder on the laptop; the dry run above did not.
+      assert.strictEqual(
+        peer.state.calls.at(-1)?.arguments.stateKey,
+        sha256Hex(`${BotService.memoryFolderName(botThread.id)}/disk`),
+      );
+      assert.isUndefined(dryCall?.arguments.stateKey);
       assert.strictEqual(orchestration.sent.length, 1);
       assert.include(orchestration.sent[0]?.text, "disk 91%");
       assert.match(
@@ -1151,4 +1156,279 @@ it.effect.each([
       );
     }).pipe(third);
   }).pipe(Effect.provide(NodeServices.layer));
+});
+
+const watcherDirectory = Effect.fn("watcherDirectory")(function* (
+  threadId: ThreadId,
+  name: string,
+) {
+  const path = yield* Path.Path;
+  const { baseDir } = yield* ServerConfig.ServerConfig;
+  return path.join(baseDir, "bots", BotService.memoryFolderName(threadId), "watchers", name);
+});
+
+it.effect("events mode: quiet on exit 0 with no output, and one wake per new output", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* installWatcher(botThread.id, "inbox", { mode: "events", purpose: "New assignments" });
+    const poll = Effect.fnUntraced(function* () {
+      yield* TestClock.adjust(EVERY_MS);
+      yield* watchers.runDue;
+    });
+
+    yield* watchers.runDue;
+    assert.strictEqual(orchestration.sent.length, 0);
+    assert.strictEqual((yield* watchers.list(botThread.id)).watchers[0]?.status, "healthy");
+
+    runner.state.result = { code: ExitCode(0), stdout: "new assignment", timedOut: false };
+    yield* poll();
+    assert.strictEqual(orchestration.sent.length, 1);
+    const text = orchestration.sent[0]!.text;
+    assert.include(text, "Watcher inbox reported new events.");
+    assert.match(text, /<watcher-data-[0-9a-f-]+>[\s\S]*new assignment[\s\S]*<\/watcher-data-/u);
+    assert.include(text, "untrusted data");
+    // News is not a failure.
+    assert.strictEqual((yield* watchers.list(botThread.id)).watchers[0]?.status, "healthy");
+
+    runner.state.result = { code: ExitCode(0), stdout: "", timedOut: false };
+    yield* poll();
+    assert.strictEqual(orchestration.sent.length, 1);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("events mode: never wakes twice for one run, even across a restart", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  runner.state.result = { code: ExitCode(0), stdout: "new assignment", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* installWatcher(botThread.id, "inbox", { mode: "events", purpose: "New assignments" });
+    yield* watchers.runDue;
+    assert.strictEqual(orchestration.sent.length, 1);
+
+    // A crash after the send but before the save leaves the event pending: it goes out again
+    // under the same key and does not run the script.
+    const statePath = path.join(yield* watcherDirectory(botThread.id, "inbox"), "state.json");
+    const saved = JSON.parse(yield* fileSystem.readFileString(statePath));
+    assert.isUndefined(saved.pendingEvent);
+    saved.pendingEvent = { key: "watcher:resent", text: orchestration.sent[0]!.text };
+    yield* fileSystem.writeFileString(statePath, JSON.stringify(saved));
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 1);
+    assert.strictEqual(orchestration.sent.length, 2);
+    assert.strictEqual(orchestration.sent[1]?.text, orchestration.sent[0]?.text);
+    const cleared = JSON.parse(yield* fileSystem.readFileString(statePath));
+    assert.isUndefined(cleared.pendingEvent);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("events mode: does not run the script again while an event is undelivered", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  runner.state.result = { code: ExitCode(0), stdout: "new assignment", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* installWatcher(botThread.id, "inbox", { mode: "events", purpose: "New assignments" });
+    botThread.settledOverride = "settled";
+    yield* watchers.runDue;
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 1);
+    assert.strictEqual(orchestration.sent.length, 0);
+
+    botThread.settledOverride = null;
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 1);
+    assert.strictEqual(orchestration.sent.length, 1);
+    assert.include(orchestration.sent[0]?.text, "new assignment");
+
+    // Delivered: the script runs on its schedule again.
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 2);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("events mode: a failing run takes today's failure path and backoff", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  runner.state.result = { code: ExitCode(1), stdout: "boom", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* installWatcher(botThread.id, "inbox", { mode: "events", purpose: "New assignments" });
+    yield* watchers.runDue;
+    assert.strictEqual(orchestration.sent.length, 1);
+    assert.include(orchestration.sent[0]?.text, "Watcher inbox tripped");
+    assert.strictEqual((yield* watchers.list(botThread.id)).watchers[0]?.status, "tripped");
+
+    // The same failure waits out its backoff.
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+    assert.strictEqual(orchestration.sent.length, 1);
+
+    // A timeout is a failure in events mode too.
+    runner.state.result = { code: null, stdout: "", timedOut: true };
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+    assert.include(orchestration.sent[1]?.text, "exit: timeout");
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("events mode: ignores `expect`, since exit 0 alone is healthy", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  runner.state.result = { code: ExitCode(0), stdout: "something", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* installWatcher(botThread.id, "inbox", {
+      mode: "events",
+      purpose: "New assignments",
+      expect: "^never$",
+    });
+    yield* watchers.runDue;
+    assert.include(orchestration.sent[0]?.text, "reported new events");
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("keeps a state folder between scheduled runs, apart from a dry run's", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    // Prints how many times it has run for this folder, so the count only grows if the folder persists.
+    yield* installWatcher(botThread.id, "counter", {
+      mode: "events",
+      purpose: "Counts its runs",
+      run: '#!/bin/sh\necho x >> "$T3_WATCHER_STATE_DIR/seen"\necho "count=$(wc -l < "$T3_WATCHER_STATE_DIR/seen" | tr -d \' \')"\n',
+    });
+    yield* watchers.runDue;
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+    // The dry run installWatcher made did not count: the first scheduled run is the first of its folder.
+    assert.include(orchestration.sent[0]?.text, "count=1");
+    assert.include(orchestration.sent[1]?.text, "count=2");
+
+    const folder = path.join(yield* watcherDirectory(botThread.id, "counter"), "data");
+    assert.isTrue(yield* fileSystem.exists(path.join(folder, "seen")));
+    yield* watchers.removeByUser({ botThreadId: botThread.id, name: "counter" });
+    assert.isFalse(yield* fileSystem.exists(folder));
+  }).pipe(
+    provideWatchers(orchestration, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
+  );
+});
+
+it.effect("hashes a proposal without `mode` or `purpose` exactly as before", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    // Computed from the code before event mode existed, for this source and these settings.
+    const plain = yield* proposeWatcher(botThread.id, "disk", { run: "echo one\n" });
+    assert.strictEqual(
+      plain.hash,
+      "af7718a0ac5452b7b3627bc84594f7e6ef48b287b69465fe619cd4c22f6a8164",
+    );
+    const withExpect = yield* proposeWatcher(botThread.id, "disk2", {
+      run: "echo one\n",
+      expect: "^ok$",
+    });
+    assert.strictEqual(
+      withExpect.hash,
+      "154b2b2547c835094f5b6fe16ce046ff20a997faddb48038c9d7392fcf160ebb",
+    );
+
+    // Both are part of the version, so changing either is a new version to approve.
+    const events = yield* proposeWatcher(botThread.id, "disk3", {
+      run: "echo one\n",
+      mode: "events",
+    });
+    const purposeful = yield* proposeWatcher(botThread.id, "disk4", {
+      run: "echo one\n",
+      purpose: "Disk space",
+    });
+    assert.strictEqual(new Set([plain.hash, events.hash, purposeful.hash]).size, 3);
+    // Saying `health` is the same as saying nothing.
+    const health = yield* proposeWatcher(botThread.id, "disk5", {
+      run: "echo one\n",
+      mode: "health",
+    });
+    assert.strictEqual(health.hash, plain.hash);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("refuses a purpose that is empty or too long", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const reason = (purpose: string) =>
+      proposeWatcher(botThread.id, "w", { purpose }).pipe(
+        Effect.flip,
+        Effect.map((error) => error.reason),
+      );
+    assert.strictEqual(yield* reason(""), "invalid");
+    assert.strictEqual(yield* reason("x".repeat(301)), "invalid");
+    yield* proposeWatcher(botThread.id, "w", { purpose: "x".repeat(300) });
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("shows a watcher's mode and purpose in the list", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* installWatcher(botThread.id, "inbox", { mode: "events", purpose: "New assignments" });
+    yield* installWatcher(botThread.id, "plain");
+    const [inbox, plain] = (yield* watchers.list(botThread.id)).watchers;
+    assert.deepStrictEqual([inbox?.mode, inbox?.purpose], ["events", "New assignments"]);
+    assert.deepStrictEqual([plain?.mode, plain?.purpose], [undefined, undefined]);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("gives a script run for a linked environment a state folder only when asked", () => {
+  const orchestration = makeOrchestration();
+  const runner = makeScriptedRunner();
+  const source = "#!/bin/sh\necho hi\n";
+  const stateKey = sha256Hex("folder/name");
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const seen: Array<string> = [];
+    runner.state.onRun = (input) =>
+      Effect.gen(function* () {
+        const dir = input.env!.T3_WATCHER_STATE_DIR!;
+        seen.push(dir);
+        yield* fileSystem.writeFileString(`${dir}/mark`, "x");
+      }).pipe(Effect.orDie);
+    const run = (overrides: Partial<Parameters<typeof watchers.runForPeer>[0]>) =>
+      watchers.runForPeer({
+        source,
+        hash: sha256Hex(source),
+        runtime: "sh",
+        timeoutMs: 5_000,
+        dryRun: false,
+        ...overrides,
+      });
+    yield* run({ stateKey });
+    yield* run({ stateKey });
+    yield* run({});
+    assert.strictEqual(seen[0], seen[1]);
+    assert.include(seen[0]!, stateKey);
+    // Without a key the folder is a throwaway one.
+    assert.notStrictEqual(seen[2], seen[0]);
+  }).pipe(provideWatchers(orchestration, runner.layer));
 });
