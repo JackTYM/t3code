@@ -183,8 +183,9 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
     Effect.gen(function* () {
       const { threadId } = yield* callerBot;
       const watchers = yield* WatcherService.WatcherService;
-      // The source is the Bot's own text, so it may re-read it to revise; the verdicts say why a
-      // version was refused. The diff, dry run and history stay in the client.
+      // The source is the Bot's own text, so it may re-read it to revise; the verdicts say which
+      // version was turned down, not why: the reason reaches it framed, in the wake. The diff, dry
+      // run and history stay in the client.
       return {
         watchers: (yield* watchers.list(threadId)).watchers.map(
           ({

@@ -229,7 +229,7 @@ const WatcherRemove = Tool.make("t3_bot_watcher_remove", {
 const WatcherList = Tool.make("t3_bot_watcher_list", {
   ...shared,
   description:
-    "List your watchers and where each stands, with the source of the version shown so you can re-read what you wrote, and the reviewer's verdicts with their reasons. `needs_approval` means no version of the watcher is approved yet, so nothing runs: the reviewer has not finished with the first one. A revision you proposed to an approved watcher shows as `pendingHash` while the approved version keeps running.",
+    "List your watchers and where each stands, with the source of the version shown so you can re-read what you wrote, and the reviewer's verdicts, without their reasons: you are told why a version was turned down in the wake that says so. `needs_approval` means no version of the watcher is approved yet, so nothing runs: the reviewer has not finished with the first one. A revision you proposed to an approved watcher shows as `pendingHash` while the approved version keeps running.",
   success: Schema.Struct({
     watchers: Schema.Array(
       Schema.Struct({
