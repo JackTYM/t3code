@@ -19,6 +19,7 @@ import {
   ScheduledTaskId,
   type BotMailStatus,
   type ThreadId,
+  isHomeThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -446,7 +447,8 @@ const make = Effect.gen(function* () {
 
   const ingestDelivery: BotMailService["Service"]["ingestDelivery"] = Effect.fn(
     "BotMailService.ingestDelivery",
-  )(function* ({ botThreadId, bodyText }) {
+  )(function* ({ botThreadId: boundThreadId, bodyText }) {
+    const botThreadId = yield* deliveryTarget(boundThreadId);
     const message = yield* decodeMessageJson(bodyText).pipe(
       Effect.mapError(() => invalid(botThreadId, "The delivery is not a mail message.")),
     );
@@ -590,12 +592,27 @@ const make = Effect.gen(function* () {
   type MailHook = ScheduledTask & {
     readonly schedule: Extract<ScheduledTask["schedule"], { readonly type: "webhook" }>;
   };
+  // Home is one Bot across Start fresh and turning it off and on, each of which gives it a new
+  // thread id. Its hook, which hands out a URL and a secret the user has already put in a mail
+  // Worker, must outlive those: any hook bound to a Home thread is Home's.
   const isMailHook =
     (botThreadId: ThreadId) =>
     (task: ScheduledTask): task is MailHook =>
-      task.threadId === botThreadId &&
+      task.threadId !== null &&
+      (task.threadId === botThreadId ||
+        (isHomeThreadId(botThreadId) && isHomeThreadId(task.threadId))) &&
       task.schedule.type === "webhook" &&
       task.schedule.sink === "bot-mail";
+
+  /** The Bot a delivery bound to `threadId` is for: the current Home when it is a former one. */
+  const deliveryTarget = Effect.fn("BotMailService.deliveryTarget")(function* (threadId: ThreadId) {
+    if (!isHomeThreadId(threadId)) return threadId;
+    const home = yield* settings.getSettings.pipe(
+      Effect.map((current) => current.home),
+      Effect.orElseSucceed(() => null),
+    );
+    return home?.enabled === true && home.threadId !== null ? home.threadId : threadId;
+  });
 
   /** The Bot's mail hook, oldest first if the user made more than one by hand. */
   const findHook = (botThreadId: ThreadId) =>

@@ -5,10 +5,12 @@ import {
   type BotMailMessage,
   BotMailMessage as BotMailMessageSchema,
   type BotMailBackfillPage,
+  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   OrchestratorMcpFailure,
   type ScheduledTask,
   type ScheduledTaskUpsertInput,
+  type ServerSettingsError,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -172,12 +174,16 @@ const layerMail = (
   orchestration: ReturnType<typeof makeOrchestration>,
   laptopLayer: Layer.Layer<PeerMcpClient.PeerMcpClient>,
   tasksLayer: Layer.Layer<ScheduledTaskService.ScheduledTaskService>,
+  settingsLayer: Layer.Layer<
+    ServerSettings.ServerSettingsService,
+    ServerSettingsError
+  > = ServerSettings.ServerSettingsService.layerTest(),
 ) =>
   BotMailService.layer.pipe(
     Layer.provideMerge(Layer.mergeAll(laptopLayer, layerScheduler, tasksLayer)),
     Layer.provideMerge(BotService.layer),
     Layer.provideMerge(orchestration.layer),
-    Layer.provideMerge(ServerSettings.ServerSettingsService.layerTest()),
+    Layer.provideMerge(settingsLayer),
     Layer.provideMerge(Layer.fresh(SqlitePersistence.layerMemory)),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-bot-mail-test-" })),
     Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer)),
@@ -187,7 +193,8 @@ const provideMail = (
   orchestration: ReturnType<typeof makeOrchestration>,
   laptopLayer: Layer.Layer<PeerMcpClient.PeerMcpClient> = makeFakeLaptop().layer,
   tasksLayer: Layer.Layer<ScheduledTaskService.ScheduledTaskService> = makeFakeTasks().layer,
-) => Effect.provide(layerMail(orchestration, laptopLayer, tasksLayer));
+  settingsLayer?: Layer.Layer<ServerSettings.ServerSettingsService, ServerSettingsError>,
+) => Effect.provide(layerMail(orchestration, laptopLayer, tasksLayer, settingsLayer));
 
 /** A Bot that keeps mail for `me@gmail.com`. */
 const setupBot = (orchestration: ReturnType<typeof makeOrchestration>, id = "thread:bot") => {
@@ -954,6 +961,53 @@ it.effect("shows when the hook last heard from the Worker and how it ended", () 
     assert.strictEqual(hook?.lastDeliveryAt, "2026-11-25T11:00:00.000Z");
     assert.strictEqual(hook?.lastOutcome, "rejected_signature");
   }).pipe(provideMail(orchestration, makeFakeLaptop().layer, tasks.layer));
+});
+
+it.effect("keeps Home's hook and store through Start fresh, which gives Home a new thread", () => {
+  const orchestration = makeOrchestration();
+  const tasks = makeFakeTasks();
+  const home = { enabled: true, threadId: "home:one" as ThreadId | null, modelSelection: null };
+  const settingsLayer = Layer.mock(ServerSettings.ServerSettingsService)({
+    getSettings: Effect.sync(() => ({ ...DEFAULT_SERVER_SETTINGS, home: { ...home } })),
+  });
+  const one = orchestration.addThread("home:one", { botConfig: bot });
+  const two = orchestration.addThread("home:two", { botConfig: bot });
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const mailService = yield* BotMailService.BotMailService;
+    yield* mailService.setMailboxes({ threadId: one.id, mailboxes: ["me@gmail.com"] });
+    const made = yield* mailService.createHook({ botThreadId: one.id });
+    assert.isTrue(made.created);
+
+    // Start fresh: the hook stays bound to the former thread, and Home is a new one.
+    home.threadId = two.id;
+    const again = yield* mailService.createHook({ botThreadId: two.id });
+    assert.isFalse(again.created);
+    assert.strictEqual(again.taskId, made.taskId);
+    assert.strictEqual(tasks.state.tasks.length, 1);
+    assert.deepStrictEqual((yield* mailService.status({ botThreadId: two.id })).hook, {
+      taskId: made.taskId,
+      enabled: true,
+      signed: true,
+    });
+
+    // A delivery the old binding carries is the current Home's mail, and wakes it.
+    const body = JSON.stringify(mail("after-restart"));
+    assert.strictEqual(
+      yield* mailService.ingestDelivery({ botThreadId: one.id, bodyText: body }),
+      "stored",
+    );
+    yield* mailService.runDigest;
+    assert.strictEqual(orchestration.sent.length, 1);
+    assert.strictEqual(orchestration.sent[0]?.threadId, two.id);
+
+    // With Home off there is nobody to hear it.
+    home.enabled = false;
+    const refused = yield* mailService
+      .ingestDelivery({ botThreadId: one.id, bodyText: JSON.stringify(mail("while-off")) })
+      .pipe(Effect.flip);
+    assert.strictEqual(refused.reason, "not_a_bot");
+  }).pipe(provideMail(orchestration, makeFakeLaptop().layer, tasks.layer, settingsLayer));
 });
 
 it.effect("makes no hook for a thread that is not a Bot", () => {
