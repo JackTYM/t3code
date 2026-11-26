@@ -20,6 +20,7 @@ import * as BotService from "./BotService.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import type * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -107,9 +108,17 @@ export const makeOrchestration = () => {
     beforeLaunch: (
       input: ThreadLaunchService.ThreadLaunchInput,
     ) => Effect.Effect<void, ThreadLaunchService.ThreadLaunchError>;
+    /** Runs once the launch's thread exists, so a test can make a launch fail after it was made. */
+    afterLaunch: (
+      input: ThreadLaunchService.ThreadLaunchInput,
+    ) => Effect.Effect<void, ThreadLaunchService.ThreadLaunchError>;
+    /** Runs before each thread lookup, so a test can make one fail. */
+    beforeLookup: (threadId: ThreadId) => Effect.Effect<void, Orchestrator.OrchestratorV2Error>;
   } = {
     beforeSend: () => Effect.void,
     beforeLaunch: () => Effect.void,
+    afterLaunch: () => Effect.void,
+    beforeLookup: () => Effect.void,
   };
 
   /** Makes `message` the one that began the thread's active run. */
@@ -190,11 +199,15 @@ export const makeOrchestration = () => {
               return { threadId } as ThreadLaunchService.ThreadLaunchResult;
             }),
           ),
+          Effect.tap(() => hooks.afterLaunch(input)),
         ),
       checkWorktreeBase: () => Effect.void,
     }),
     Layer.mock(ThreadManagementService.ThreadManagementService)({
-      getThreadShell: (threadId) => Effect.succeed((threads.get(threadId) ?? null) as never),
+      getThreadShell: (threadId) =>
+        hooks
+          .beforeLookup(threadId)
+          .pipe(Effect.andThen(Effect.succeed((threads.get(threadId) ?? null) as never))),
       getThreadRecords: (threadId, _fields, filter) =>
         Effect.succeed({
           runs: [...runs.values()].filter((run) =>

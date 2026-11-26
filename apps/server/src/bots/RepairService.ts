@@ -232,6 +232,11 @@ const Attempt = Schema.Struct({
   startedAt: Schema.Number,
   branch: Schema.String,
   failed: Schema.optional(Schema.Boolean),
+  /**
+   * The launch ended in an error and nothing could say whether its thread was made. The claim
+   * stays so a thread that exists is a recorded crew; a later check settles it.
+   */
+  uncertain: Schema.optional(Schema.Boolean),
 });
 
 /**
@@ -666,7 +671,7 @@ export class RepairService extends Context.Service<
     }) => Effect.Effect<void>;
     /** Signals a failed run of a Bot, one per run, and counts a failed repair crew. */
     readonly handleMilestone: (event: MilestoneEvent) => Effect.Effect<void>;
-    /** Sends the wakes that were saved but never queued when the server last stopped. */
+    /** Settles launches that could not say whether their thread was made, and sends the wakes saved but never queued when the server last stopped. */
     readonly start: () => Effect.Effect<void>;
   }
 >()("t3/bots/RepairService") {}
@@ -1143,6 +1148,62 @@ const make = Effect.gen(function* () {
     yield* saveRepairs(rest);
   });
 
+  /** The thread's shell, null when it does not exist, and nothing when the lookup could not say. */
+  const lookupThread = (threadId: ThreadId) =>
+    threads.getThreadShell(threadId).pipe(
+      Effect.asSome,
+      Effect.orElseSucceed(() => Option.none()),
+    );
+
+  /** Sets whether an attempt's launch is uncertain. Under the lock. */
+  const setUncertain = Effect.fn("RepairService.setUncertain")(function* (
+    signalId: string,
+    threadId: ThreadId,
+    uncertain: boolean,
+  ) {
+    const repairs = (yield* Ref.get(state)).repairs;
+    const repair = Object.hasOwn(repairs, signalId) ? repairs[signalId] : undefined;
+    if (repair === undefined) return;
+    const attempts = repair.attempts.map(({ uncertain: _was, ...attempt }) =>
+      attempt.threadId === threadId ? { ...attempt, ...(uncertain ? { uncertain } : {}) } : attempt,
+    );
+    yield* saveRepairs({ ...repairs, [signalId]: { ...repair, attempts } });
+  });
+
+  /**
+   * A launch ended in an error, which does not say its thread was never made: it can fail after
+   * the thread and its first message are committed. The claim is taken back only when the thread
+   * provably does not exist. A thread that exists stays recorded, and one that could not be looked
+   * up stays recorded as uncertain until `reconcileUncertain` can tell. Under the lock.
+   */
+  const settleFailedLaunch = Effect.fn("RepairService.settleFailedLaunch")(function* (
+    signalId: string,
+    threadId: ThreadId,
+  ) {
+    const found = yield* lookupThread(threadId);
+    if (Option.isNone(found)) return yield* setUncertain(signalId, threadId, true);
+    if (found.value === null) return yield* unclaim(signalId, threadId);
+  });
+
+  /**
+   * Settles an uncertain attempt once the thread can be looked up: a thread that is there is a
+   * recorded crew, and one that is not was never made, so the claim is released and does not count
+   * as a failed attempt. Under the lock.
+   */
+  const reconcileUncertain = Effect.fn("RepairService.reconcileUncertain")(function* (
+    signalId: string,
+    threadId: ThreadId,
+  ) {
+    const found = yield* lookupThread(threadId);
+    if (Option.isNone(found)) return "unknown" as const;
+    if (found.value === null) {
+      yield* unclaim(signalId, threadId);
+      return "released" as const;
+    }
+    yield* setUncertain(signalId, threadId, false);
+    return "present" as const;
+  });
+
   const startRepair: RepairService["Service"]["startRepair"] = Effect.fn(
     "RepairService.startRepair",
   )(function* ({ botThreadId, signalId }) {
@@ -1166,6 +1227,11 @@ const make = Effect.gen(function* () {
           if (attempt.failed === true) continue;
           // Claimed and still being launched: its thread is not there yet, and it is not lost.
           if (launching.has(attempt.threadId)) return yield* fail("already_started");
+          if (attempt.uncertain === true) {
+            const settled = yield* reconcileUncertain(signalId, attempt.threadId);
+            if (settled === "released") continue;
+            if (settled === "unknown") return yield* fail("already_started");
+          }
           const shell = yield* threads
             .getThreadShell(attempt.threadId)
             .pipe(Effect.orElseSucceed(() => undefined));
@@ -1285,9 +1351,8 @@ const make = Effect.gen(function* () {
     return yield* launches.launch(input).pipe(
       Effect.as({ threadId, branch, attempt }),
       Effect.catch((cause) =>
-        // Not started, so it costs the Bot nothing and the next try is the same crew thread. Only
-        // this claim is taken back: other repairs may have been recorded while it was launching.
-        locked(unclaim(signalId, threadId)).pipe(Effect.andThen(bad(cause))),
+        // Only this claim is looked at: other repairs may have been recorded while it launched.
+        locked(settleFailedLaunch(signalId, threadId)).pipe(Effect.andThen(bad(cause))),
       ),
       Effect.ensuring(Effect.sync(() => launching.delete(threadId))),
     );
@@ -1328,6 +1393,19 @@ const make = Effect.gen(function* () {
   );
 
   const start: RepairService["Service"]["start"] = Effect.fn("RepairService.start")(function* () {
+    const uncertain = Object.entries((yield* Ref.get(state)).repairs).flatMap(
+      ([signalId, repair]) =>
+        repair.attempts
+          .filter((attempt) => attempt.uncertain === true)
+          .map((attempt) => [signalId, attempt.threadId] as const),
+    );
+    yield* Effect.forEach(
+      uncertain,
+      ([signalId, threadId]) => reconcileUncertain(signalId, threadId),
+      {
+        discard: true,
+      },
+    );
     const current = yield* Ref.get(state);
     yield* Effect.forEach(
       Object.entries(current.episodes),

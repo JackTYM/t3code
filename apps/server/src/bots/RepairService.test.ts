@@ -1,7 +1,14 @@
 import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { type MilestoneEvent, MilestoneId, ProjectId, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  type CommandId,
+  type MilestoneEvent,
+  MilestoneId,
+  ProjectId,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -19,6 +26,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as BotService from "./BotService.ts";
 import * as BotWakeReactor from "./BotWakeReactor.ts";
 import { makeOrchestration, model } from "./BotTestkit.ts";
+import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
 import { ThreadLaunchError } from "../orchestration-v2/ThreadLaunchService.ts";
 import * as RepairService from "./RepairService.ts";
 
@@ -1640,6 +1648,133 @@ it.effect("a launch that fails costs nothing, and the retry is the same crew thr
     assert.strictEqual(orchestration.launched.length, 1);
   }).pipe(provideRepair(orchestration));
 });
+
+const launchFailure = (input: { readonly commandId: CommandId; readonly projectId: ProjectId }) =>
+  new ThreadLaunchError({
+    operation: "dispatch-message",
+    commandId: input.commandId,
+    projectId: input.projectId,
+    cause: "failed",
+  });
+
+/** Makes every lookup of `threadId` fail, as a store that cannot be read does. */
+const failLookupsOf = (orchestration: Fixture["orchestration"], threadId: ThreadId) => {
+  orchestration.hooks.beforeLookup = (id) =>
+    id === threadId ? Effect.fail(new OrchestratorProjectionError({ threadId })) : Effect.void;
+};
+
+/** What the state file says of a repair's first attempt. */
+const firstAttemptOnDisk = (restarts: Restarts, signalId: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.readFileString(restarts.stateFile)),
+    Effect.map(
+      (text) =>
+        JSON.parse(JSON.parse(text).data).repairs[signalId].attempts[0] as { uncertain?: true },
+    ),
+    Effect.orDie,
+  );
+
+// A launch can fail after its thread and first message are committed (the worktree is prepared
+// after), so "the launch failed" does not say there is no crew. A crew that runs unrecorded would
+// have the user's reach and no guard on its merges.
+it.effect("a launch that fails after its thread was made keeps the crew recorded", () => {
+  const fixture = repairFixture();
+  const { orchestration, botThread } = fixture;
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    const repair = yield* RepairService.RepairService;
+    const signalId = yield* wakeBot(fixture);
+    orchestration.hooks.afterLaunch = (input) => Effect.fail(launchFailure(input));
+    assert.strictEqual((yield* refusal(botThread, signalId)).reason, "launch_failed");
+
+    const crew = ThreadId.make(`repair-crew:${signalId}:1`);
+    assert.strictEqual((yield* repair.crewOf(crew))?.signalId, signalId);
+    assert.strictEqual((yield* repair.repairOfBranch(`repair/${signalId}`))?.crewThreadId, crew);
+    // And the crew that exists is not launched a second time over.
+    orchestration.hooks.afterLaunch = () => Effect.void;
+    assert.strictEqual((yield* refusal(botThread, signalId)).reason, "already_started");
+    assert.lengthOf(orchestration.launched, 1);
+  }).pipe(provideRepair(orchestration));
+});
+
+it.effect.each([
+  { name: "is there", made: true },
+  { name: "is not there", made: false },
+] as const)(
+  "a launch that fails with its thread unreadable stays recorded, and the next start settles it when the thread $name",
+  ({ made }) => {
+    const fixture = repairFixture();
+    const { orchestration, botThread } = fixture;
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(START);
+      const restarts = yield* makeRestarts(orchestration);
+      const first = yield* restarts.boot;
+      const signalId = yield* Effect.gen(function* () {
+        const repair = yield* RepairService.RepairService;
+        const signalId = yield* wakeBot(fixture);
+        const crew = ThreadId.make(`repair-crew:${signalId}:1`);
+        failLookupsOf(orchestration, crew);
+        orchestration.hooks[made ? "afterLaunch" : "beforeLaunch"] = (input) =>
+          Effect.fail(launchFailure(input));
+        assert.strictEqual((yield* refusal(botThread, signalId)).reason, "launch_failed");
+
+        // Neither made nor not made is known, so it is neither forgotten nor trusted to be there.
+        assert.strictEqual((yield* repair.crewOf(crew))?.signalId, signalId);
+        assert.isTrue((yield* firstAttemptOnDisk(restarts, signalId)).uncertain);
+        assert.strictEqual((yield* refusal(botThread, signalId)).reason, "already_started");
+        return signalId;
+      }).pipe(first);
+
+      orchestration.hooks.beforeLookup = () => Effect.void;
+      orchestration.hooks.beforeLaunch = () => Effect.void;
+      orchestration.hooks.afterLaunch = () => Effect.void;
+      const second = yield* restarts.boot;
+      yield* Effect.gen(function* () {
+        const repair = yield* RepairService.RepairService;
+        const crew = ThreadId.make(`repair-crew:${signalId}:1`);
+        yield* repair.start();
+        if (made) {
+          assert.strictEqual((yield* repair.crewOf(crew))?.signalId, signalId);
+          assert.isUndefined((yield* firstAttemptOnDisk(restarts, signalId)).uncertain);
+          assert.strictEqual((yield* refusal(botThread, signalId)).reason, "already_started");
+        } else {
+          assert.isUndefined(yield* repair.crewOf(crew));
+          // Released, not failed: the same crew thread is launched at the next try.
+          assert.strictEqual((yield* start(botThread, signalId)).threadId, crew);
+          assert.strictEqual(gaveUpWakes(orchestration).length, 0);
+        }
+      }).pipe(second);
+    }).pipe(Effect.provide(NodeServices.layer));
+  },
+);
+
+it.effect(
+  "an unreadable launch whose thread is not there is released, not counted as a failure",
+  () => {
+    const fixture = repairFixture();
+    const { orchestration, botThread } = fixture;
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(START);
+      const signalId = yield* wakeBot(fixture);
+      const crew = ThreadId.make(`repair-crew:${signalId}:1`);
+      failLookupsOf(orchestration, crew);
+      orchestration.hooks.beforeLaunch = (input) => Effect.fail(launchFailure(input));
+      assert.strictEqual((yield* refusal(botThread, signalId)).reason, "launch_failed");
+
+      // The store reads again and the thread is not there. Each try is released and launched anew:
+      // were one a failed attempt, the next would be attempt 2, and two would give the repair up.
+      orchestration.hooks.beforeLookup = () => Effect.void;
+      for (let tries = 0; tries < 3; tries += 1) {
+        assert.strictEqual((yield* refusal(botThread, signalId)).reason, "launch_failed");
+      }
+      orchestration.hooks.beforeLaunch = () => Effect.void;
+      const started = yield* start(botThread, signalId);
+      assert.strictEqual(started.attempt, 1);
+      assert.strictEqual(started.threadId, crew);
+      assert.strictEqual(gaveUpWakes(orchestration).length, 0);
+    }).pipe(provideRepair(orchestration));
+  },
+);
 
 /** Holds every launch until `release` is succeeded, and says when one has begun. */
 const gateLaunches = (orchestration: ReturnType<typeof makeOrchestration>) =>

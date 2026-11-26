@@ -160,13 +160,19 @@ thread in a worktree, grouped under the Bot, no higher in runtime mode than the 
   match the health pattern, so the turns they start cannot start another repair.
 - **The crew starts from the remote's default branch**, whatever the project's checkout is on,
   since its fix merges into that branch.
-- **Crew thread ids are written before the launch** and rolled back if it is refused, so a retry
-  replays the same launch. `crewOf(threadId)` says which repair a recorded crew, or a subagent of
-  one by lineage root, belongs to and the branch it was told to push; it knows nothing of a thread
-  a crew launched, which the hold recognises by what sent its first message. The claim is made under the service lock and the launch
-  runs outside it, since a launch can be slow and every signal and merge result waits on the lock;
-  a claim whose thread does not exist yet is "launching", not lost, and a refused launch takes back
-  only its own claim.
+- **Crew thread ids are written before the launch**, so a crash after it cannot leave a crew
+  nobody recognises. A launch that errors does not say its thread was never made: it can fail after
+  the thread and its first message are committed. So the claim is taken back only when the
+  deterministic thread id (`repair-crew:<signalId>:<n>`) provably does not exist, by looking it up in
+  the thread service. A thread that is there stays recorded. If the lookup cannot say, the attempt
+  stays and is marked `uncertain`, and the next server start or the next repair start for that
+  signal looks again: a thread that is there is a recorded crew, and one that is not was never made,
+  so the claim is released without counting as a failed attempt and the retry launches the same
+  thread id. `crewOf(threadId)` says which repair a recorded crew, or a subagent of one by lineage
+  root, belongs to and the branch it was told to push; it knows nothing of a thread a crew
+  launched, which the hold recognises by what sent its first message. The claim is made under the
+  service lock and the launch runs outside it, since a launch can be slow and every signal and merge
+  result waits on the lock; a claim whose thread does not exist yet is "launching", not lost.
 
 ### Merge guard
 
