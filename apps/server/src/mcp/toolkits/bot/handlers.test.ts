@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import {
   type BotSecretGrantListResult,
   type BotWatcher,
+  BotWatcherError,
   EnvironmentId,
   ProviderInstanceId,
   type OrchestrationV2ThreadShell,
@@ -71,9 +72,22 @@ const listings: {
   grants: BotSecretGrantListResult["grants"];
 } = { watchers: [], grants: [] };
 
+/** What the fake watchers were asked to do, so a test can see what the tools handed them. */
+const watcherCalls: Array<{ readonly method: string; readonly input: unknown }> = [];
+/** What the fake watchers answer a tool call with, or why they refuse it. */
+const toolAnswer: { error: BotWatcherError | undefined } = { error: undefined };
+
 const run = (
   fixture: Fixture,
-  tool: "t3_bot_mail_read" | "t3_bot_mail_search" | "t3_bot_repair_start" | "t3_bot_watcher_list",
+  tool:
+    | "t3_bot_mail_read"
+    | "t3_bot_mail_search"
+    | "t3_bot_repair_start"
+    | "t3_bot_watcher_list"
+    | "t3_bot_watcher_remove"
+    | "t3_bot_tool_propose"
+    | "t3_bot_tool_run"
+    | "t3_bot_tool_remove",
   input: object,
 ) =>
   Effect.gen(function* () {
@@ -111,6 +125,26 @@ const run = (
       }),
       Layer.mock(WatcherService.WatcherService)({
         list: () => Effect.succeed({ watchers: listings.watchers, approvals: "ok" as const }),
+        propose: (input) =>
+          Effect.sync(() => {
+            watcherCalls.push({ method: "propose", input });
+            return { hash: "abc", pending: true };
+          }),
+        remove: (input) =>
+          Effect.sync(() => {
+            watcherCalls.push({ method: "remove", input });
+          }),
+        runTool: (input) =>
+          Effect.suspend(() => {
+            watcherCalls.push({ method: "runTool", input });
+            return toolAnswer.error === undefined
+              ? Effect.succeed({
+                  exit: "0",
+                  output: "<tool-data-x>hi</tool-data-x>",
+                  outputCut: false,
+                })
+              : Effect.fail(toolAnswer.error);
+          }),
       }),
       Layer.mock(BotSecretGrantService.BotSecretGrantService)({
         list: () => Effect.succeed({ grants: listings.grants, approvals: "ok" as const }),
@@ -172,11 +206,18 @@ const run = (
         .handle(tool, input as never)
         .pipe(Stream.unwrap, Stream.runCollect);
       return results.at(-1)?.result as { readonly code?: string; readonly message?: string } & {
+        readonly exit?: string;
+        readonly output?: string;
+        readonly outputCut?: boolean;
+        readonly hash?: string;
+        readonly removed?: boolean;
         readonly results?: ReadonlyArray<{ readonly message: string }>;
         readonly threadId?: string;
         readonly branch?: string;
         readonly watchers?: ReadonlyArray<{
           readonly name: string;
+          readonly kind?: string;
+          readonly usage?: string;
           readonly secrets?: ReadonlyArray<{ readonly name: string; readonly granted: boolean }>;
           readonly hosts?: ReadonlyArray<string>;
         }>;
@@ -469,4 +510,126 @@ it.effect(
       listings.watchers = [];
       listings.grants = [];
     }),
+);
+
+const asBot: Fixture = { caller: BOT, shells: { [BOT]: mode("full-access") } };
+
+it.effect("lists a tool with its kind and how to call it, and a watcher as a watch", () =>
+  Effect.gen(function* () {
+    const base = {
+      status: "healthy",
+      hash: "h",
+      runsOn: "local",
+      paused: false,
+      history: [],
+      reviews: [],
+    } as const;
+    listings.watchers = [
+      { ...base, name: "disk" },
+      { ...base, name: "pr", kind: "tool", usage: "pr NUMBER prints its title" },
+    ] satisfies ReadonlyArray<BotWatcher>;
+    const result = yield* run(asBot, "t3_bot_watcher_list", {});
+    listings.watchers = [];
+    expect(result.watchers?.map(({ name, kind, usage }) => [name, kind, usage])).toEqual([
+      ["disk", "watch", undefined],
+      ["pr", "tool", "pr NUMBER prints its title"],
+    ]);
+  }),
+);
+
+it.effect(
+  "hands a tool call's name and arguments to the watcher service, and its answer back",
+  () =>
+    Effect.gen(function* () {
+      watcherCalls.length = 0;
+      const result = yield* run(asBot, "t3_bot_tool_run", { name: "pr", args: ["42", "a b"] });
+      expect(watcherCalls).toEqual([
+        { method: "runTool", input: { botThreadId: BOT, name: "pr", args: ["42", "a b"] } },
+      ]);
+      expect(result).toEqual({
+        exit: "0",
+        output: "<tool-data-x>hi</tool-data-x>",
+        outputCut: false,
+      });
+    }),
+);
+
+it.effect("tells the Bot why a tool call was refused, as a refusal and not as output", () =>
+  Effect.gen(function* () {
+    toolAnswer.error = new BotWatcherError({
+      threadId: BOT,
+      watcher: "pr",
+      reason: "invalid",
+      detail: "Tool pr is paused by the user.",
+    });
+    const result = yield* run(asBot, "t3_bot_tool_run", { name: "pr", args: [] });
+    toolAnswer.error = undefined;
+    expect(result.code).toBe("invalid_request");
+    expect(result.message).toBe("Tool pr is paused by the user.");
+    expect(result.output).toBeUndefined();
+  }),
+);
+
+// The server decodes a call's parameters before any handler runs, so these never get that far.
+it.each([
+  { name: "nine arguments", args: Array.from({ length: 9 }, () => "x") },
+  { name: "a 201 character argument", args: ["x".repeat(201)] },
+  { name: "a NUL", args: ["a\u0000b"] },
+])("refuses $name before a handler runs", ({ args }) => {
+  const decode = Schema.decodeUnknownExit(BotToolkit.tools.t3_bot_tool_run.parametersSchema);
+  expect(decode({ name: "pr", args })._tag).toBe("Failure");
+  expect(decode({ name: "pr", args: Array.from({ length: 8 }, () => "y".repeat(200)) })._tag).toBe(
+    "Success",
+  );
+});
+
+it.effect("a child or another thread cannot call, propose or remove a tool", () =>
+  Effect.gen(function* () {
+    watcherCalls.length = 0;
+    const stranger: Fixture = { caller: STRANGER, shells: { [STRANGER]: mode("full-access") } };
+    for (const [tool, input] of [
+      ["t3_bot_tool_run", { name: "pr", args: [] }],
+      ["t3_bot_tool_remove", { name: "pr" }],
+      [
+        "t3_bot_tool_propose",
+        { name: "pr", runtime: "sh", source: "echo 1", purpose: "p", usage: "u" },
+      ],
+    ] as const) {
+      const result = yield* run(stranger, tool, input);
+      expect(result.code).toBe("capability_denied");
+    }
+    expect(watcherCalls).toEqual([]);
+  }),
+);
+
+it.effect("proposes and removes as a tool, and removes a watcher as a watcher", () =>
+  Effect.gen(function* () {
+    watcherCalls.length = 0;
+    const proposed = yield* run(asBot, "t3_bot_tool_propose", {
+      name: "pr",
+      runtime: "sh",
+      source: "echo 1",
+      purpose: "Look a PR up.",
+      usage: "pr NUMBER",
+    });
+    yield* run(asBot, "t3_bot_tool_remove", { name: "pr" });
+    yield* run(asBot, "t3_bot_watcher_remove", { name: "disk" });
+    expect(proposed.hash).toBe("abc");
+    expect(watcherCalls).toEqual([
+      {
+        method: "propose",
+        input: {
+          botThreadId: BOT,
+          kind: "tool",
+          name: "pr",
+          runtime: "sh",
+          source: "echo 1",
+          purpose: "Look a PR up.",
+          usage: "pr NUMBER",
+        },
+      },
+      { method: "remove", input: { botThreadId: BOT, name: "pr", kind: "tool" } },
+      { method: "remove", input: { botThreadId: BOT, name: "disk", kind: "watch" } },
+    ]);
+  }),
 );

@@ -424,7 +424,8 @@ no signal at all.
   the user's reach and an easy id, so it must not be able to open a free turn by writing to the
   Bot), began with a mail
   reader's report (the run's first message is the completion delivery of a task whose child is a
-  `mailReader`), or has since searched mail or started a reader. Starting a reader taints the run that did
+  `mailReader`), or has since searched mail, called a tool (`t3_bot_tool_run`, whose output is
+  outside text too) or started a reader. Starting a reader taints the run that did
   it, so a Bot cannot read the child's thread or poll its task from a turn the user typed. In an
   influenced turn the middleware in `McpHttpServer` (`layerBotMailHold`, global, so it sees every
   toolkit's calls) answers any Bot call that is not read-only, not the Bot's own `t3_bot_*` memory
@@ -583,6 +584,17 @@ with the `Scheduler`.
   answer is `waiting`, not failing: nothing is counted, `failing` and its backoff stay as they
   were, and it is asked again after a minute (the link itself is kept alive by
   `PeerLinkKeepalive`). A peer that answers with a refusal is a failure like any other.
+
+A **tool** is a watcher the Bot calls instead of one a timer runs (`kind: "tool"` in `watcher.json`
+and the approvals record). It has the same versions, reviewer, dry run, state folder, secrets and
+redaction, and shares the watchers' namespace, so a name cannot be both. What differs is a trap:
+the scheduler skips tools by the record's kind and again by the version's, a tool runs only on
+this machine, and `t3_bot_tool_run` runs the approved hash only, with arguments as argv. A call is
+free in any turn but taints it, and returns its output framed as untrusted data, never as a wake.
+Failing calls are not a watcher failure; three in a row within an hour signal under the tool's own
+name with kind `watcher`, since the validated name has no room for a prefix and the repair crew
+looks for the folder by it. The call limits (six a minute per Bot, twelve tools) and the failure
+streaks are in memory.
 
 A health wake is deduplicated per failure: a trip, or new output, wakes at once, and the same
 output wakes again after a delay that doubles up to a ceiling. Recovery clears the state silently.

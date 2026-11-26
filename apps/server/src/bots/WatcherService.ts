@@ -1,6 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import {
   BOT_SECRET_GRANT_MAX_HOSTS,
+  BOT_TOOL_OUTPUT_MAX_BYTES,
+  BOT_TOOL_TIMEOUT_MS,
+  BOT_TOOL_USAGE_MAX_CHARS,
   BOT_WATCHER_EXPECT_MAX_CHARS,
   BOT_WATCHER_MAX_SECRETS,
   BOT_WATCHER_MIN_INTERVAL_SECONDS,
@@ -8,9 +11,11 @@ import {
   BOT_WATCHER_SOURCE_MAX_BYTES,
   BotSecretGrantHost,
   BotSecretGrantName,
+  type BotToolRunResult,
   type BotWatcher,
   BotWatcherError,
   BotWatcherHistoryEntry,
+  type BotWatcherKind,
   BotWatcherMode,
   BotWatcherName,
   BotWatcherPeerRunError,
@@ -61,6 +66,17 @@ import * as BotSecretGrantService from "./BotSecretGrantService.ts";
 import * as BotService from "./BotService.ts";
 import { redactionSlack, redactSecrets } from "./redactSecrets.ts";
 import * as RepairService from "./RepairService.ts";
+import {
+  framedToolOutput,
+  makeToolCallLimiter,
+  makeToolFailureStreaks,
+  MAX_TOOLS_PER_BOT,
+  refuseToolArgs,
+  TOOL_CALL_LIMIT_MESSAGE,
+  TOOL_CUT_LINE,
+  TOOL_FAILURES_TO_SIGNAL,
+  TOOL_STDERR_MAX_CHARS,
+} from "./ToolRuns.ts";
 
 // A version lives in `<bot folder>/watchers/<name>/<sha256>/` (`run` and `watcher.json`). What is
 // approved is kept in `<stateDir>/watcher-approvals.json`, written only by this service: a Bot
@@ -123,8 +139,10 @@ const RESERVED_ENV = new Set([
   "TMPDIR",
   "T3_WATCHER_STATE_DIR",
   "T3_WATCHER_DRY_RUN",
+  "T3_TOOL",
 ]);
 const SECRETS_STAY_HERE = "A watcher that uses secrets runs only on this machine.";
+const TOOLS_STAY_HERE = "A tool runs only on this machine.";
 // What each runtime executes, and what the copy of the source is called so the interpreter
 // treats it right (a `.js` file may use either module syntax on current Node).
 const RUNTIMES = {
@@ -163,6 +181,15 @@ const VersionConfig = Schema.Struct({
   hosts: Schema.optional(
     Schema.Array(BotSecretGrantHost).check(Schema.isMaxLength(BOT_SECRET_GRANT_MAX_HOSTS)),
   ),
+  /**
+   * Written only for a tool, so a watcher's version keeps its hash. A tool has no interval: its
+   * `everyMs` stays at the minimum so one schema decodes both, and nothing reads it.
+   */
+  kind: Schema.optional(Schema.Literal("tool")),
+  /** A tool only: how the Bot says to call it. */
+  usage: Schema.optional(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(BOT_TOOL_USAGE_MAX_CHARS)),
+  ),
 });
 const decodeConfig = Schema.decodeUnknownEffect(VersionConfig);
 const decodeJsonObject = Schema.decodeEffect(
@@ -174,6 +201,8 @@ const WatcherRecord = Schema.Struct({
   /** The newest proposal, waiting for the reviewer. The approved version, if any, keeps running. */
   pendingHash: Schema.optional(Sha256Hex),
   runsOn: BotWatcherRunsOn,
+  /** Set for a tool, which the scheduler never runs. The version's own `kind` is what its hash covers. */
+  kind: Schema.optional(Schema.Literal("tool")),
   /** The user stopped its runs. Kept across new versions: a new approved version does not resume it. */
   paused: Schema.optional(Schema.Boolean),
   history: Schema.Array(BotWatcherHistoryEntry),
@@ -321,9 +350,13 @@ const hideThenCut = (
           .subarray(0, Math.max(0, Buffer.byteLength(hidden) - slack))
           .toString()
       : hidden;
-  return "bytes" in max
-    ? Buffer.from(kept).subarray(0, max.bytes).toString()
-    : kept.slice(0, max.chars);
+  if (!("bytes" in max)) return kept.slice(0, max.chars);
+  const bytes = Buffer.from(kept);
+  if (bytes.length <= max.bytes) return kept;
+  // A cut that lands inside a character drops the whole character, not half of it.
+  let end = max.bytes;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+  return bytes.subarray(0, end).toString();
 };
 
 /**
@@ -510,23 +543,41 @@ export class WatcherService extends Context.Service<
     readonly propose: (input: {
       readonly botThreadId: ThreadId;
       readonly name: string;
+      /** Absent means `watch`. A tool takes no interval, `expect`, `mode` or `runsOn`. */
+      readonly kind?: BotWatcherKind | undefined;
       readonly runtime: BotWatcherRuntime;
       readonly source: string;
-      readonly intervalSeconds: number;
+      readonly intervalSeconds?: number | undefined;
       readonly expect?: string | undefined;
       readonly runsOn?: BotWatcherRunsOn | undefined;
       readonly mode?: BotWatcherMode | undefined;
       readonly purpose?: string | undefined;
+      /** A tool only, and required for one: how the Bot says to call it. */
+      readonly usage?: string | undefined;
       /** Granted secrets the script receives as environment variables of these names; local runs only. */
       readonly secrets?: ReadonlyArray<string> | undefined;
       /** The hosts those secrets may be sent to. */
       readonly hosts?: ReadonlyArray<string> | undefined;
     }) => Effect.Effect<{ readonly hash: string; readonly pending: boolean }, BotWatcherError>;
-    /** Deletes a watcher and every version of it. Refused to a turn the user did not start. */
+    /**
+     * Deletes a watcher or tool and every version of it. Refused to a turn the user did not start.
+     * `kind` is what the caller means to remove: naming the other kind is refused.
+     */
     readonly remove: (input: {
       readonly botThreadId: ThreadId;
       readonly name: string;
+      readonly kind?: BotWatcherKind | undefined;
     }) => Effect.Effect<void, BotWatcherError>;
+    /**
+     * Calls a tool: runs its approved version once with these arguments, as argv, and returns what
+     * it printed as data. Free to any turn, since it only runs bytes a reviewer approved; the Bot's
+     * calls are limited, and a failing call is the Bot's to hear of, not a watcher failure.
+     */
+    readonly runTool: (input: {
+      readonly botThreadId: ThreadId;
+      readonly name: string;
+      readonly args: ReadonlyArray<string>;
+    }) => Effect.Effect<BotToolRunResult, BotWatcherError>;
     /**
      * The user's removal: the same deletion without `remove`'s Bot checks, so it works whatever
      * woke the Bot, and after the Bot is settled or gone.
@@ -804,6 +855,7 @@ const make = Effect.gen(function* () {
     stateDir: string,
     dryRun: boolean,
     secrets: ReadonlyArray<InjectedSecret>,
+    tool: boolean,
   ): NodeJS.ProcessEnv => ({
     // First, so nothing the server sets below can be replaced by a secret of the same name.
     ...Object.fromEntries(secrets.map(({ name, value }) => [name, value])),
@@ -817,6 +869,8 @@ const make = Effect.gen(function* () {
     T3_WATCHER_STATE_DIR: stateDir,
     // Lets a script that would act (not just look) know that this run is only a preview.
     ...(dryRun ? { T3_WATCHER_DRY_RUN: "1" } : {}),
+    // Tells a script it was called as a tool, with its arguments after its own path. A tool's dry run sets it too.
+    ...(tool ? { T3_TOOL: "1" } : {}),
   });
 
   // Runs the bytes it is given, from a private copy: the stored path is never executed, so a
@@ -831,10 +885,13 @@ const make = Effect.gen(function* () {
     readonly dataDir?: string | undefined;
     /** Only a local watcher passes any: a script run for a linked environment never has a secret. */
     readonly secrets?: ReadonlyArray<InjectedSecret> | undefined;
+    /** A tool's run: its arguments follow the script's path as argv, and its output has a larger cap. */
+    readonly tool?: { readonly args: ReadonlyArray<string> } | undefined;
   }) {
     const runtime = RUNTIMES[input.runtime];
     const secrets = input.secrets ?? [];
     const slack = redactionSlack(secrets);
+    const stdoutMax = input.tool === undefined ? STDOUT_MAX_BYTES : BOT_TOOL_OUTPUT_MAX_BYTES;
     return yield* Effect.gen(function* () {
       const scratch = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-watcher-" });
       yield* fileSystem.chmod(scratch, 0o700);
@@ -845,9 +902,9 @@ const make = Effect.gen(function* () {
       yield* fileSystem.chmod(file, 0o700);
       const output = yield* runner.run({
         command: runtime.command,
-        args: [file],
+        args: [file, ...(input.tool?.args ?? [])],
         cwd: scratch,
-        env: scrubbedEnv(scratch, stateDir, input.dryRun, secrets),
+        env: scrubbedEnv(scratch, stateDir, input.dryRun, secrets, input.tool !== undefined),
         inheritEnv: false,
         // Closed at once, so a script that reads stdin sees the end instead of waiting.
         stdin: "",
@@ -855,7 +912,7 @@ const make = Effect.gen(function* () {
         timeoutBehavior: "timedOutResult",
         // Read past the cap by the longest form of a value, so one that starts before the cap is
         // whole when it is hidden; `hideThenCut` then cuts to the cap.
-        maxOutputBytes: STDOUT_MAX_BYTES + slack,
+        maxOutputBytes: stdoutMax + slack,
         outputMode: "truncate",
       });
       // Before the scope ends: a dry run's state folder is under the scratch directory.
@@ -874,17 +931,22 @@ const make = Effect.gen(function* () {
           chars: STDERR_MAX_CHARS,
         });
         if (output.timedOut) return { raw: { exit: "timeout", stdout: "", stderr }, cut: false };
-        // Judged from the bytes read: a remote run result has no truncation flag, so `judge`
-        // counts bytes, and what hiding takes out must not make a cut output look whole.
+        // A watcher's is judged from the bytes read: a remote run result has no truncation flag,
+        // so `judge` counts bytes, and what hiding takes out must not make a cut output look whole.
+        // A tool's is told to the Bot, so it is exact: past the cap once the values are hidden.
         return {
           raw: {
             exit: String(output.code),
             stdout: hideThenCut(output.stdout, output.stdoutTruncated, secrets, slack, {
-              bytes: STDOUT_MAX_BYTES,
+              bytes: stdoutMax,
             }),
             stderr,
           },
-          cut: Buffer.byteLength(output.stdout) >= STDOUT_MAX_BYTES,
+          cut:
+            input.tool === undefined
+              ? Buffer.byteLength(output.stdout) >= STDOUT_MAX_BYTES
+              : output.stdoutTruncated ||
+                Buffer.byteLength(redactSecrets(output.stdout, secrets)) > stdoutMax,
         };
       }),
       // A script that cannot start is as tripped as one that fails.
@@ -1026,7 +1088,9 @@ const make = Effect.gen(function* () {
     runsOn: BotWatcherRunsOn,
     scheduled: { readonly folder: string; readonly name: string } | undefined,
   ) {
+    const isTool = version.config.kind === "tool";
     if (runsOn !== "local") {
+      if (isTool) return { _tag: "Refused", reason: TOOLS_STAY_HERE } as const satisfies Placed;
       // A secret is read here and goes only into a script run here.
       if ((version.config.secrets ?? []).length > 0) {
         return { _tag: "Refused", reason: SECRETS_STAY_HERE } as const satisfies Placed;
@@ -1054,6 +1118,8 @@ const make = Effect.gen(function* () {
       dryRun: scheduled === undefined,
       dataDir: scheduled === undefined ? undefined : dataDir(scheduled.folder, scheduled.name),
       secrets: secrets.injected,
+      // A dry run of a tool is a call with no arguments.
+      tool: isTool ? { args: [] } : undefined,
     });
     return { _tag: "Ran", outcome: judge(version, raw, cut) } as const satisfies Placed;
   });
@@ -1104,7 +1170,8 @@ const make = Effect.gen(function* () {
   ) {
     const version = yield* readVersion(folder, name, approvedHash);
     // Files that no longer hash to the approved version are not judged further: nothing runs.
-    if (version === undefined) return;
+    // A tool never runs by itself, whatever its record says.
+    if (version === undefined || version.config.kind === "tool") return;
     const directory = watcherDir(folder, name);
     const stored = yield* readState(directory);
     const pending =
@@ -1214,6 +1281,7 @@ const make = Effect.gen(function* () {
     records: Readonly<Record<string, WatcherRecord>>,
   ) {
     const due = Object.entries(records).flatMap(([name, record]) => {
+      if (record.kind === "tool") return [];
       const approvedHash = runnable(record);
       return approvedHash === undefined ? [] : [{ name, approvedHash, runsOn: record.runsOn }];
     });
@@ -1299,6 +1367,7 @@ const make = Effect.gen(function* () {
                 : "tripped";
     return {
       name,
+      ...(record.kind === "tool" ? { kind: "tool" as const } : {}),
       status,
       hash: shownHash ?? "",
       ...(record.approvedHash === undefined ? {} : { approvedHash: record.approvedHash }),
@@ -1308,10 +1377,11 @@ const make = Effect.gen(function* () {
         : {
             runtime: shown.config.runtime,
             source: new TextDecoder().decode(shown.source),
-            intervalSeconds: shown.config.everyMs / 1000,
+            ...(record.kind === "tool" ? {} : { intervalSeconds: shown.config.everyMs / 1000 }),
             ...(shown.config.expect === undefined ? {} : { expect: shown.config.expect }),
             ...(shown.config.mode === undefined ? {} : { mode: shown.config.mode }),
             ...(shown.config.purpose === undefined ? {} : { purpose: shown.config.purpose }),
+            ...(shown.config.usage === undefined ? {} : { usage: shown.config.usage }),
             ...(shown.config.secrets === undefined ? {} : { secrets: shown.config.secrets }),
             ...(shown.config.hosts === undefined ? {} : { hosts: shown.config.hosts }),
             requestedRunsOn: shown.config.runsOn,
@@ -1426,6 +1496,15 @@ const make = Effect.gen(function* () {
       const folder = BotService.memoryFolderName(botThreadId);
       const existing = yield* recordOf(folder, name);
       const invalid = (detail: string) => failure(botThreadId, name, "invalid", detail);
+      const isTool = input.kind === "tool";
+      // One namespace: a name is a watcher or a tool for good, and keeps its approval history.
+      if (existing !== undefined && (existing.kind === "tool") !== isTool) {
+        return yield* invalid(
+          existing.kind === "tool"
+            ? `${name} is already one of your tools. Use another name, or remove it first.`
+            : `${name} is already one of your watchers. Use another name, or remove it first.`,
+        );
+      }
       if (existing?.approvedHash !== undefined) {
         // A revision to a watcher the user already has: the running version is untouched and the
         // reviewer judges the new one, so a wake turn may repair a script.
@@ -1452,13 +1531,38 @@ const make = Effect.gen(function* () {
       if (source.byteLength === 0 || source.byteLength > BOT_WATCHER_SOURCE_MAX_BYTES) {
         return yield* invalid(`A watcher's source is 1 to ${BOT_WATCHER_SOURCE_MAX_BYTES} bytes.`);
       }
-      if (
-        !Number.isInteger(input.intervalSeconds) ||
-        input.intervalSeconds < BOT_WATCHER_MIN_INTERVAL_SECONDS
-      ) {
-        return yield* invalid(
-          `A watcher runs at most once every ${BOT_WATCHER_MIN_INTERVAL_SECONDS} seconds, so intervalSeconds is a whole number of at least that.`,
-        );
+      if (isTool) {
+        if (
+          input.intervalSeconds !== undefined ||
+          input.mode !== undefined ||
+          input.expect !== undefined ||
+          input.runsOn !== undefined
+        ) {
+          return yield* invalid(
+            "A tool runs only when you call it, and only here: it has no interval, mode, expect or runsOn.",
+          );
+        }
+        if (
+          input.usage === undefined ||
+          input.usage.length < 1 ||
+          input.usage.length > BOT_TOOL_USAGE_MAX_CHARS
+        ) {
+          return yield* invalid(
+            `usage is 1 to ${BOT_TOOL_USAGE_MAX_CHARS} characters: how you will call the tool.`,
+          );
+        }
+        if (input.purpose === undefined) return yield* invalid("A tool needs a purpose.");
+      } else {
+        if (input.usage !== undefined) return yield* invalid("usage is for tools.");
+        if (
+          input.intervalSeconds === undefined ||
+          !Number.isInteger(input.intervalSeconds) ||
+          input.intervalSeconds < BOT_WATCHER_MIN_INTERVAL_SECONDS
+        ) {
+          return yield* invalid(
+            `A watcher runs at most once every ${BOT_WATCHER_MIN_INTERVAL_SECONDS} seconds, so intervalSeconds is a whole number of at least that.`,
+          );
+        }
       }
       if (input.expect !== undefined) {
         if (input.expect.length > BOT_WATCHER_EXPECT_MAX_CHARS) {
@@ -1474,9 +1578,9 @@ const make = Effect.gen(function* () {
       ) {
         return yield* invalid(`purpose is 1 to ${BOT_WATCHER_PURPOSE_MAX_CHARS} characters.`);
       }
-      if (quotesReviewerMarker(input.source, input.purpose, input.expect)) {
+      if (quotesReviewerMarker(input.source, input.purpose, input.expect, input.usage)) {
         return yield* invalid(
-          "A watcher's source, purpose and expect cannot contain the reviewer's marker text (SCRIPT UNDER REVIEW, === END SCRIPT).",
+          "A watcher's source, purpose, usage and expect cannot contain the reviewer's marker text (SCRIPT UNDER REVIEW, === END SCRIPT).",
         );
       }
       const secrets = [...new Set(input.secrets ?? [])].toSorted(byCodeUnit);
@@ -1522,8 +1626,8 @@ const make = Effect.gen(function* () {
       }
       const versionConfig = {
         runtime: input.runtime,
-        everyMs: input.intervalSeconds * 1000,
-        timeoutMs: DEFAULT_TIMEOUT_MS,
+        everyMs: (input.intervalSeconds ?? BOT_WATCHER_MIN_INTERVAL_SECONDS) * 1000,
+        timeoutMs: isTool ? BOT_TOOL_TIMEOUT_MS : DEFAULT_TIMEOUT_MS,
         ...(input.expect === undefined ? {} : { expect: input.expect }),
         runsOn: input.runsOn ?? "local",
         // Only what differs from before is written, so a version without them keeps its hash.
@@ -1531,10 +1635,17 @@ const make = Effect.gen(function* () {
         ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
         ...(secrets.length === 0 ? {} : { secrets }),
         ...(hosts.length === 0 ? {} : { hosts }),
+        ...(isTool ? { kind: "tool" as const, usage: input.usage } : {}),
       } satisfies typeof VersionConfig.Type;
       const hash = computeHash({ run: source, config: versionConfig });
-      const siblings = Object.keys((yield* Ref.get(approvals))[folder] ?? {});
-      if (existing === undefined && siblings.length >= MAX_WATCHERS_PER_BOT) {
+      // Tools have a cap of their own, so a Bot's watchers cannot crowd them out or the reverse.
+      const ofKind = Object.values((yield* Ref.get(approvals))[folder] ?? {}).filter(
+        (record) => (record.kind === "tool") === isTool,
+      ).length;
+      if (existing === undefined && isTool && ofKind >= MAX_TOOLS_PER_BOT) {
+        return yield* invalid(`A Bot has at most ${MAX_TOOLS_PER_BOT} tools.`);
+      }
+      if (existing === undefined && !isTool && ofKind >= MAX_WATCHERS_PER_BOT) {
         return yield* invalid(`A Bot has at most ${MAX_WATCHERS_PER_BOT} watchers.`);
       }
 
@@ -1573,6 +1684,7 @@ const make = Effect.gen(function* () {
       yield* commit(folder, name, {
         ...(existing?.approvedHash === undefined ? {} : { approvedHash: existing.approvedHash }),
         runsOn: existing?.runsOn ?? "local",
+        ...(isTool ? { kind: "tool" as const } : {}),
         ...(existing?.paused === true ? { paused: true } : {}),
         pendingHash: hash,
         history: keepApproved(
@@ -1607,8 +1719,19 @@ const make = Effect.gen(function* () {
   });
 
   const remove: WatcherService["Service"]["remove"] = Effect.fn("WatcherService.remove")(
-    function* ({ botThreadId, name }) {
+    function* ({ botThreadId, name, kind }) {
       yield* requireUserStartedBot(botThreadId, name);
+      if (kind !== undefined) {
+        const { record } = yield* requireRecord(botThreadId, name);
+        if ((record.kind === "tool") !== (kind === "tool")) {
+          return yield* failure(
+            botThreadId,
+            name,
+            "invalid",
+            `${name} is ${record.kind === "tool" ? "a tool, not a watcher" : "a watcher, not a tool"}.`,
+          );
+        }
+      }
       yield* deleteWatcher(botThreadId, name);
     },
     lock,
@@ -1964,8 +2087,13 @@ const make = Effect.gen(function* () {
             name,
             purpose: version.config.purpose ?? "",
             runtime: version.config.runtime,
-            mode: version.config.mode ?? "health",
-            intervalSeconds: version.config.everyMs / 1000,
+            // A tool has neither: it is called, not run on a timer, and the reviewer is told so.
+            ...(version.config.kind === "tool"
+              ? { kind: "tool" as const, usage: version.config.usage }
+              : {
+                  mode: version.config.mode ?? "health",
+                  intervalSeconds: version.config.everyMs / 1000,
+                }),
             expect: version.config.expect,
             // Left out when none, so what a review is given stays what it was before they existed.
             ...(version.config.secrets === undefined ? {} : { secrets: version.config.secrets }),
@@ -2181,6 +2309,9 @@ const make = Effect.gen(function* () {
   const setRunsOn: WatcherService["Service"]["setRunsOn"] = Effect.fn("WatcherService.setRunsOn")(
     function* ({ botThreadId, name, runsOn }) {
       const { folder, record } = yield* requireRecord(botThreadId, name);
+      if (runsOn !== "local" && record.kind === "tool") {
+        return yield* failure(botThreadId, name, "invalid", TOOLS_STAY_HERE);
+      }
       if (runsOn !== "local") {
         // Either version may be the one that runs next, so both are looked at.
         for (const hash of [record.approvedHash, record.pendingHash]) {
@@ -2205,6 +2336,83 @@ const make = Effect.gen(function* () {
       yield* resetState(botThreadId, folder, name);
     },
     lock,
+  );
+
+  const toolCalls = makeToolCallLimiter();
+  const toolFailures = makeToolFailureStreaks();
+
+  const runTool: WatcherService["Service"]["runTool"] = Effect.fn("WatcherService.runTool")(
+    function* ({ botThreadId, name, args }) {
+      const invalid = (detail: string) => failure(botThreadId, name, "invalid", detail);
+      if (!(yield* bots.isBot(botThreadId))) return yield* failure(botThreadId, name, "not_a_bot");
+      const folder = BotService.memoryFolderName(botThreadId);
+      const record = yield* recordOf(folder, name);
+      if (record === undefined) {
+        return yield* failure(botThreadId, name, "not_found", `There is no tool named ${name}.`);
+      }
+      if (record.kind !== "tool") return yield* invalid(`${name} is a watcher, not a tool.`);
+      // Only the approved bytes: a revision under review is never called.
+      if (record.approvedHash === undefined) {
+        return yield* invalid(`Tool ${name} has no approved version yet.`);
+      }
+      if (record.paused === true) return yield* invalid(`Tool ${name} is paused by the user.`);
+      const refused = refuseToolArgs(args);
+      if (refused !== undefined) return yield* invalid(refused);
+      const version = yield* readVersion(folder, name, record.approvedHash);
+      if (version === undefined || version.config.kind !== "tool") {
+        return yield* invalid("The stored files for this tool were changed or are missing.");
+      }
+      // Before reading a grant, which may ask a password manager: that is what a loop would cost.
+      if (!toolCalls.take(folder, yield* Clock.currentTimeMillis)) {
+        return yield* invalid(TOOL_CALL_LIMIT_MESSAGE);
+      }
+      const secrets = yield* injectSecrets(botThreadId, version);
+      if (secrets._tag === "Waiting") {
+        return yield* failure(botThreadId, name, "unreachable", secrets.reason);
+      }
+      // The same persistent folder a watcher gets. Runs go one at a time (`runScript`), which also
+      // keeps two calls of one tool from reading and writing its cursor together.
+      const { raw, cut } = yield* runScript({
+        source: version.source,
+        runtime: version.config.runtime,
+        timeoutMs: BOT_TOOL_TIMEOUT_MS,
+        dryRun: false,
+        dataDir: dataDir(folder, name),
+        secrets: secrets.injected,
+        tool: { args },
+      });
+
+      const failed = raw.exit !== "0";
+      const finishedAt = yield* Clock.currentTimeMillis;
+      // Keyed by version: a revision starts clean, as a watcher's streak does.
+      const streak = `${folder}/${name}/${record.approvedHash}`;
+      if (!failed) {
+        if (toolFailures.succeeded(streak) >= TOOL_FAILURES_TO_SIGNAL) {
+          yield* repair.clear({ kind: "watcher", botThreadId, name });
+        }
+      } else {
+        const { count, firstAt } = toolFailures.failed(streak, finishedAt);
+        // A tool called with bad arguments is not a broken machine; the same tool failing again
+        // and again is. It reports through the watcher health path, which holds the same name.
+        if (count >= TOOL_FAILURES_TO_SIGNAL) {
+          yield* repair.signal({
+            kind: "watcher",
+            botThreadId,
+            name,
+            count,
+            firstAt,
+            lastAt: finishedAt,
+          });
+        }
+      }
+      const tag = `tool-data-${yield* random.uuidV4().pipe(Effect.orDie)}`;
+      const body = failed
+        ? raw.stderr.slice(0, TOOL_STDERR_MAX_CHARS)
+        : cut
+          ? `${raw.stdout}\n${TOOL_CUT_LINE}`
+          : raw.stdout;
+      return { exit: raw.exit, output: framedToolOutput(tag, body), outputCut: !failed && cut };
+    },
   );
 
   const runForPeer: WatcherService["Service"]["runForPeer"] = Effect.fn(
@@ -2286,6 +2494,7 @@ const make = Effect.gen(function* () {
     list,
     propose,
     remove,
+    runTool,
     removeByUser,
     pause: setPaused(true),
     resume: setPaused(false),

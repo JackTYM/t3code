@@ -190,7 +190,37 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
     Effect.gen(function* () {
       const { threadId } = yield* callerBot;
       const watchers = yield* WatcherService.WatcherService;
-      yield* watchers.remove({ botThreadId: threadId, name }).pipe(Effect.mapError(watcherFailure));
+      yield* watchers
+        .remove({ botThreadId: threadId, name, kind: "watch" })
+        .pipe(Effect.mapError(watcherFailure));
+      return { removed: true };
+    }),
+  ),
+  t3_bot_tool_propose: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const { threadId } = yield* callerBot;
+      const watchers = yield* WatcherService.WatcherService;
+      return yield* watchers
+        .propose({ botThreadId: threadId, kind: "tool", ...input })
+        .pipe(Effect.mapError(watcherFailure));
+    }),
+  ),
+  t3_bot_tool_run: McpToolAccess.actsAsCaller(({ name, args }) =>
+    Effect.gen(function* () {
+      const { threadId } = yield* callerBot;
+      const watchers = yield* WatcherService.WatcherService;
+      return yield* watchers
+        .runTool({ botThreadId: threadId, name, args })
+        .pipe(Effect.mapError(watcherFailure));
+    }),
+  ),
+  t3_bot_tool_remove: McpToolAccess.actsAsCaller(({ name }) =>
+    Effect.gen(function* () {
+      const { threadId } = yield* callerBot;
+      const watchers = yield* WatcherService.WatcherService;
+      yield* watchers
+        .remove({ botThreadId: threadId, name, kind: "tool" })
+        .pipe(Effect.mapError(watcherFailure));
       return { removed: true };
     }),
   ),
@@ -217,6 +247,7 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
         watchers: (yield* watchers.list(threadId)).watchers.map(
           ({
             name,
+            kind,
             status,
             hash,
             runtime,
@@ -225,6 +256,7 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
             expect,
             mode,
             purpose,
+            usage,
             secrets,
             hosts,
             runsOn,
@@ -233,6 +265,7 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
             reviews,
           }) => ({
             name,
+            kind: kind ?? "watch",
             status,
             hash,
             runsOn,
@@ -251,6 +284,7 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
             ...(expect === undefined ? {} : { expect }),
             ...(mode === undefined ? {} : { mode }),
             ...(purpose === undefined ? {} : { purpose }),
+            ...(usage === undefined ? {} : { usage }),
             // Whether, not what: a grant counts only if it covers every host the version names,
             // as the server's own check at run time does.
             ...(secrets === undefined

@@ -20,6 +20,7 @@ import type * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as BotService from "./BotService.ts";
 import * as RepairService from "./RepairService.ts";
+import { BOT_TOOL_RUN_TOOL } from "./ToolRuns.ts";
 import { HEALTH_WAKE_ID, REPAIR_CREW_THREAD_ID, REPAIR_START_TOOL } from "./RepairService.ts";
 
 /** The id every mail digest wake carries after `bot-wake:` (`BotMailService.digestFolder`). */
@@ -339,7 +340,13 @@ const make = Effect.gen(function* () {
           ? { held: false }
           : { held: true, message: REPAIR_REFUSED_MESSAGE };
       }
-      if (call.tool === "t3_bot_mail_search" || startsMailReader(params, call.environmentId)) {
+      // Free in any turn, and from then on the turn has read outside text: a tool's output is
+      // whatever the source it looked up said, the same as a mail search's.
+      if (
+        call.tool === "t3_bot_mail_search" ||
+        call.tool === BOT_TOOL_RUN_TOOL ||
+        startsMailReader(params, call.environmentId)
+      ) {
         yield* taint(call.botThreadId);
         return { held: false };
       }

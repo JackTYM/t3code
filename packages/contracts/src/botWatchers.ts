@@ -18,6 +18,16 @@ export const BOT_WATCHER_EXPECT_MAX_CHARS = 500;
 /** Granted secrets one watcher version may declare. */
 export const BOT_WATCHER_MAX_SECRETS = 4;
 
+/**
+ * A tool is a watcher's read-only sibling: the same reviewed, approved, versioned script, run on
+ * demand by the Bot with arguments instead of on a timer.
+ */
+export const BOT_TOOL_OUTPUT_MAX_BYTES = 16 * 1024;
+export const BOT_TOOL_TIMEOUT_MS = 30_000;
+export const BOT_TOOL_MAX_ARGS = 8;
+export const BOT_TOOL_ARG_MAX_CHARS = 200;
+export const BOT_TOOL_USAGE_MAX_CHARS = 300;
+
 export const BotWatcherName = Schema.String.check(
   Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u),
 );
@@ -31,6 +41,21 @@ export const BotWatcherMode = Schema.Literals(["health", "events"]);
 export type BotWatcherMode = typeof BotWatcherMode.Type;
 
 export const BOT_WATCHER_PURPOSE_MAX_CHARS = 300;
+
+/** `watch` runs on a timer. `tool` runs only when the Bot calls it. */
+export const BotWatcherKind = Schema.Literals(["watch", "tool"]);
+export type BotWatcherKind = typeof BotWatcherKind.Type;
+
+/**
+ * What a tool call gives back. `output` is the script's stdout, or the first of its stderr when
+ * `exit` is not `0`, framed as untrusted data. `outputCut`: stdout went past the byte cap.
+ */
+export const BotToolRunResult = Schema.Struct({
+  exit: Schema.String,
+  output: Schema.String,
+  outputCut: Schema.Boolean,
+});
+export type BotToolRunResult = typeof BotToolRunResult.Type;
 
 /** `local` is the environment that holds the watcher; anything else names a linked environment. */
 export const BotWatcherRunsOn = Schema.Union([Schema.Literal("local"), EnvironmentId]);
@@ -95,11 +120,13 @@ export type BotWatcherReview = typeof BotWatcherReview.Type;
 export const BotWatcher = Schema.Struct({
   name: BotWatcherName,
   status: BotWatcherStatus,
+  /** Absent means `watch`. A tool has no interval, `expect` or `mode`, and runs only here. */
+  kind: Schema.optional(BotWatcherKind),
   /** The version the fields below describe: the pending one while there is one, else the approved one. */
   hash: Schema.String,
   approvedHash: Schema.optional(Schema.String),
   pendingHash: Schema.optional(Schema.String),
-  /** `runtime`, `source`, `intervalSeconds`, `expect`, `mode`, `purpose`, `secrets`, `hosts` and `requestedRunsOn` are absent when that version's files are missing or changed on disk (`invalid`). */
+  /** `runtime`, `source`, `intervalSeconds`, `expect`, `mode`, `purpose`, `usage`, `secrets`, `hosts` and `requestedRunsOn` are absent when that version's files are missing or changed on disk (`invalid`). */
   runtime: Schema.optional(BotWatcherRuntime),
   source: Schema.optional(Schema.String),
   intervalSeconds: Schema.optional(Schema.Int),
@@ -107,6 +134,8 @@ export const BotWatcher = Schema.Struct({
   /** Absent means `health`. */
   mode: Schema.optional(BotWatcherMode),
   purpose: Schema.optional(Schema.String),
+  /** A tool only: how the Bot says to call it. */
+  usage: Schema.optional(Schema.String),
   /** The granted secrets this version declares, sorted; each reaches the script as an environment variable of that name. */
   secrets: Schema.optional(
     Schema.Array(BotSecretGrantName).check(Schema.isMaxLength(BOT_WATCHER_MAX_SECRETS)),
@@ -198,7 +227,7 @@ export class BotWatcherError extends Schema.TaggedError<BotWatcherError>()("BotW
       case "invalid":
         return this.detail ?? "That watcher is not valid.";
       case "not_found":
-        return `There is no watcher named ${this.watcher ?? ""}.`;
+        return this.detail ?? `There is no watcher named ${this.watcher ?? ""}.`;
       case "no_pending":
         return `Watcher ${this.watcher ?? ""} has no version under review.`;
       case "stale_hash":

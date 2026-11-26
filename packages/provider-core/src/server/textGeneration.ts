@@ -123,8 +123,12 @@ export interface WatcherReviewInput {
   name: string;
   purpose: string;
   runtime: "node" | "sh";
-  mode: "health" | "events";
-  intervalSeconds: number;
+  /** Absent means a watcher. A tool is called on demand, so it has no `mode` or `intervalSeconds`. */
+  kind?: "watch" | "tool" | undefined;
+  /** A tool only: how the assistant says it will call it. */
+  usage?: string | undefined;
+  mode?: "health" | "events" | undefined;
+  intervalSeconds?: number | undefined;
   /** The regular expression the script's healthy output must match, when it has one. */
   expect?: string | undefined;
   /** Names of the granted secrets the script receives, and the hosts they may go to; never values. */

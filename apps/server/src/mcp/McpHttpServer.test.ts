@@ -2588,6 +2588,9 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
         "t3_bot_repair_start",
         "t3_bot_secret_grants_list",
         "t3_bot_tasks_write",
+        "t3_bot_tool_propose",
+        "t3_bot_tool_remove",
+        "t3_bot_tool_run",
         "t3_bot_watch_add",
         "t3_bot_watch_remove",
         "t3_bot_watcher_list",
@@ -2679,6 +2682,7 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
         watchers: [
           {
             name: "disk",
+            kind: "watch",
             status: "needs_approval",
             hash: "abc",
             runsOn: "local",

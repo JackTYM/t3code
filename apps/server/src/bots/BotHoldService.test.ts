@@ -474,6 +474,37 @@ it.effect("holds in the turn a mail reader's report starts, not one an ordinary 
   }),
 );
 
+// A tool runs only bytes a reviewer approved, so calling one is free in any turn, a held one
+// included. What it prints is outside text, so the call also makes the turn an influenced one.
+it.effect.each([
+  { startedBy: DIGEST },
+  { startedBy: "bot-wake:watcher:home:calendar:event:1" },
+  { startedBy: "bot-wake:health:0123456789ab:1" },
+  { startedBy: "message:typed" },
+] as const)("a Bot may call a tool in a turn that began with $startedBy", ({ startedBy }) =>
+  run({ startedBy }, (holds) =>
+    Effect.gen(function* () {
+      const verdict = yield* holds.check(call("t3_bot_tool_run", { name: "pr", args: ["42"] }));
+      assert.isFalse(verdict.held);
+      assert.deepEqual((yield* holds.list(BOT)).held, []);
+    }),
+  ),
+);
+
+it.effect("a turn the user began is held from the moment it calls a tool", () =>
+  run({ startedBy: "message:typed" }, (holds) =>
+    Effect.gen(function* () {
+      assert.isFalse((yield* holds.check(call("t3_thread_launch", {}))).held);
+      yield* holds.check(call("t3_bot_tool_run", { name: "pr", args: [] }));
+      assert.isTrue((yield* holds.check(call("t3_thread_launch", {}))).held);
+      // Proposing and removing tools stays the Bot's own business, as for watchers.
+      for (const tool of ["t3_bot_tool_propose", "t3_bot_tool_remove"]) {
+        assert.isFalse((yield* holds.check(call(tool, { name: "pr" }))).held);
+      }
+    }),
+  ),
+);
+
 it.effect.each([{ tool: "t3_bot_mail_search" }, { tool: "delegate_task" }] as const)(
   "a turn the user began is held from the moment it uses mail ($tool)",
   ({ tool }) =>
