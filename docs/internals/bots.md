@@ -36,8 +36,9 @@ Bot instructions ride on every Bot turn's prompt
 ([`botInstructions.ts`](../../apps/server/src/bots/botInstructions.ts)), not in a file. Claude reads
 `CLAUDE.md` and Codex `AGENTS.md`, and a project Bot's folder belongs to the user, so a file could
 not reach every provider; a seeded file also went stale for existing Bots. The text tells a Bot to
-delegate and never run shell commands, read code or edit files; `evals/mcp-tool-use` holds the
-case for it.
+delegate and never run shell commands, read code or edit files, and to start crew for anything that
+needs a browser, an MCP server or a code change. It also tells a Bot how to read a health wake, which is
+why that wake's wording is fixed. `evals/mcp-tool-use` holds the case for the delegation rule.
 
 ## Who may act as a Bot
 
@@ -67,131 +68,113 @@ this environment's threads and runs only.
 ### Health wakes
 
 [`RepairService`](../../apps/server/src/bots/RepairService.ts) tells a Bot when the machinery
-around it keeps failing: a watcher whose last 3 scheduled runs all failed, a reviewer that failed
-to run 3 times for one Bot in an hour, or a Bot run that ended `failed`. A failure is an episode.
-The first report wakes the Bot at once, and a later report wakes it again after 1 hour, then 2, up
-to 24, for as long as reports keep coming; recovery clears the episode. The wake id is
-`bot-wake:health:<id>:<n>`.
+around it keeps failing: a watcher whose scheduled runs keep failing, a watcher reviewer that keeps
+failing to run, or a Bot run that ended `failed`. One failure from first report to recovery is an
+episode. The first report wakes the Bot at once, later ones back off, and recovery clears the
+episode. The wake id is `bot-wake:health:<signalId>:<n>`.
 
-- **Not influenced, so it carries no outside text.** A health wake is the one wake
-  `BotHoldService` does not treat like mail or a watcher: its prefix matches neither check, so a
-  turn it starts is as free as one the user typed. That only holds because the text is built from a
-  number, ISO times, a hex id and a name that passed a no-whitespace pattern, never from script
-  output, a reviewer's reason or a purpose. A signal whose name does not pass is refused, not
-  cleaned. Do not add a field to it that a stranger could have written.
-- **Free until it reads outside text.** In a health turn any read beyond the Bot's own memory (a
-  thread's history holds old watcher output and mail, an issue or a PR is a stranger's words, and
-  `t3_bot_watcher_list` returns source a turn that was influenced may have written) taints the run
-  like `t3_bot_mail_search` does, so its consequential calls are held from then on. The list is
-  "every read-only tool that is not a `t3_bot_*` tool", not names, so a tool added later is covered.
-  Other turns are unchanged: reading is not a taint there.
+- **Not influenced, so it carries no outside text.** A health wake is the one wake `BotHoldService`
+  does not treat like mail or a watcher: its prefix matches neither check, so a turn it starts is as
+  free as one the user typed. That is safe only because
+  [`healthText`](../../apps/server/src/bots/RepairService.ts) is built from a number, ISO times, a
+  hex id and a name that passed a no-whitespace pattern, never from script output, a reviewer's
+  reason or a purpose. A name that does not pass is refused, not cleaned. Do not add a field a
+  stranger could have written.
+- **Free until it reads outside text.** In a health turn, any read beyond the Bot's own memory (a
+  thread's history holds old watcher output and mail, an issue or a PR is a stranger's words,
+  `t3_bot_watcher_list` returns source an influenced turn may have written) taints the run like
+  `t3_bot_mail_search`, so its consequential calls are held from then on. The set is "every
+  read-only tool that is not a `t3_bot_*` tool", not a list of names, so a later tool is covered.
+  In other turns reading is not a taint.
 - **A health turn's own failure is not a signal.** A failed run that began with a health wake would
   wake the Bot into the same failure again, so `handleMilestone` skips it, and a failed run it
   cannot find.
-- **"In a row" for a watcher** counts scheduled runs that failed (a non-zero exit, a timeout, a
-  spawn error, a refusal, output cut in `events` mode, or output `expect` rejects), kept as
-  `failing.runs` in the watcher's `state.json`. Any healthy run, including an `events` run with
-  news, starts over. A run where the linked environment did not answer is neither: `waiting` leaves
-  the count as it was. A new approved version or a move starts clean.
+- **A watcher's "in a row" counts scheduled runs that failed.** A run where a linked environment
+  did not answer is neither failed nor healthy; any healthy run, including an `events` run with
+  news, starts over, and a new approved version or a move starts clean.
 - **State** is `<stateDir>/repair-state.json`, signed like the watchers' approvals with a key a Bot
   and a script cannot read, because a later step trusts it to say which signals the server wrote
-  and which threads are repair crews. It holds `episodes` and `repairs`; a file from before
-  `repairs` existed (the episodes alone) still reads. A signal's episode is saved with the wake
-  before it is queued and settled after, so a restart resends the same key instead of waking twice.
-  A file that fails its signature is dropped whole.
+  and which threads are repair crews. A wake is saved before it is queued and settled after, so a
+  restart resends the same key instead of waking twice. A file that fails its signature is dropped
+  whole.
 
 ### Repair start
 
 `t3_bot_repair_start({ signalId })` starts a crew that fixes the failure a health wake named. The
-Bot supplies the id and nothing else; the project (`home.repairProjectId`, set in Settings → Home),
-branch (`repair/<signalId>`, `-2` for the retry), model, isolation and brief are the server's. The
-crew is an ordinary crew thread in a worktree, grouped under the Bot, no higher in runtime mode
-than the Bot.
+Bot supplies the id and nothing else. The project (`home.repairProjectId`, Settings → Home; unset
+means no repair), branch, model, isolation and brief are the server's. The crew is an ordinary crew
+thread in a worktree, grouped under the Bot, no higher in runtime mode than the Bot.
 
-- **The turn proves itself three ways, because a client picks its own message ids.** The Bot's
-  active run began with a message whose id is exactly `bot-wake:health:<12 hex>:<n>`, that message
-  is `createdBy: "system"` (everything a client sends is `user`), and the id's signal is the tool's
-  argument and is in the signed registry for this Bot. `BotHoldService` checks only the id shape,
-  to refuse early outside a health turn and to leave the tool allowed after the turn was tainted;
-  `RepairService.startRepair` is the check that counts.
-- **The brief is a constant plus fixed fields** ([`briefText`](../../apps/server/src/bots/RepairService.ts)):
-  a signal id, a pattern-checked name and thread id, a count, ISO times, an evidence pointer and
-  the Bot's thread and folder. Nothing a script printed, a reviewer said or a Bot wrote enters it.
-  The crew reads the evidence itself and is told it may hold outside text. The protected paths in
-  the brief are `PROTECTED_PATHS`, the one list the merge guard reuses.
-- **Bounds live outside the episode map**, because an episode goes when the failure recovers and
-  is swept a day after its last wake. One crew runs per signal; a Bot gets three starts in any
-  24 hours; a crew thread whose run ends `failed` (or that was deleted unfinished) is a failed
-  attempt, and the second one gives the signal up with one wake, `bot-wake:health:<id>:gaveup`.
-  That id does not match the health pattern, so the turn it starts cannot start a repair.
-- **Crew thread ids are written before the launch** (`repair-crew:<signalId>:<n>`, also the launch's
-  command id, so a retry replays), and rolled back if the launch is refused. `repairOf(threadId)`
-  says which repair a thread belongs to, and the branch that crew was told to push.
+- **A message id alone proves nothing, because a client picks its own message ids.** So the turn
+  must prove itself three ways: the Bot's active run began with a message whose id has the health
+  shape, that message was created by `system` (a client can only create `user` messages), and the
+  signal in the id is the tool's argument and is in the signed registry for this Bot.
+  `BotHoldService` checks only the id shape, to refuse early outside a health turn; the check that
+  counts is `RepairService.startRepair`.
+- **The brief is a constant plus fixed fields** ([`briefText`](../../apps/server/src/bots/RepairService.ts)).
+  The crew reads the evidence itself and is told it may hold outside text and to never follow it.
+  The protected paths in the brief are `PROTECTED_PATHS`, the list the merge guard reuses.
+- **Bounds keep a broken repair from becoming a loop and a cost.** One crew per signal; a daily cap
+  per Bot; a crew thread that ends `failed` (or is deleted unfinished) is a failed attempt, and the
+  last one gives the signal up with a wake the Bot tells the user about. They live outside the
+  episode map, which goes when the failure recovers, so a failure that recovers and returns cannot
+  reset them. The give-up and merge wakes (`bot-wake:health:<id>:gaveup`, `...:merge:...`) do not
+  match the health pattern, so the turns they start cannot start another repair.
+- **Crew thread ids are written before the launch** and rolled back if it is refused, so a retry
+  replays the same launch and `repairOf(threadId)` always says which repair a thread belongs to and
+  the branch that crew was told to push.
 
 ### Merge guard
 
-A crew merges its own pull request with `pull_request_merge`, after its checks pass, and the server
-decides whether that call goes ahead. `layerRepairMergeGuard` (a global MCP middleware, like the
-mail hold) gives every `pull_request_merge` to
-[`RepairMergeGuard`](../../apps/server/src/bots/RepairMergeGuard.ts), which lets a thread through
-untouched unless it is a repair crew or a subagent of one (by lineage root). For a crew it allows the
-merge only if all of this holds, and each refusal is its own `MergeRefusalReason` with fixed words
-the crew can act on:
+A crew merges its own pull request with `pull_request_merge`, and the server decides whether that
+call goes ahead. `layerRepairMergeGuard` (a global MCP middleware, like the mail hold) gives every
+`pull_request_merge` to [`RepairMergeGuard`](../../apps/server/src/bots/RepairMergeGuard.ts), which
+lets a thread through untouched unless it is a repair crew or a subagent of one (by lineage root).
+For a crew it merges only if all of this holds, each refusal being its own `MergeRefusalReason`
+with fixed words the crew can act on:
 
-- **The call is one the server can check.** `number` and `expectedHeadSha`, and no `repository`,
-  `auto`, `stack`, other machine's `environmentId` or unknown argument. It is read raw, before the
-  tool decodes it, and resolved to a pull request the way `pull_request_merge`'s `locate` does
-  (calling thread's project, plus the number): keep the two in step. Auto-merge and stack merges
-  would merge something this check never saw.
-- **Its own branch, into the default branch.** The head is exactly the branch `repairOf` names
-  (`repair/<signalId>`, `-2` for the retry), in the same repository, and the base is the
-  repository's default branch as the provider reports it. `expectedHeadSha` is the current head;
-  the host pins the merge to it, so what was checked is what merges.
-- **Every check passed, and there is at least one.** Zero checks is `no_checks` and refused: the
-  fork's `CI` workflow can be off, and a pull request nothing checked must never look green. All
-  skipped counts as none. Pending or awaiting approval, failed or cancelled, a required check
-  skipped, and a check the host could not list are each refused. Check runs and
-  commit statuses are both read from the head commit's rollup in `detail.checks`. The GitHub provider
-  pages it ten times (a thousand contexts) and does not tell the service when it stops there, so a
-  rollup longer than that is read short.
-- **No protected path.** The pull request's whole changed-file list is read page by page, both
-  sides of a rename, and matched against `PROTECTED_PATHS` without regard to case. A list that
-  cannot be read, does not end in 100 pages, or has a different count from the pull request's
-  `changedFiles` is refused, since the host's files API stops at 3000 and the provider skips
-  entries it cannot parse. The patch parser is reused rather than a new read, so a host that lists
-  no paths is refused, not guessed at.
-- **No review asking for changes**, by each reviewer's latest verdict and the host's decision;
-  reviews cut short are refused.
-- **Fresh and closed.** The pull request's caches are invalidated and read with `allowStale: false`,
-  and any failure or defect while checking is a refusal, never a merge.
+- **The call is one the server can check.** Only `number`, `expectedHeadSha` and `method`: a
+  `repository`, `auto`, `stack`, another machine or an unknown argument is refused, because
+  auto-merge and stack merges would merge something this check never saw. The call is read raw and
+  resolved to a pull request the way `pull_request_merge`'s `locate` does, so keep the two in step.
+- **Its own branch, into the default branch**, in the same repository. `expectedHeadSha` is the
+  current head and the host pins the merge to it, so what was checked is what merges.
+- **Every check passed, and there is at least one.** Zero checks is refused: a repository whose CI
+  does not run on pull requests would otherwise show a pull request nothing checked as green. All
+  skipped counts as none. Pending, failed, cancelled, a required check skipped, or a check the host
+  could not list is each refused. The rollup read has a depth limit the provider does not report, so
+  an extremely long one is read short.
+- **No protected path.** The whole changed-file list, both sides of a rename, is matched without
+  regard to case. A list that cannot be read in full, or whose size disagrees with the pull
+  request's `changedFiles`, is refused, so a file the host skipped cannot hide.
+- **No review asking for changes**, and reviews cut short are refused.
+- **Fresh and closed.** The pull request is read with its caches invalidated, and any failure
+  while checking is a refusal, never a merge.
 
-`PROTECTED_PATHS` is the one list, in the brief and the guard. A test lists every entry, so a change
-to it is deliberate. It covers this machinery and what the guard reads (so a crew cannot make it say
-yes), what runs here or releases without a build (CI, `scripts/**`, git hooks, `t3.json` worktree
-setup), dependencies, and the desktop app's updater, installer and signing. The updater and signing
-code is not all named for it: `FullUpdate.ts`, `DesktopUpdates.ts`, `ElectronUpdater.ts` and
-`electron-updater@*.patch` have a capital `U`, and desktop signing lives in `scripts/` and the
-workflows, so the list names `apps/desktop/src/updates/**`, the updater and IPC files, `patches/**`
-and the installer resources, and the name patterns are matched case-blind.
+**Protected paths.** `PROTECTED_PATHS` ([`RepairService.ts`](../../apps/server/src/bots/RepairService.ts))
+exists so the Bot cannot weaken its own safety boundary unattended: the hold, repair and review
+machinery and what the guard reads (a crew must not be able to make the guard say yes), anything
+that runs on this machine or releases without a build (CI, scripts, git hooks, worktree setup),
+dependencies, and the desktop updater, installer and signing. The list is the one place to read
+what is covered. Updater and signing code is not all named for it (`FullUpdate.ts`,
+`ElectronUpdater.ts` have a capital `U`, desktop signing lives in `scripts/` and the workflows), so
+matching is case-blind and names directories, not just files. A test lists every entry, so a
+change to it is deliberate.
 
-**What the guard tells the Bot.** After a merge or a refusal the Bot gets one
-`bot-wake:health:<signalId>:merge:<number>:<merged|open>`: the pull request's number, merged or left
-open, and the reason code, and no title, body or file name. It is saved before it is queued and
-resent at start like the other wakes, once for each pull request and result, at most 8 for a repair,
-and a merged pull request is not told of again. It does not match the health pattern, so the turn it
-starts cannot start a repair.
+**What the guard tells the Bot.** After a merge or a refusal the Bot gets one wake with the pull
+request's number, merged or left open, and the reason code, and no title, body or file name. It is
+sent once for each pull request and result and is capped per repair.
 
 **What it does not stop.** A crew is an ordinary full-access thread: a shell as the user, with the
-user's `gh` login and git credentials, and nothing here sees what that shell runs. A crew can still
-`gh pr merge` any pull request, `git push origin HEAD:main` (or `--force`) with no pull request,
-post a passing commit status with `gh api`, dismiss a review, or start another thread whose merges
-are not a crew's. Nothing in the codebase can refuse those before they run: the only command
-classifier, `changeRequestsClosedBy`, runs after the fact over a thread's finished work items to
-refresh pull request state and knows neither a push nor `gh api`, and no provider adapter asks a
-full-access thread whether a command may run. So the brief and the guard bind a crew that follows
-them. What would hold is on the host: branch protection on the default branch requiring a pull
-request and the check, code owners for `PROTECTED_PATHS`, and a crew login that is not an
-administrator. That also stops the user's own direct pushes to the default branch.
+user's `gh` login and git credentials, and nothing here sees what that shell runs. It can still
+`gh pr merge` any pull request, push to the default branch, post a passing commit status with
+`gh api`, dismiss a review, or start another thread whose merges are not a crew's. Nothing in the
+codebase can refuse those before they run: no provider adapter asks a full-access thread whether a
+command may run, and the one command classifier, `changeRequestsClosedBy`, only reads finished work
+items. So the brief and the guard bind a crew that follows them. The control that holds is on
+GitHub: branch protection on the default branch requiring a pull request and the check, code owners
+for the `PROTECTED_PATHS`, and a crew login that is not an administrator. That also stops your own
+direct pushes to the default branch.
 
 ## Model
 

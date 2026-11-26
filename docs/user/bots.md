@@ -39,6 +39,27 @@ in the same project with a summary of the thread, and that thread becomes its fi
 - Settle or archive a Bot when you are done: its crew go back to the top of the sidebar and it stops
   being woken. Reopen it to take them back.
 
+## Self-repair
+
+When something in how a Bot runs keeps failing (a watcher, the model that reviews watchers, or a
+Bot run that ends in failure), T3 Code tells the Bot, and the Bot can start a coding crew that fixes
+T3 Code itself. The crew works in a separate checkout on a new branch, opens a pull request, waits
+for its checks and, when they all pass, merges it. If a repair fails twice, the Bot tells you it
+needs you.
+
+- **Nothing repairs until you choose a Repair project** in **Settings → Home**: a checkout of T3
+  Code itself. To turn self-repair off, set it back to **None**.
+- A repair fix never builds, installs or releases anything; the app you run does not change until
+  you update it yourself.
+- A fix waits for you as an open pull request when it touches the parts that guard the Bot (its
+  own safety machinery, CI and scripts, dependencies, the desktop updater and signing) or when any
+  of its checks has not passed. A pull request with no checks counts as not passed.
+- Automatic merging needs the repository's checks to run on pull requests. Without that, every
+  fix waits for you.
+
+For a hard limit that does not depend on the crew following its instructions, turn on branch
+protection for the default branch on GitHub, requiring a pull request and its checks.
+
 ## Email
 
 A Bot can follow your email. Mail from your accounts is forwarded by a Cloudflare mail Worker to a
