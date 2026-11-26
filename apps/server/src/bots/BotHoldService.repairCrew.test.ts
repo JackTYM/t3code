@@ -133,3 +133,64 @@ it.effect("holds a thread a real repair crew launched, and frees the crew the Bo
     assert.deepStrictEqual(yield* held(own.id), [false, false, false]);
   }).pipe(provide(orchestration));
 });
+
+it.effect(
+  "holds the Bot's launch in a turn a repair crew's message began, not an ordinary crew's",
+  () => {
+    const { orchestration, bot } = fixture();
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(START);
+      const repair = yield* RepairService.RepairService;
+      const holds = yield* BotHoldService.BotHoldService;
+      yield* repair.signal({
+        kind: "watcher",
+        botThreadId: bot.id,
+        name: "disk",
+        count: 3,
+        firstAt: START - 60_000,
+        lastAt: START,
+      });
+      const wake = orchestration.sent.at(-1)!;
+      orchestration.startRun(bot, { id: wake.commandId, createdBy: "system" });
+      const signalId = /^bot-wake:health:([0-9a-f]{12}):/u.exec(wake.commandId)![1]!;
+      const { threadId: crew } = yield* repair.startRepair({ botThreadId: bot.id, signalId });
+      const helper = orchestration.addThread("thread:crew-helper", {
+        lineage: { parentThreadId: crew, relationshipToParent: "subagent", rootThreadId: crew },
+      });
+      const own = orchestration.addThread("thread:own-crew", {
+        groupedUnderThreadId: bot.id,
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+      const launches = () =>
+        holds
+          .check({
+            botThreadId: bot.id,
+            tool: "t3_thread_launch",
+            readonly: false,
+            params: { title: "Fix prod", message: "do it" },
+            environmentId: HERE,
+          })
+          .pipe(Effect.map((verdict) => verdict.held));
+
+      // A message from a crew, or from a subagent of one, started the turn: free of the user's say.
+      for (const sender of [crew, helper.id]) {
+        orchestration.startRun(bot, {
+          id: `message:from:${sender}`,
+          createdBy: "agent",
+          senderThreadId: sender,
+        });
+        assert.isTrue(yield* launches(), sender);
+      }
+      // An ordinary crew's message, the user's own and a message with no sender are not changed.
+      orchestration.startRun(bot, {
+        id: "message:from-own",
+        createdBy: "agent",
+        senderThreadId: own.id,
+      });
+      assert.isFalse(yield* launches());
+      orchestration.startRun(bot, { id: "message:typed", createdBy: "user" });
+      assert.isFalse(yield* launches());
+    }).pipe(provide(orchestration));
+  },
+);

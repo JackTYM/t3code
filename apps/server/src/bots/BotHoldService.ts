@@ -3,7 +3,9 @@ import {
   type BotHeldAction,
   type BotHoldListResult,
   type EnvironmentId,
+  type MessageId,
   type OrchestrationV2ThreadShell,
+  type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -97,16 +99,16 @@ const summarize = (tool: string, params: Readonly<Record<string, unknown>>) => {
 };
 
 const heldMessage = (summary: string) =>
-  `Held for the user: ${summary}. This turn was influenced by outside content (email or a watcher's output), so the user decides on this action. They allow or reject it in the Bot popover, and you are woken when they decide. Do not retry it now and do not look for another way to do it.`;
+  `Held for the user: ${summary}. This turn was influenced by outside content (email, a watcher's output or a repair crew's message), so the user decides on this action. They allow or reject it in the Bot popover, and you are woken when they decide. Do not retry it now and do not look for another way to do it.`;
 
 export class BotHoldService extends Context.Service<
   BotHoldService,
   {
     /**
-     * Whether a Bot's tool call goes ahead. In a turn outside content (email or a watcher's
-     * output) influenced, any call that is not read-only or the Bot's own memory is held instead
-     * of run: hostile text can talk the Bot into asking, but not into acting. Reads, tasks, notes
-     * and the mail reader are free.
+     * Whether a Bot's tool call goes ahead. In a turn outside content (email, a watcher's output
+     * or a repair crew's message) influenced, any call that is not read-only or the Bot's own
+     * memory is held instead of run: hostile text can talk the Bot into asking, but not into
+     * acting. Reads, tasks, notes and the mail reader are free.
      */
     readonly check: (call: HoldCall) => Effect.Effect<HoldVerdict>;
     readonly list: (botThreadId: ThreadId) => Effect.Effect<BotHoldListResult>;
@@ -153,6 +155,31 @@ const make = Effect.gen(function* () {
     return shell?.activeRunId ?? null;
   });
 
+  // One entry per Bot, its latest run, like `latestRunKind` below: a run's first message and its
+  // sender never change.
+  const latestRunSender = new Map<ThreadId, { readonly runId: RunId; readonly crew: boolean }>();
+
+  /**
+   * A repair crew, or a subagent of one, sent the message that began the run. A crew has the user's
+   * reach and its ids are easy to find, so a turn it started is as steerable as one email started.
+   */
+  const startedByCrew = Effect.fn("BotHoldService.startedByCrew")(function* (
+    botThreadId: ThreadId,
+    run: { readonly id: RunId; readonly userMessageId: MessageId },
+  ) {
+    const known = latestRunSender.get(botThreadId);
+    if (known?.runId === run.id) return known.crew;
+    const message = (yield* threads.getMessagesById(botThreadId, [run.userMessageId])).get(
+      run.userMessageId,
+    );
+    // A message that cannot be found is not remembered: it may not be written yet.
+    if (message === undefined) return false;
+    const sender = message.createdBy === "agent" ? message.senderThreadId : undefined;
+    const crew = sender !== undefined && (yield* repair.isCrewThread(sender));
+    latestRunSender.set(botThreadId, { runId: run.id, crew });
+    return crew;
+  });
+
   const influenced = Effect.fn("BotHoldService.influenced")(function* (botThreadId: ThreadId) {
     const runId = yield* activeRun(botThreadId);
     if (runId === null) return true;
@@ -166,6 +193,7 @@ const make = Effect.gen(function* () {
     ) {
       return true;
     }
+    if (yield* startedByCrew(botThreadId, run)) return true;
     // A finished task's report reaches its parent as the first message of a new run: the parent
     // run that spawned the task names that message and the tasks it carries.
     const reported = new Set(

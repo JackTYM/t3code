@@ -215,6 +215,7 @@ export const makeOrchestration = () => {
               ? run.threadId === threadId
               : filter.runIds.includes(run.id),
           ),
+          subagents: [],
         } as never),
       getMessagesById: (_threadId, ids) =>
         Effect.succeed(
