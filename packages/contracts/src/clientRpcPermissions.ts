@@ -1,3 +1,4 @@
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./git.ts";
 import {
@@ -80,8 +81,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // These stop code and run nothing new.
   [WS_METHODS.botWatcherPause]: AuthOrchestrationOperateScope,
   [WS_METHODS.botWatcherRemove]: AuthOrchestrationOperateScope,
-  // Grants are per host and used only by reviewed watchers, so giving or taking one back is held
-  // to the same scope as pausing a watcher.
+  // Taking a grant back, or giving a stored value, is held to the bar of pausing a watcher. A
+  // reference grant has the server read a secret the caller names, so `clientRpcRequiredScopes`
+  // adds providers:manage for it.
   [WS_METHODS.botSecretGrantSet]: AuthOrchestrationOperateScope,
   [WS_METHODS.botSecretGrantRemove]: AuthOrchestrationOperateScope,
   // Allowing lets a call run that can start code, as approving a watcher does; rejecting runs nothing.
@@ -160,6 +162,10 @@ export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 const decodePrepareThread = Schema.decodeUnknownSync(GitPreparePullRequestThreadInput);
 const decodeStackedAction = Schema.decodeUnknownSync(GitRunStackedActionInput);
 const decodeLinkPairing = Schema.decodeUnknownSync(PeerLinkLinkPairingInput);
+// Only the type is read: a stored value is redacted or plain depending on which side asks.
+const decodeSecretGrantValueType = Schema.decodeUnknownOption(
+  Schema.Struct({ value: Schema.Struct({ type: Schema.String }) }),
+);
 
 export function clientRpcRequiredScopes(
   method: string,
@@ -182,6 +188,11 @@ export function clientRpcRequiredScopes(
   if (method === WS_METHODS.peerLinksPairLink && input !== undefined) {
     const held = mcpClientScopes(decodeLinkPairing(input).access);
     return [AuthAccessWriteScope, ...held];
+  }
+  if (method === WS_METHODS.botSecretGrantSet && input !== undefined) {
+    const decoded = decodeSecretGrantValueType(input);
+    if (Option.isSome(decoded) && decoded.value.value.type === "reference")
+      return [AuthOrchestrationOperateScope, AuthProvidersManageScope];
   }
   if (method === WS_METHODS.guestShareCreate) {
     return [AuthAccessWriteScope, AuthOrchestrationReadScope];

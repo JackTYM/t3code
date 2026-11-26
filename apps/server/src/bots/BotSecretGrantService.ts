@@ -38,6 +38,9 @@ import * as BotService from "./BotService.ts";
 const VERSION_SECRET = "bot-secret-grants-version";
 const REJECTED_FILE = /^bot-secret-grants\.json\.rejected\.(\d+)(?:-(\d+))?$/u;
 const MAX_REJECTED_FILES = 5;
+// A watcher polls every minute or so: stamping each run would rewrite the signed file and its
+// version that often.
+const USE_STAMP_INTERVAL_MS = 60 * 60_000;
 
 const GrantRecord = Schema.Struct({
   hosts: BotSecretGrant.fields.hosts,
@@ -216,6 +219,14 @@ const make = Effect.gen(function* () {
     ),
   );
   const state = yield* Ref.make(initial.state);
+  // `unverified` describes the file found at start: it ends once a good signed file replaces it.
+  const trust = yield* Ref.make(initial.trust);
+  // Counts changes per grant. A run reads its value without the lock, and a grant changed or
+  // removed meanwhile must not be answered from that read.
+  const changes = new Map<string, number>();
+  const changesOf = (folder: string, name: string) => changes.get(`${folder}/${name}`) ?? 0;
+  const noteChange = (folder: string, name: string) =>
+    changes.set(`${folder}/${name}`, changesOf(folder, name) + 1);
 
   /** Saves the grants of every Bot with `name`'s record replaced (none removes it). */
   const commit = Effect.fn("BotSecretGrantService.commit")(
@@ -238,6 +249,7 @@ const make = Effect.gen(function* () {
         yield* fileSystem.writeFileString(temporary, text, { mode: 0o600 });
         yield* fileSystem.rename(temporary, statePath);
         // After the file, so a crash between them leaves the file newer than the count, never older.
+        yield* Ref.set(trust, "ok");
         yield* secrets
           .set(VERSION_SECRET, encodeBytes(String(next.version)))
           .pipe(
@@ -281,7 +293,7 @@ const make = Effect.gen(function* () {
             source: value.type,
             ...(lastUsedAt === undefined ? {} : { lastUsedAt }),
           })),
-        approvals: initial.trust,
+        approvals: yield* Ref.get(trust),
       };
     },
   );
@@ -304,6 +316,15 @@ const make = Effect.gen(function* () {
         ) {
           return yield* failure(botThreadId, name, "limit");
         }
+        noteChange(folder, name);
+        // What a failed save puts back: the value this grant held, or nothing for a new one.
+        const previous =
+          secret !== undefined && existing?.value.type === "stored"
+            ? yield* secrets.get(valueName).pipe(
+                Effect.map(Option.getOrUndefined),
+                Effect.catch(() => Effect.undefined),
+              )
+            : undefined;
         if (secret !== undefined) {
           yield* secrets
             .set(valueName, encodeBytes(secret))
@@ -317,9 +338,15 @@ const make = Effect.gen(function* () {
               ? { type: "stored" }
               : { type: "reference", reference: value.reference },
         }).pipe(
-          // A new value under the old hosts, or none saved at all, must not be left to resolve.
+          // A new value must not be left under the old hosts, nor the old one lost.
           Effect.tapError(() =>
-            secret === undefined ? Effect.void : Effect.ignore(secrets.remove(valueName)),
+            secret === undefined
+              ? Effect.void
+              : Effect.ignore(
+                  previous === undefined
+                    ? secrets.remove(valueName)
+                    : secrets.set(valueName, previous),
+                ),
           ),
           Effect.mapError(ioError(botThreadId, name)),
         );
@@ -332,7 +359,7 @@ const make = Effect.gen(function* () {
               ),
             );
         }
-      }).pipe(locked);
+      }).pipe(Effect.ensuring(Effect.sync(() => noteChange(folder, name))), locked);
     },
   );
 
@@ -343,12 +370,13 @@ const make = Effect.gen(function* () {
     yield* Effect.gen(function* () {
       const existing = recordIn(yield* Ref.get(state), folder, name);
       if (existing === undefined) return yield* failure(botThreadId, name, "not_found");
+      noteChange(folder, name);
       // The value first: a failure leaves a grant that resolves to nothing, which a retry finishes.
       yield* secrets
         .remove(storedSecretName(folder, name))
         .pipe(Effect.mapError(ioError(botThreadId, name)));
       yield* commit(folder, name, undefined).pipe(Effect.mapError(ioError(botThreadId, name)));
-    }).pipe(locked);
+    }).pipe(Effect.ensuring(Effect.sync(() => noteChange(folder, name))), locked);
   });
 
   const readValue = (folder: string, name: string, record: GrantRecord) =>
@@ -368,25 +396,37 @@ const make = Effect.gen(function* () {
     "BotSecretGrantService.resolve",
   )(function* ({ botThreadId, name, hosts }) {
     const folder = BotService.memoryFolderName(botThreadId);
+    // Taken before the record, so a change in between is seen as one.
+    const seenChanges = changesOf(folder, name);
+    const record = recordIn(yield* Ref.get(state), folder, name);
+    if (record === undefined) return { _tag: "Missing", reason: "not granted" } as const;
+    if (hosts.length === 0 || !hosts.every((host) => record.hosts.includes(host))) {
+      return { _tag: "Missing", reason: "host not covered" } as const;
+    }
+    // Outside the lock: a provider may take a while to unlock, and the user's changes wait for nobody.
+    const value = yield* readValue(folder, name, record);
+    if (value === undefined || value.trim() === "") {
+      return { _tag: "Missing", reason: "unreadable" } as const;
+    }
     return yield* Effect.gen(function* () {
-      const record = recordIn(yield* Ref.get(state), folder, name);
-      if (record === undefined) return { _tag: "Missing", reason: "not granted" } as const;
-      if (hosts.length === 0 || !hosts.every((host) => record.hosts.includes(host))) {
-        return { _tag: "Missing", reason: "host not covered" } as const;
+      const latest = recordIn(yield* Ref.get(state), folder, name);
+      if (latest === undefined || changesOf(folder, name) !== seenChanges) {
+        return { _tag: "Missing", reason: "not granted" } as const;
       }
-      const value = yield* readValue(folder, name, record);
-      if (value === undefined || value.trim() === "") {
-        return { _tag: "Missing", reason: "unreadable" } as const;
+      const now = yield* DateTime.now;
+      const lastUse = latest.lastUsedAt === undefined ? undefined : Date.parse(latest.lastUsedAt);
+      if (
+        lastUse === undefined ||
+        Number.isNaN(lastUse) ||
+        DateTime.toEpochMillis(now) - lastUse >= USE_STAMP_INTERVAL_MS
+      ) {
+        // The time of use is for the user's list: a save that fails does not hold back the run.
+        yield* commit(folder, name, { ...latest, lastUsedAt: DateTime.formatIso(now) }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("The time a secret grant was used could not be saved.", { cause }),
+          ),
+        );
       }
-      // The time of use is for the user's list: a save that fails does not hold back the run.
-      yield* commit(folder, name, {
-        ...record,
-        lastUsedAt: DateTime.formatIso(yield* DateTime.now),
-      }).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("The time a secret grant was used could not be saved.", { cause }),
-        ),
-      );
       return { _tag: "Ok", value: Redacted.make(value) } as const;
     }).pipe(locked);
   });

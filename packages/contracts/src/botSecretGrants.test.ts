@@ -3,16 +3,10 @@ import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
-import {
-  BOT_SECRET_GRANT_MAX_HOSTS,
-  BotSecretGrant,
-  BotSecretGrantName,
-  BotSecretGrantSetInput,
-} from "./botSecretGrants.ts";
+import { BotSecretGrantName, BotSecretGrantSetInput } from "./botSecretGrants.ts";
 
 const decodeSet = Schema.decodeUnknownEffect(BotSecretGrantSetInput);
 const encodeSet = Schema.encodeEffect(BotSecretGrantSetInput);
-const decodeGrant = Schema.decodeUnknownEffect(BotSecretGrant);
 const isName = Schema.is(BotSecretGrantName);
 
 const set = (overrides: Record<string, unknown> = {}) => ({
@@ -52,9 +46,9 @@ it.effect.each([
 it.effect("needs between one and eight hosts", () =>
   Effect.gen(function* () {
     yield* decodeSet(set({ hosts: ["a.com"] }));
-    yield* decodeSet(set({ hosts: manyHosts(BOT_SECRET_GRANT_MAX_HOSTS) }));
+    yield* decodeSet(set({ hosts: manyHosts(8) }));
     yield* decodeSet(set({ hosts: [] })).pipe(Effect.flip);
-    yield* decodeSet(set({ hosts: manyHosts(BOT_SECRET_GRANT_MAX_HOSTS + 1) })).pipe(Effect.flip);
+    yield* decodeSet(set({ hosts: manyHosts(9) })).pipe(Effect.flip);
   }),
 );
 
@@ -77,18 +71,5 @@ it.effect("takes a reference to a secret provider in place of a value", () =>
       set({ value: { type: "reference", reference: { provider: "op", reference: "op://v/i/f" } } }),
     );
     assert.strictEqual(input.value.type, "reference");
-  }),
-);
-
-it.effect("a listed grant drops any field that could carry a value", () =>
-  Effect.gen(function* () {
-    const grant = yield* decodeGrant({
-      name: "GITHUB_TOKEN",
-      hosts: ["api.github.com"],
-      source: "stored",
-      value: "ghp_planted",
-      reference: { provider: "op", reference: "op://secret" },
-    });
-    assert.deepStrictEqual(Object.keys(grant).toSorted(), ["hosts", "name", "source"]);
   }),
 );

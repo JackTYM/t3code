@@ -11,7 +11,9 @@ import {
 } from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -64,10 +66,26 @@ const makeHarness = Effect.gen(function* () {
     Effect.provideContext(base),
   );
   const provided = new Map<string, string | undefined>();
+  /** While set, a provider read says it has started and then waits to be let go. */
+  const slowRead: {
+    current: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
+  } = {
+    current: undefined,
+  };
+  /** While true, the secret store refuses every grant's stored value. */
+  const failValues = { current: false };
   const resolver = Layer.succeed(
     SecretResolver.SecretResolver,
     SecretResolver.SecretResolver.of({
-      read: (references) => Effect.succeed(references.map((ref) => provided.get(ref.reference))),
+      read: (references) =>
+        Effect.gen(function* () {
+          const gate = slowRead.current;
+          if (gate !== undefined) {
+            yield* Deferred.succeed(gate.started, undefined);
+            yield* Deferred.await(gate.release);
+          }
+          return references.map((ref) => provided.get(ref.reference));
+        }),
       invalidate: () => Effect.void,
       label: (provider) => Effect.succeed(provider),
     }),
@@ -84,10 +102,24 @@ const makeHarness = Effect.gen(function* () {
         ),
       ),
     ).pipe(Effect.map((context) => Effect.provideContext(context)));
-  const storeOf = Context.get(base, ServerSecretStore.ServerSecretStore);
+  const realStore = Context.get(base, ServerSecretStore.ServerSecretStore);
+  const refusing = (name: string) =>
+    failValues.current && name.startsWith("bot-grant-")
+      ? Effect.fail(
+          new ServerSecretStore.SecretStoreReadError({
+            resource: `secret ${name}`,
+            cause: "refused",
+          }),
+        )
+      : undefined;
+  const storeOf: ServerSecretStore.ServerSecretStore["Service"] = {
+    ...realStore,
+    get: (name) => refusing(name) ?? realStore.get(name),
+    set: (name, value) => refusing(name) ?? realStore.set(name, value),
+  };
   const grantsFile = path.join(stateDir, "bot-secret-grants.json");
   const storedValue = (name: string) =>
-    storeOf
+    realStore
       .get(name)
       .pipe(Effect.map(Option.map((bytes) => new TextDecoder().decode(bytes))), Effect.orDie);
   return {
@@ -95,6 +127,11 @@ const makeHarness = Effect.gen(function* () {
     otherBot,
     plainThread,
     provided,
+    slowRead,
+    failValues,
+    /** Makes the next save fail: its temporary file is a folder. */
+    breakWrites: fileSystem.makeDirectory(`${grantsFile}.tmp`).pipe(Effect.orDie),
+    mendWrites: fileSystem.remove(`${grantsFile}.tmp`, { recursive: true }).pipe(Effect.orDie),
     storeOf,
     stateDir,
     grantsFile,
@@ -225,7 +262,7 @@ it.effect("keeps one Bot's grants from another Bot", () =>
   ),
 );
 
-it.effect("reads a reference when it is used, so the value is never kept", () =>
+it.effect("reads a reference from the provider at each use, and keeps no stored copy of it", () =>
   withService((harness, service) =>
     Effect.gen(function* () {
       const bot = harness.botThread.id;
@@ -274,13 +311,14 @@ it.effect("keeps a stored value in the secret store under a name that names its 
   ),
 );
 
-it.effect("stamps when a value was last read, and only when it was given out", () =>
+it.effect("stamps when a value was last read, only when given out, and at most hourly", () =>
   withService((harness, service) =>
     Effect.gen(function* () {
       const bot = harness.botThread.id;
       yield* grant(service, bot, "GITHUB_TOKEN");
       const lastUsed = () =>
         service.list(bot).pipe(Effect.map(({ grants }) => grants[0]?.lastUsedAt));
+      const use = () => service.resolve({ botThreadId: bot, name: "GITHUB_TOKEN", hosts: GITHUB });
       assert.isUndefined(yield* lastUsed());
 
       yield* service.resolve({
@@ -291,10 +329,60 @@ it.effect("stamps when a value was last read, and only when it was given out", (
       assert.isUndefined(yield* lastUsed());
 
       yield* TestClock.adjust("5 minutes");
-      yield* service.resolve({ botThreadId: bot, name: "GITHUB_TOKEN", hosts: GITHUB });
+      yield* use();
       assert.strictEqual(yield* lastUsed(), "2026-11-26T12:05:00.000Z");
+
+      // A poll every minute must not rewrite the signed file and its version each time.
+      const saved = yield* harness.read;
+      yield* TestClock.adjust("30 minutes");
+      assert.strictEqual((yield* use())._tag, "Ok");
+      assert.strictEqual(yield* lastUsed(), "2026-11-26T12:05:00.000Z");
+      assert.strictEqual(yield* harness.read, saved);
+
+      yield* TestClock.adjust("31 minutes");
+      yield* use();
+      assert.strictEqual(yield* lastUsed(), "2026-11-26T13:06:00.000Z");
     }),
   ),
+);
+
+it.effect(
+  "does not give out a value for a grant that was removed or replaced during the read",
+  () =>
+    withService((harness, service) =>
+      Effect.gen(function* () {
+        const bot = harness.botThread.id;
+        harness.provided.set("op://v/i/f", "from the provider");
+        yield* grant(service, bot, "OP_TOKEN", {
+          type: "reference",
+          reference: reference("op://v/i/f"),
+        });
+        const resolving = (name: string) =>
+          service.resolve({ botThreadId: bot, name, hosts: GITHUB });
+
+        for (const change of ["replace", "remove"] as const) {
+          const started = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          harness.slowRead.current = { started, release };
+          const pending = yield* Effect.forkChild(resolving("OP_TOKEN"));
+          yield* Deferred.await(started);
+          // The slow read holds no lock, so the user's change is not kept waiting behind it.
+          yield* change === "remove"
+            ? service.remove({ botThreadId: bot, name: "OP_TOKEN" })
+            : grant(service, bot, "OP_TOKEN", {
+                type: "reference",
+                reference: reference("op://v/i/f"),
+              });
+          harness.slowRead.current = undefined;
+          yield* Deferred.succeed(release, undefined);
+          assert.deepStrictEqual(yield* Fiber.join(pending), {
+            _tag: "Missing",
+            reason: "not granted",
+          });
+        }
+        assert.isUndefined((yield* service.list(bot)).grants[0]?.lastUsedAt);
+      }),
+    ),
 );
 
 it.effect("replaces the hosts and the value when a name is given again", () =>
@@ -323,6 +411,37 @@ it.effect("replaces the hosts and the value when a name is given again", () =>
         (yield* service.list(bot)).grants.map(({ source }) => source),
         ["reference"],
       );
+    }),
+  ),
+);
+
+it.effect("keeps the old value and hosts when a replacement cannot be saved", () =>
+  withService((harness, service) =>
+    Effect.gen(function* () {
+      const bot = harness.botThread.id;
+      const storedName = "bot-grant-thread-thread~3abot-GITHUB_TOKEN";
+      yield* grant(service, bot, "GITHUB_TOKEN", stored("first"));
+
+      yield* harness.breakWrites;
+      const failed = yield* grant(service, bot, "GITHUB_TOKEN", stored("second"), [
+        "uploads.github.com",
+      ]).pipe(Effect.flip);
+      assert.strictEqual(failed.reason, "io");
+      assert.deepStrictEqual(yield* harness.storedValue(storedName), Option.some("first"));
+      assert.deepStrictEqual(
+        (yield* service.list(bot)).grants.map(({ hosts }) => hosts),
+        [GITHUB],
+      );
+
+      // A grant that never existed leaves nothing behind.
+      assert.strictEqual((yield* grant(service, bot, "NEW_TOKEN").pipe(Effect.flip)).reason, "io");
+      assert.isTrue(
+        Option.isNone(yield* harness.storedValue("bot-grant-thread-thread~3abot-NEW_TOKEN")),
+      );
+
+      yield* harness.mendWrites;
+      const ok = yield* service.resolve({ botThreadId: bot, name: "GITHUB_TOKEN", hosts: GITHUB });
+      assert.strictEqual(ok._tag === "Ok" ? Redacted.value(ok.value) : undefined, "first");
     }),
   ),
 );
@@ -461,8 +580,11 @@ it.effect.each(["tampered", "unsigned", "not json", "rolled back"] as const)(
           yield* harness.storedValue("bot-grant-thread-thread~3abot-GITHUB_TOKEN"),
           Option.some(SECRET),
         );
+        // The first save writes a good signed file, so the warning does not outlive the cause.
         yield* grant(service, bot, "GITHUB_TOKEN");
-        assert.strictEqual((yield* service.list(bot)).grants.length, 1);
+        const after = yield* service.list(bot);
+        assert.strictEqual(after.grants.length, 1);
+        assert.strictEqual(after.approvals, "ok");
       }).pipe(second);
 
       const rejected = yield* harness.rejectedFiles;
@@ -496,7 +618,7 @@ it.effect(
     }),
 );
 
-it.effect("never lets a value into a list, an error or a log line", () =>
+it.effect("never lets a value or a reference into a list, an error or a log line", () =>
   Effect.gen(function* () {
     const lines: Array<string> = [];
     const logger = Logger.layer(
@@ -508,21 +630,28 @@ it.effect("never lets a value into a list, an error or a log line", () =>
     const bot = harness.botThread.id;
     const run = yield* harness.boot;
     const seen: Array<unknown> = [];
+    const REFERENCE = "op://v/i/f";
     yield* Effect.gen(function* () {
       const service = yield* BotSecretGrantService.BotSecretGrantService;
       seen.push(yield* grant(service, bot, "GITHUB_TOKEN"));
       seen.push(yield* grant(service, bot, "GITHUB_TOKEN", stored(SECRET), ["uploads.github.com"]));
-      harness.provided.set("op://v/i/f", SECRET);
+      harness.provided.set(REFERENCE, SECRET);
       seen.push(
         yield* grant(service, bot, "OP_TOKEN", {
           type: "reference",
-          reference: reference("op://v/i/f"),
+          reference: reference(REFERENCE),
         }),
       );
       seen.push(yield* service.list(bot));
-      seen.push(yield* service.resolve({ botThreadId: bot, name: "GITHUB_TOKEN", hosts: GITHUB }));
+      seen.push(
+        yield* service.resolve({
+          botThreadId: bot,
+          name: "GITHUB_TOKEN",
+          hosts: ["uploads.github.com"],
+        }),
+      );
       seen.push(yield* service.resolve({ botThreadId: bot, name: "OP_TOKEN", hosts: GITHUB }));
-      harness.provided.set("op://v/i/f", undefined);
+      harness.provided.set(REFERENCE, undefined);
       seen.push(yield* service.resolve({ botThreadId: bot, name: "OP_TOKEN", hosts: GITHUB }));
       seen.push(yield* service.resolve({ botThreadId: bot, name: "NOPE", hosts: GITHUB }));
       seen.push(
@@ -531,6 +660,30 @@ it.effect("never lets a value into a list, an error or a log line", () =>
         ),
       );
       seen.push(yield* service.remove({ botThreadId: bot, name: "NOPE" }).pipe(Effect.flip));
+
+      // A secret store that refuses: the save fails with an error, a read logs a warning.
+      harness.failValues.current = true;
+      seen.push(yield* grant(service, bot, "GITHUB_TOKEN", stored(SECRET)).pipe(Effect.flip));
+      seen.push(yield* grant(service, bot, "NEW_TOKEN", stored(SECRET)).pipe(Effect.flip));
+      seen.push(
+        yield* service.resolve({
+          botThreadId: bot,
+          name: "GITHUB_TOKEN",
+          hosts: ["uploads.github.com"],
+        }),
+      );
+      harness.failValues.current = false;
+
+      // A save that fails after the value was written.
+      yield* harness.breakWrites;
+      seen.push(
+        yield* grant(service, bot, "GITHUB_TOKEN", stored(SECRET), ["uploads.github.com"]).pipe(
+          Effect.flip,
+        ),
+      );
+      harness.provided.set(REFERENCE, SECRET);
+      seen.push(yield* service.resolve({ botThreadId: bot, name: "OP_TOKEN", hosts: GITHUB }));
+      yield* harness.mendWrites;
       seen.push(yield* service.remove({ botThreadId: bot, name: "GITHUB_TOKEN" }));
     }).pipe(run, Effect.provide(logger));
 
@@ -539,10 +692,14 @@ it.effect("never lets a value into a list, an error or a log line", () =>
         ? `${value.message}${JSON.stringify(value)}`
         : (JSON.stringify(value) ?? ""),
     );
-    // The resolve that does give the value out is the only output that may hold it, and only as a redacted wrapper.
-    for (const text of [...outputs, ...lines, yield* harness.read]) {
+    assert.isAbove(lines.length, 0);
+    assert.isTrue(seen.some(isGrantError));
+    // The resolves that give a value out hold it only as a redacted wrapper.
+    for (const text of [...outputs, ...lines]) {
       assert.notInclude(text, SECRET);
+      assert.notInclude(text, REFERENCE);
     }
-    assert.isAbove(lines.length + outputs.length, 0);
+    // The file is where a reference is kept, so only the value must be absent from it.
+    assert.notInclude(yield* harness.read, SECRET);
   }),
 );

@@ -437,6 +437,36 @@ it.effect(
     }),
 );
 
+it.effect(
+  "a secret grant by reference needs provider management, and a stored value does not",
+  () =>
+    Effect.gen(function* () {
+      const registry = yield* setup;
+      const set = createCommandPermissions(runtime, WS_METHODS.botSecretGrantSet);
+      const stored = { value: { type: "stored", secret: "typed-value" } };
+      const reference = {
+        value: { type: "reference", reference: { provider: "personal", reference: "op://v/i/f" } },
+      };
+      registry.set(sessions(env), AsyncResult.success(grant(true)));
+      expect(registry.get(set.permissionAtom(env, stored))).toBe(true);
+      expect(registry.get(set.permissionAtom(env, reference))).toBe(false);
+      yield* set.authorize(registry, env, stored);
+      expect(
+        (yield* set.authorize(registry, env, reference).pipe(Effect.flip)).requiredPermission,
+      ).toBe(AuthProvidersManageScope);
+      registry.set(
+        sessions(env),
+        AsyncResult.success({
+          ...grant(true),
+          scopes: [AuthOrchestrationOperateScope, AuthProvidersManageScope],
+          permissions: [AuthOrchestrationOperateScope, AuthProvidersManageScope],
+        }),
+      );
+      expect(registry.get(set.permissionAtom(env, reference))).toBe(true);
+      yield* set.authorize(registry, env, reference);
+    }),
+);
+
 it.effect.each(["commit", "push", "commit_push", "create_pr", "commit_push_pr"] as const)(
   "%s needs thread read permission only when generating a PR from a thread",
   (action) =>

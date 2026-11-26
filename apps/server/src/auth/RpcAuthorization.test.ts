@@ -29,6 +29,7 @@ import {
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import * as RpcTest from "effect/rpc/RpcTest";
 
@@ -874,6 +875,75 @@ it.effect("answering a secret request with a reference needs provider management
       yield* manageOnly[WS_METHODS.secretsAnswerRequest]({ ...request, answer: reference }).pipe(
         Effect.flip,
       ),
+    ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
+  }),
+);
+
+it.effect("giving a Bot a secret grant by reference needs provider management", () =>
+  Effect.gen(function* () {
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (
+          tag,
+        ): tag is Exclude<
+          keyof typeof RPC_REQUIRED_SCOPES,
+          typeof WS_METHODS.botSecretGrantSet | typeof WS_METHODS.botSecretGrantRemove
+        > => tag !== WS_METHODS.botSecretGrantSet && tag !== WS_METHODS.botSecretGrantRemove,
+      ),
+    );
+    const handled: string[] = [];
+    const handlers = Layer.merge(
+      group.toLayerHandler(WS_METHODS.botSecretGrantSet, ({ value }) =>
+        Effect.sync(() => {
+          handled.push(value.type);
+        }),
+      ),
+      group.toLayerHandler(WS_METHODS.botSecretGrantRemove, () =>
+        Effect.sync(() => {
+          handled.push("remove");
+        }),
+      ),
+    );
+    const clientWith = (...scopes: Parameters<typeof RpcAuthorization.layer>[0]) =>
+      RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handlers, RpcAuthorization.layer(scopes))),
+      );
+    const base = {
+      threadId: ThreadId.make("thread"),
+      name: "GITHUB_TOKEN",
+      hosts: ["api.github.com"],
+    };
+    const reference = {
+      ...base,
+      value: {
+        type: "reference" as const,
+        reference: {
+          provider: SecretProviderId.make("personal"),
+          reference: "op://Private/GitHub/token",
+        },
+      },
+    };
+    const stored = {
+      ...base,
+      value: { type: "stored" as const, secret: Redacted.make("typed-value") },
+    };
+
+    // A reference has the server read a secret the caller names, so operating threads is not enough.
+    const operate = yield* clientWith(AuthOrchestrationOperateScope);
+    expect(yield* operate[WS_METHODS.botSecretGrantSet](reference).pipe(Effect.flip)).toMatchObject(
+      { requiredPermission: AuthProvidersManageScope },
+    );
+    expect(handled).toEqual([]);
+    yield* operate[WS_METHODS.botSecretGrantSet](stored);
+    yield* operate[WS_METHODS.botSecretGrantRemove]({ threadId: base.threadId, name: base.name });
+    expect(handled).toEqual(["stored", "remove"]);
+
+    const manage = yield* clientWith(AuthOrchestrationOperateScope, AuthProvidersManageScope);
+    yield* manage[WS_METHODS.botSecretGrantSet](reference);
+    expect(handled).toEqual(["stored", "remove", "reference"]);
+    const manageOnly = yield* clientWith(AuthProvidersManageScope);
+    expect(
+      yield* manageOnly[WS_METHODS.botSecretGrantSet](reference).pipe(Effect.flip),
     ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
   }),
 );

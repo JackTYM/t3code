@@ -10,13 +10,12 @@ import { SecretReference } from "./secretReference.ts";
 export const BotSecretGrantName = Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9_]{0,63}$/u));
 export type BotSecretGrantName = typeof BotSecretGrantName.Type;
 
-export const BotSecretGrantHost = Schema.String.check(
+const BotSecretGrantHost = Schema.String.check(
   Schema.isPattern(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/u),
   Schema.isMaxLength(253),
 );
-export type BotSecretGrantHost = typeof BotSecretGrantHost.Type;
 
-export const BOT_SECRET_GRANT_MAX_HOSTS = 8;
+const BOT_SECRET_GRANT_MAX_HOSTS = 8;
 export const BOT_SECRET_GRANTS_MAX_PER_BOT = 24;
 
 /** What the list shows. It never carries a value, and a reference's text is not shown to a Bot. */
