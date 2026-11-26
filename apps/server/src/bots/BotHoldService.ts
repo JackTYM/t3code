@@ -3,6 +3,7 @@ import {
   type BotHeldAction,
   type BotHoldListResult,
   type EnvironmentId,
+  type OrchestrationV2ThreadShell,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -13,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
+import type * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as BotService from "./BotService.ts";
 import * as RepairService from "./RepairService.ts";
@@ -28,6 +30,8 @@ const REPAIR_REFUSED_MESSAGE = `${REPAIR_START_TOOL} works only in a turn that b
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const MAIL_READER_ROLE = "mail-reader";
 const MAX_HELD_PER_BOT = 20;
+/** How many launches deep a thread may be and still be traced back to the Bot that began them. */
+const MAX_LAUNCH_HOPS = 8;
 const INPUT_MAX_CHARS = 8_000;
 const SUMMARY_TITLE_MAX_CHARS = 80;
 
@@ -206,23 +210,69 @@ const make = Effect.gen(function* () {
       Effect.ignore,
     );
 
+  // The thread whose message started each thread, kept because a first message never changes.
+  // Only a thread that has one is kept: a thread launched with no prompt may get one later.
+  const launchers = new Map<ThreadId, ThreadId>();
+
+  /** The thread that sent a thread's first message, which is the launch's own prompt. */
+  const launcherOf = Effect.fn("BotHoldService.launcherOf")(function* (threadId: ThreadId) {
+    const known = launchers.get(threadId);
+    if (known !== undefined) return known;
+    const { runs } = yield* threads.getThreadRecords(threadId, ["runs"]);
+    const first = runs.reduce<(typeof runs)[number] | undefined>(
+      (earliest, run) =>
+        earliest === undefined || run.ordinal < earliest.ordinal ? run : earliest,
+      undefined,
+    );
+    if (first === undefined) return undefined;
+    const message = (yield* threads.getMessagesById(threadId, [first.userMessageId])).get(
+      first.userMessageId,
+    );
+    const sender = message?.createdBy === "agent" ? message.senderThreadId : undefined;
+    if (sender !== undefined) launchers.set(threadId, sender);
+    return sender;
+  });
+
   /**
-   * The Bot's own thread or a thread of its crew. A repair crew (and its subagents) is not: it runs
-   * unattended with the user's reach and its id is easy to find, so a Bot steering it would be a
-   * Bot steering that agent, which an influenced turn must not.
+   * Grouping proves nothing: what a repair crew launches is grouped under the Bot too. So the
+   * first message is followed through the Bot's group to the Bot (yes) or a repair crew (no); a
+   * missing one, an unreadable sender or a long chain is no.
+   */
+  const launchedByBot: (
+    botThreadId: ThreadId,
+    shell: OrchestrationV2ThreadShell,
+    hops: number,
+  ) => Effect.Effect<boolean, Orchestrator.OrchestratorV2Error> = Effect.fn(
+    "BotHoldService.launchedByBot",
+  )(function* (botThreadId, shell, hops) {
+    if (shell.id === botThreadId) return true;
+    if (hops > MAX_LAUNCH_HOPS || (yield* repair.crewOf(shell.id)) !== undefined) return false;
+    const { relationshipToParent, parentThreadId } = shell.lineage;
+    if (relationshipToParent === "subagent" && parentThreadId !== null) {
+      const parent = yield* threads.getThreadShell(parentThreadId);
+      return parent != null && (yield* launchedByBot(botThreadId, parent, hops + 1));
+    }
+    if (shell.groupedUnderThreadId !== botThreadId) return false;
+    if (shell.createdBy === "user") return true;
+    const sender = yield* launcherOf(shell.id);
+    if (sender === undefined) return false;
+    if (sender === botThreadId) return true;
+    const senderShell = yield* threads.getThreadShell(sender);
+    return senderShell != null && (yield* launchedByBot(botThreadId, senderShell, hops + 1));
+  });
+
+  /**
+   * The Bot's own thread or a thread of its crew that the Bot launched. A repair crew (and its
+   * subagents), and anything it launched, is not: they run unattended with the user's reach and
+   * their ids are easy to find, so a Bot steering one would be a Bot steering that agent, which an
+   * influenced turn must not.
    */
   const isCrew = (botThreadId: ThreadId, threadId: unknown) =>
     typeof threadId !== "string"
       ? Effect.succeed(true)
       : Effect.gen(function* () {
           const shell = yield* threads.getThreadShell(threadId as ThreadId);
-          if (shell === null) return false;
-          const grouped =
-            shell.id === botThreadId ||
-            shell.groupedUnderThreadId === botThreadId ||
-            (shell.lineage.relationshipToParent === "subagent" &&
-              shell.lineage.parentThreadId === botThreadId);
-          return grouped && (yield* repair.crewOf(shell.id)) === undefined;
+          return shell != null && (yield* launchedByBot(botThreadId, shell, 0));
         }).pipe(Effect.orElseSucceed(() => false));
 
   const hold = Effect.fn("BotHoldService.hold")(function* (

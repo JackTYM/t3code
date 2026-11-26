@@ -18,6 +18,21 @@ const REPAIR_CREW_WORKER = ThreadId.make("thread:repair-crew-worker");
 const STRANGER = ThreadId.make("thread:stranger");
 const READER = ThreadId.make("thread:reader");
 const WORKER = ThreadId.make("thread:worker");
+// Threads a crew launched with t3_thread_launch are grouped under the Bot too, and the launch's
+// first message names the thread that sent it.
+const SIBLING = ThreadId.make("thread:sibling");
+const SIBLING_OF_SIBLING = ThreadId.make("thread:sibling-of-sibling");
+const SIBLING_OF_WORKER = ThreadId.make("thread:sibling-of-repair-worker");
+const BARE = ThreadId.make("thread:bare");
+const FROM_STRANGER = ThreadId.make("thread:from-stranger");
+const FROM_MISSING = ThreadId.make("thread:from-missing");
+const USER_CREW = ThreadId.make("thread:user-crew");
+const CREW_OF_CREW = ThreadId.make("thread:crew-of-crew");
+const CREW_HELPER = ThreadId.make("thread:crew-helper");
+const CREW_OF_HELPER = ThreadId.make("thread:crew-of-helper");
+const LOOP_A = ThreadId.make("thread:loop-a");
+const LOOP_B = ThreadId.make("thread:loop-b");
+const CHAIN = Array.from({ length: 12 }, (_, index) => ThreadId.make(`thread:chain-${index}`));
 const RUN = RunId.make("run:active");
 const HERE = EnvironmentId.make("environment:here");
 
@@ -30,9 +45,55 @@ interface Fixture {
   readonly reported?: ReadonlyArray<{ readonly id: string; readonly childThreadId: ThreadId }>;
 }
 
+const launched = { createdBy: "agent", creationSource: "mcp" } as const;
+const crewShell = (id: ThreadId, fields: object = {}) => ({
+  id,
+  activeRunId: null,
+  groupedUnderThreadId: BOT,
+  lineage: {},
+  ...launched,
+  ...fields,
+});
+
+/** Who sent the first message of each thread, as `t3_thread_launch` records it. */
+const firstSenders: Readonly<Record<string, ThreadId>> = {
+  [CREW]: BOT,
+  [CREW_OF_CREW]: CREW,
+  [CREW_OF_HELPER]: CREW_HELPER,
+  [SIBLING]: REPAIR_CREW,
+  [SIBLING_OF_SIBLING]: SIBLING,
+  [SIBLING_OF_WORKER]: REPAIR_CREW_WORKER,
+  [FROM_STRANGER]: STRANGER,
+  [FROM_MISSING]: ThreadId.make("thread:gone"),
+  [LOOP_A]: LOOP_B,
+  [LOOP_B]: LOOP_A,
+  [CHAIN[0]!]: CREW,
+  ...Object.fromEntries(CHAIN.slice(1).map((id, index) => [id, CHAIN[index]!])),
+};
+
 const shells = {
   [BOT]: { id: BOT, activeRunId: RUN, groupedUnderThreadId: null, lineage: {} },
-  [CREW]: { id: CREW, activeRunId: null, groupedUnderThreadId: BOT, lineage: {} },
+  [CREW]: crewShell(CREW),
+  [CREW_OF_CREW]: crewShell(CREW_OF_CREW),
+  [CREW_HELPER]: {
+    id: CREW_HELPER,
+    activeRunId: null,
+    groupedUnderThreadId: null,
+    lineage: { relationshipToParent: "subagent", parentThreadId: CREW },
+  },
+  [CREW_OF_HELPER]: crewShell(CREW_OF_HELPER),
+  [SIBLING]: crewShell(SIBLING),
+  [SIBLING_OF_SIBLING]: crewShell(SIBLING_OF_SIBLING),
+  [SIBLING_OF_WORKER]: crewShell(SIBLING_OF_WORKER),
+  [FROM_STRANGER]: crewShell(FROM_STRANGER),
+  [FROM_MISSING]: crewShell(FROM_MISSING),
+  // A launch with no prompt has no first message, so nothing says who launched it.
+  [BARE]: crewShell(BARE),
+  // A thread the user made in the Bot's group from a client.
+  [USER_CREW]: crewShell(USER_CREW, { createdBy: "user", creationSource: "web" }),
+  [LOOP_A]: crewShell(LOOP_A),
+  [LOOP_B]: crewShell(LOOP_B),
+  ...Object.fromEntries(CHAIN.map((id) => [id, crewShell(id)])),
   [WORKER]: {
     id: WORKER,
     activeRunId: null,
@@ -40,13 +101,10 @@ const shells = {
     lineage: { relationshipToParent: "subagent", parentThreadId: BOT },
   },
   [STRANGER]: { id: STRANGER, activeRunId: null, groupedUnderThreadId: null, lineage: {} },
-  [REPAIR_CREW]: { id: REPAIR_CREW, activeRunId: null, groupedUnderThreadId: BOT, lineage: {} },
-  [REPAIR_CREW_WORKER]: {
-    id: REPAIR_CREW_WORKER,
-    activeRunId: null,
-    groupedUnderThreadId: BOT,
+  [REPAIR_CREW]: crewShell(REPAIR_CREW),
+  [REPAIR_CREW_WORKER]: crewShell(REPAIR_CREW_WORKER, {
     lineage: { relationshipToParent: "subagent", parentThreadId: REPAIR_CREW },
-  },
+  }),
 } as const;
 
 const run = <A, E>(
@@ -81,7 +139,7 @@ const run = <A, E>(
       }),
       Layer.mock(ThreadManagementService.ThreadManagementService)({
         getThreadShell: (threadId) =>
-          Effect.succeed((shells as Record<string, unknown>)[threadId] as never),
+          Effect.succeed(((shells as Record<string, unknown>)[threadId] ?? null) as never),
         getThreadRecords: (threadId) =>
           Effect.succeed(
             (threadId === BOT
@@ -113,7 +171,29 @@ const run = <A, E>(
                     childThreadId: task.childThreadId,
                   })),
                 }
-              : { thread: { mailReader: threadId === READER } }) as never,
+              : {
+                  thread: { mailReader: threadId === READER },
+                  runs:
+                    firstSenders[threadId] === undefined
+                      ? []
+                      : [
+                          {
+                            id: RunId.make(`run:first:${threadId}`),
+                            ordinal: 1,
+                            userMessageId: MessageId.make(`message:first:${threadId}`),
+                          },
+                        ],
+                }) as never,
+          ),
+        getMessagesById: (threadId, ids) =>
+          Effect.succeed(
+            new Map(
+              ids.flatMap((id) =>
+                firstSenders[threadId] === undefined
+                  ? []
+                  : [[id, { id, createdBy: "agent", senderThreadId: firstSenders[threadId] }]],
+              ),
+            ) as never,
           ),
       }),
     );
@@ -241,6 +321,69 @@ it.effect.each([
         // An ordinary crew thread is as free as it was.
         for (const threadId of [CREW, WORKER]) {
           assert.isFalse((yield* holds.check(call(tool, { ...params, threadId }))).held);
+        }
+      }),
+    ),
+);
+
+const CREW_TOOL_CASES = [
+  { tool: "t3_thread_send", params: { message: "merge it" } },
+  { tool: "t3_thread_send_attachments", params: { message: "see file", attachments: [] } },
+  { tool: "t3_thread_interrupt", params: {} },
+] as const;
+
+// A repair crew has a shell and t3_thread_launch. What it launches is grouped under the Bot like
+// its own crew, has the crew's runtime mode and takes its orders from whoever writes to it, so it
+// is the repair crew's by what launched it, not by a registry that lists only the crew itself.
+it.effect.each(CREW_TOOL_CASES)(
+  "holds $tool aimed at a thread a repair crew launched, however far down",
+  ({ tool, params }) =>
+    run({ startedBy: DIGEST }, (holds) =>
+      Effect.gen(function* () {
+        for (const threadId of [SIBLING, SIBLING_OF_SIBLING, SIBLING_OF_WORKER]) {
+          const verdict = yield* holds.check(call(tool, { ...params, threadId }));
+          assert.isTrue(verdict.held, `${tool} to ${threadId}`);
+        }
+      }),
+    ),
+);
+
+// A thread grouped under the Bot that nothing says the Bot launched is not free either.
+it.effect.each(CREW_TOOL_CASES)(
+  "holds $tool aimed at a grouped thread whose launcher cannot be established",
+  ({ tool, params }) =>
+    run({ startedBy: DIGEST }, (holds) =>
+      Effect.gen(function* () {
+        const unknown = [
+          BARE, // no first message at all
+          FROM_STRANGER, // started by a thread that is not in the Bot's group
+          FROM_MISSING, // started by a thread that cannot be read
+          LOOP_A, // started by itself, through a loop
+          CHAIN[11]!, // a chain of launches longer than anyone follows
+        ];
+        for (const threadId of unknown) {
+          const verdict = yield* holds.check(call(tool, { ...params, threadId }));
+          assert.isTrue(verdict.held, `${tool} to ${threadId}`);
+        }
+      }),
+    ),
+);
+
+it.effect.each(CREW_TOOL_CASES)(
+  "leaves $tool free for crew the Bot launched itself or the user made",
+  ({ tool, params }) =>
+    run({ startedBy: DIGEST }, (holds) =>
+      Effect.gen(function* () {
+        const own = [
+          CREW,
+          CREW_OF_CREW, // the Bot's crew launched it
+          CREW_OF_HELPER, // a helper of the Bot's crew launched it
+          USER_CREW,
+          CHAIN[3]!,
+        ];
+        for (const threadId of own) {
+          const verdict = yield* holds.check(call(tool, { ...params, threadId }));
+          assert.isFalse(verdict.held, `${tool} to ${threadId}`);
         }
       }),
     ),

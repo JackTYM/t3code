@@ -146,8 +146,9 @@ thread in a worktree, grouped under the Bot, no higher in runtime mode than the 
 - **The crew starts from the remote's default branch**, whatever the project's checkout is on,
   since its fix merges into that branch.
 - **Crew thread ids are written before the launch** and rolled back if it is refused, so a retry
-  replays the same launch and `crewOf(threadId)` always says which repair a thread belongs to and
-  the branch that crew was told to push. The claim is made under the service lock and the launch
+  replays the same launch. `crewOf(threadId)` says which repair a recorded crew, or a subagent of
+  one by lineage root, belongs to and the branch it was told to push; it knows nothing of a thread
+  a crew launched, which the hold recognises by what sent its first message. The claim is made under the service lock and the launch
   runs outside it, since a launch can be slow and every signal and merge result waits on the lock;
   a claim whose thread does not exist yet is "launching", not lost, and a refused launch takes back
   only its own claim.
@@ -226,7 +227,9 @@ provider adapter asks a full-access thread whether a command may run. So these r
 - Raw shell: `gh pr merge` of any pull request, a push to the default branch (or a force-push),
   `gh api` calls that merge, post a passing commit status or dismiss a review.
 - A sibling thread a crew starts with `t3_thread_launch` has a raw shell of its own. Its merge tool
-  is guarded now, but what it runs is not.
+  is guarded now, but what it runs is not. The Bot's hold tells it from the Bot's own crew by what
+  sent its first message, so a sibling launched with no prompt looks like the Bot's once the Bot
+  itself sends it a first message in a turn the user typed.
 - A crew can read what the user's credentials can: tokens in the environment, the keychain, git
   and `gh` config, the T3 home (the signing key included, see Health wakes).
 - No bound on one crew's time or tokens: the daily start cap and the two failed attempts limit how
@@ -351,10 +354,16 @@ no signal at all.
   influenced turn the middleware in `McpHttpServer` (`layerBotMailHold`, global, so it sees every
   toolkit's calls) answers any Bot call that is not read-only, not the Bot's own `t3_bot_*` memory
   tool or `task_cancel`, not `t3_thread_configure` on the Bot's own thread (see Model), not a mail
-  reader's start and not a message to its own crew with an error result instead of running it. A
-  repair crew and its subagents are never "its own crew" here (`RepairService.crewOf` decides): they
-  run unattended with the user's reach, so `t3_thread_send`, `t3_thread_send_attachments` and
-  `t3_thread_interrupt` aimed at one are held like any other thread's. That is a deny-by-default list, so a tool added later is held
+  reader's start and not a message to its own crew with an error result instead of running it.
+  "Its own crew" is a thread of its group that the Bot launched itself or a person made, and
+  grouping alone does not say so: a repair crew has `t3_thread_launch`, and what it launches is
+  grouped under the Bot, has the crew's runtime mode and runs just as unattended. So the hold
+  follows a grouped thread's first message (the launch's prompt) to the thread that sent it, and on
+  while each step is in the Bot's group, until it reaches the Bot (free) or a repair crew (held).
+  A thread with no first message (a launch with no prompt), one whose sender cannot be read or is
+  not in the group, one more than eight launches down, and a repair crew and its subagents are all
+  held. `t3_thread_send`, `t3_thread_send_attachments` and `t3_thread_interrupt` aimed at one are
+  held like any other thread's. That is a deny-by-default list, so a tool added later is held
   until someone decides it is free; anything naming a linked environment is held too. Thread
   launches, other delegations, messages outside the crew, schedules and project changes therefore
   wait for the user. A held call is stored in memory with its arguments (a restart drops it, and

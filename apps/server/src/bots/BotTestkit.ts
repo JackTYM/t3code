@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   type ModelSelection,
   type OrchestrationV2AppThread,
+  type OrchestrationV2CreationSource,
   type OrchestrationV2ServerCommand,
   ProjectId,
   ProviderInstanceId,
@@ -52,6 +53,8 @@ export interface FakeThread {
   };
   botConfig: ThreadBotConfig | null;
   groupedUnderThreadId: ThreadId | null;
+  createdBy?: "user" | "agent" | "system";
+  creationSource?: OrchestrationV2CreationSource;
   activeRunId: RunId | null;
   settledOverride: "settled" | null;
   archivedAt: string | null;
@@ -72,10 +75,22 @@ export const makeOrchestration = () => {
   const dispatched: Array<OrchestrationV2ServerCommand & { readonly threadId?: ThreadId }> = [];
   const sent: Array<SentMessage> = [];
   const launched: Array<LaunchedThread> = [];
-  const runs = new Map<RunId, { readonly id: RunId; readonly userMessageId: string }>();
+  const runs = new Map<
+    RunId,
+    {
+      readonly id: RunId;
+      readonly userMessageId: string;
+      readonly threadId?: ThreadId;
+      readonly ordinal?: number;
+    }
+  >();
   const messages = new Map<
     string,
-    { readonly createdBy: "user" | "agent" | "system"; readonly scheduledTaskId?: string }
+    {
+      readonly createdBy: "user" | "agent" | "system";
+      readonly scheduledTaskId?: string;
+      readonly senderThreadId?: ThreadId;
+    }
   >();
   /** Projects a launch can name, by id: their folders and the branch each is on. */
   const projects = new Map<ProjectId, { readonly title: string; readonly workspaceRoot: string }>();
@@ -104,10 +119,12 @@ export const makeOrchestration = () => {
       readonly id: string;
       readonly createdBy: "user" | "agent" | "system";
       readonly scheduledTaskId?: string;
+      readonly senderThreadId?: ThreadId;
     },
   ) => {
     const id = RunId.make(`run:${runs.size + 1}`);
-    runs.set(id, { id, userMessageId: message.id });
+    const ordinal = [...runs.values()].filter((run) => run.threadId === thread.id).length + 1;
+    runs.set(id, { id, userMessageId: message.id, threadId: thread.id, ordinal });
     messages.set(message.id, message);
     thread.activeRunId = id;
   };
@@ -146,12 +163,24 @@ export const makeOrchestration = () => {
           Effect.andThen(
             Effect.sync(() => {
               const threadId = input.threadId!;
-              addThread(threadId, {
+              const thread = addThread(threadId, {
                 projectId: input.projectId,
                 title: input.title,
                 botConfig: input.botConfig ?? null,
                 groupedUnderThreadId: input.groupedUnderThreadId ?? null,
+                createdBy: input.createdBy,
+                creationSource: input.creationSource,
               });
+              // The launch's own prompt is the thread's first message, as the server records it.
+              if (input.initialMessage !== undefined) {
+                const senderThreadId = input.initialMessage.senderThreadId;
+                startRun(thread, {
+                  id: `message:first:${threadId}`,
+                  createdBy: input.createdBy,
+                  ...(senderThreadId === undefined ? {} : { senderThreadId }),
+                });
+                thread.activeRunId = null;
+              }
               launched.push({
                 threadId,
                 projectId: input.projectId,
@@ -166,9 +195,13 @@ export const makeOrchestration = () => {
     }),
     Layer.mock(ThreadManagementService.ThreadManagementService)({
       getThreadShell: (threadId) => Effect.succeed((threads.get(threadId) ?? null) as never),
-      getThreadRecords: (_threadId, _fields, filter) =>
+      getThreadRecords: (threadId, _fields, filter) =>
         Effect.succeed({
-          runs: [...runs.values()].filter((run) => filter?.runIds?.includes(run.id) === true),
+          runs: [...runs.values()].filter((run) =>
+            filter?.runIds === undefined
+              ? run.threadId === threadId
+              : filter.runIds.includes(run.id),
+          ),
         } as never),
       getMessagesById: (_threadId, ids) =>
         Effect.succeed(
