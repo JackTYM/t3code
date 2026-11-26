@@ -74,7 +74,9 @@ import {
   makeToolCallLimiter,
   makeToolFailureStreaks,
   MAX_CONCURRENT_TOOL_CALLS,
+  makeToolCallMemo,
   MAX_TOOLS_PER_BOT,
+  MAX_WATCHER_TOOL_RUNS_PER_MINUTE,
   normaliseToolRefs,
   refuseToolArgs,
   sameToolRefs,
@@ -84,6 +86,10 @@ import {
   TOOL_FAILURES_TO_SIGNAL,
   TOOL_STDERR_MAX_CHARS,
   toolFailedStderr,
+  type ToolCallMemo,
+  toolCallKey,
+  toolRunsPerMinute,
+  WATCHER_TOOL_LOAD_MESSAGE,
 } from "./ToolRuns.ts";
 
 // A version lives in `<bot folder>/watchers/<name>/<sha256>/` (`run` and `watcher.json`). What is
@@ -476,6 +482,13 @@ interface ToolOutput {
   readonly exit: string;
   readonly output: string;
 }
+
+/** What calling a tool for a watcher came to; shared by the watchers of one pass that make the same call. */
+type ToolCall =
+  | { readonly _tag: "Ran"; readonly raw: RawRun; readonly cut: boolean }
+  | { readonly _tag: "Failed" }
+  | { readonly _tag: "Waiting"; readonly reason: string };
+type ToolCalls = ToolCallMemo<ToolCall, never>;
 
 /** What one run of a script produced, before anyone judges it. */
 type RawRun = BotWatcherRemoteRun;
@@ -1154,6 +1167,26 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * The approved version of a tool that may run now. A revision approved between reading the
+   * record and the files removes the old files, so a version that cannot be read is looked for
+   * once more under the record as it is then.
+   */
+  const approvedToolVersion = Effect.fn("WatcherService.approvedToolVersion")(function* (
+    folder: string,
+    name: string,
+  ) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const record = yield* recordOf(folder, name);
+      if (record?.kind !== "tool" || record.paused === true || record.approvedHash === undefined) {
+        return undefined;
+      }
+      const version = yield* readVersion(folder, name, record.approvedHash);
+      if (version !== undefined) return version.config.kind === "tool" ? version : undefined;
+    }
+    return undefined;
+  });
+
+  /**
    * Runs each tool a watcher declares: its approved version, with its own secrets and state
    * folder, as a call of the Bot's would. They are the server's calls, so the Bot's six a minute do
    * not count them; the watcher's own interval, a minute at least, is what bounds them. The first
@@ -1162,6 +1195,7 @@ const make = Effect.gen(function* () {
   const runDeclaredTools = Effect.fn("WatcherService.runDeclaredTools")(function* (
     botThreadId: ThreadId,
     declared: ReadonlyArray<BotWatcherToolRef>,
+    memo: ToolCalls | undefined,
   ) {
     if (declared.length === 0) return { _tag: "Ready", outputs: undefined } as const;
     const folder = BotService.memoryFolderName(botThreadId);
@@ -1169,19 +1203,13 @@ const make = Effect.gen(function* () {
     for (const { name, args } of declared) {
       // Under the tool's own lock, and read again once it is held: a call that waited for it may
       // find the tool paused, removed or revised.
-      const called = yield* withToolLock(
+      const call = withToolLock(
         folder,
         name,
       )(
         Effect.gen(function* () {
-          const record = yield* recordOf(folder, name);
-          const version =
-            record?.kind === "tool" && record.paused !== true && record.approvedHash !== undefined
-              ? yield* readVersion(folder, name, record.approvedHash)
-              : undefined;
-          if (version === undefined || version.config.kind !== "tool") {
-            return { _tag: "Failed" } as const;
-          }
+          const version = yield* approvedToolVersion(folder, name);
+          if (version === undefined) return { _tag: "Failed" } as const;
           const secrets = yield* injectSecrets(botThreadId, version);
           if (secrets._tag === "Waiting") {
             return { _tag: "Waiting", reason: secrets.reason } as const;
@@ -1201,6 +1229,10 @@ const make = Effect.gen(function* () {
             : ({ _tag: "Failed" } as const);
         }),
       );
+      // The watchers due in one pass that make the same call share one run and its output.
+      const called = yield* memo === undefined
+        ? call
+        : memo.once(toolCallKey(folder, name, args), call);
       if (called._tag === "Waiting") return called;
       if (called._tag === "Failed") return { _tag: "Failed", name } as const;
       outputs.push({
@@ -1222,6 +1254,7 @@ const make = Effect.gen(function* () {
     version: Version,
     runsOn: BotWatcherRunsOn,
     scheduled: { readonly folder: string; readonly name: string } | undefined,
+    toolCalls?: ToolCalls,
   ) {
     const isTool = version.config.kind === "tool";
     if (runsOn !== "local") {
@@ -1248,7 +1281,7 @@ const make = Effect.gen(function* () {
     if (secrets._tag === "Waiting") {
       return { _tag: "Unreachable", reason: secrets.reason } as const satisfies Placed;
     }
-    const tools = yield* runDeclaredTools(botThreadId, version.config.tools ?? []);
+    const tools = yield* runDeclaredTools(botThreadId, version.config.tools ?? [], toolCalls);
     if (tools._tag === "Waiting") {
       return { _tag: "Unreachable", reason: tools.reason } as const satisfies Placed;
     }
@@ -1323,6 +1356,7 @@ const make = Effect.gen(function* () {
     name: string,
     approvedHash: string,
     runsOn: BotWatcherRunsOn,
+    toolCalls: ToolCalls,
   ) {
     const version = yield* readVersion(folder, name, approvedHash);
     // Files that no longer hash to the approved version are not judged further: nothing runs.
@@ -1356,7 +1390,7 @@ const make = Effect.gen(function* () {
     if (previous !== undefined && startedAt < previous.lastRunAt + spacing) {
       return;
     }
-    const placed = yield* runPlaced(botThreadId, version, runsOn, { folder, name });
+    const placed = yield* runPlaced(botThreadId, version, runsOn, { folder, name }, toolCalls);
     if (placed._tag === "Unreachable") {
       // Nothing about the watcher itself is known, so its failure and backoff stay as they were.
       return yield* writeState(directory, {
@@ -1435,6 +1469,7 @@ const make = Effect.gen(function* () {
   const runFolder = Effect.fn("WatcherService.runFolder")(function* (
     folder: string,
     records: Readonly<Record<string, WatcherRecord>>,
+    toolCalls: ToolCalls,
   ) {
     const due = Object.entries(records).flatMap(([name, record]) => {
       if (record.kind === "tool") return [];
@@ -1451,7 +1486,7 @@ const make = Effect.gen(function* () {
     yield* Effect.forEach(
       due,
       ({ name, approvedHash, runsOn }) =>
-        runWatcher(botThreadId, folder, name, approvedHash, runsOn).pipe(
+        runWatcher(botThreadId, folder, name, approvedHash, runsOn, toolCalls).pipe(
           // One broken watcher never holds up the others.
           Effect.catchCause((cause) =>
             Effect.logWarning("Watcher failed.", { folder, name, cause }),
@@ -1463,9 +1498,11 @@ const make = Effect.gen(function* () {
 
   const runDue = Effect.gen(function* () {
     const current = yield* Ref.get(approvals);
+    // A pass makes each call once, whichever watchers of a Bot are due and declare it.
+    const toolCalls: ToolCalls = makeToolCallMemo();
     yield* Effect.forEach(
       Object.entries(current),
-      ([folder, records]) => runFolder(folder, records),
+      ([folder, records]) => runFolder(folder, records, toolCalls),
       { concurrency: 4, discard: true },
     );
   }).pipe(Effect.withSpan("WatcherService.runDue"));
@@ -1807,6 +1844,13 @@ const make = Effect.gen(function* () {
       ) {
         return yield* invalid(WATCHER_TOOLS_STAY_HERE);
       }
+      if (tools.length > 0) {
+        const others = yield* declaredToolRuns(folder, name);
+        const own = toolRunsPerMinute(tools.length, (input.intervalSeconds ?? 0) * 1000);
+        if (others + own > MAX_WATCHER_TOOL_RUNS_PER_MINUTE) {
+          return yield* invalid(WATCHER_TOOL_LOAD_MESSAGE);
+        }
+      }
       // Hostile text can steer a wake turn, so it may keep what the user approved but not widen it.
       if (fromWake && existing?.approvedHash !== undefined) {
         const approved = yield* readVersion(folder, name, existing.approvedHash);
@@ -1915,6 +1959,20 @@ const make = Effect.gen(function* () {
     yield* commit(folder, name, undefined).pipe(Effect.mapError(ioError(botThreadId, name)));
     yield* removeQuietly(watcherDir(folder, name));
     yield* repair.clear({ kind: "watcher", botThreadId, name });
+  });
+
+  /** Tool runs a minute that the approved versions of the Bot's other watchers declare. */
+  const declaredToolRuns = Effect.fn("WatcherService.declaredToolRuns")(function* (
+    folder: string,
+    except: string,
+  ) {
+    let runs = 0;
+    for (const [name, record] of Object.entries((yield* Ref.get(approvals))[folder] ?? {})) {
+      if (record.kind === "tool" || name === except || record.approvedHash === undefined) continue;
+      const version = yield* readVersion(folder, name, record.approvedHash);
+      runs += toolRunsPerMinute(version?.config.tools?.length ?? 0, version?.config.everyMs ?? 1);
+    }
+    return runs;
   });
 
   /** The watchers whose approved or pending version declares `tool`, by name. */

@@ -5217,33 +5217,36 @@ it.effect("an events watcher wakes the Bot only when a tool's output is below a 
   }).pipe(provideWatchers(orchestration, realRunner));
 });
 
-it.effect("a tool's secret reaches the watcher neither in its environment nor in its files", () => {
-  const orchestration = makeOrchestration();
-  const botThread = addBot(orchestration, "thread:bot");
-  return Effect.gen(function* () {
-    const watchers = yield* WatcherService.WatcherService;
-    yield* grantSecret(botThread.id, "GITHUB_TOKEN");
-    const base64 = Buffer.from(SECRET).toString("base64");
-    yield* installTool(botThread.id, "leak", {
-      ...declaresGithub,
-      run: `#!/bin/sh\necho "token=$GITHUB_TOKEN"\nprintf %s "$GITHUB_TOKEN" | base64\n`,
-    });
-    yield* installWatcher(botThread.id, "reads", {
-      mode: "events",
-      run: '#!/bin/sh\ncat "$T3_TOOL_OUTPUT_DIR/leak.out"\necho "mine=${GITHUB_TOKEN:-none}"\n',
-      tools: [{ name: "leak", args: [] }],
-    });
-    yield* watchers.runDue;
-    const text = orchestration.sent.map(({ text }) => text).join("\n");
-    assert.include(text, "token=[secret GITHUB_TOKEN]");
-    assert.include(text, "mine=none");
-    assert.notInclude(text, SECRET);
-    assert.notInclude(text, base64);
-    const listed = JSON.stringify(yield* watchers.list(botThread.id));
-    assert.notInclude(listed, SECRET);
-    assert.notInclude(listed, base64);
-  }).pipe(provideWatchers(orchestration, realRunner));
-});
+it.effect(
+  "hides a tool's secret from the output a watcher reads, and gives the watcher none in its environment",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+      const base64 = Buffer.from(SECRET).toString("base64");
+      yield* installTool(botThread.id, "leak", {
+        ...declaresGithub,
+        run: `#!/bin/sh\necho "token=$GITHUB_TOKEN"\nprintf %s "$GITHUB_TOKEN" | base64\n`,
+      });
+      yield* installWatcher(botThread.id, "reads", {
+        mode: "events",
+        run: '#!/bin/sh\ncat "$T3_TOOL_OUTPUT_DIR/leak.out"\necho "mine=${GITHUB_TOKEN:-none}"\n',
+        tools: [{ name: "leak", args: [] }],
+      });
+      yield* watchers.runDue;
+      const text = orchestration.sent.map(({ text }) => text).join("\n");
+      assert.include(text, "token=[secret GITHUB_TOKEN]");
+      assert.include(text, "mine=none");
+      assert.notInclude(text, SECRET);
+      assert.notInclude(text, base64);
+      const listed = JSON.stringify(yield* watchers.list(botThread.id));
+      assert.notInclude(listed, SECRET);
+      assert.notInclude(listed, base64);
+    }).pipe(provideWatchers(orchestration, realRunner));
+  },
+);
 
 // A watcher's output is cut at 4096 bytes and judged from what is left, so a cut that lands inside
 // a character must still leave at least that many bytes behind.
@@ -5514,5 +5517,167 @@ it.effect("tells a Bot proposing a tool about tools, not watchers", () => {
       assert.include(text, "tool");
       assert.notMatch(text, /watcher/iu);
     }
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect.each([
+  { title: "the same arguments", second: BAL, toolRuns: 1 },
+  { title: "different arguments", second: { name: "bal", args: ["acct-2"] }, toolRuns: 2 },
+])("runs a tool once per pass for watchers that call it with $title", ({ second, toolRuns }) => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* installTool(botThread.id, "bal");
+    yield* installWatcher(botThread.id, "w1", { tools: [BAL] });
+    yield* installWatcher(botThread.id, "w2", { tools: [second] });
+    runner.state.inputs.length = 0;
+
+    yield* watchers.runDue;
+    assert.lengthOf(scriptRuns(runner), 2);
+    assert.strictEqual(runner.state.inputs.filter(isToolRun).length, toolRuns);
+
+    // The next pass is a new one: the call is made again, not remembered.
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.inputs.filter(isToolRun).length, toolRuns * 2);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("shares a tool's output between the watchers that call it in one pass", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  const seen: Array<string> = [];
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const watchers = yield* WatcherService.WatcherService;
+    yield* installTool(botThread.id, "bal");
+    yield* installWatcher(botThread.id, "w1", { tools: [BAL] });
+    yield* installWatcher(botThread.id, "w2", { tools: [BAL] });
+    let calls = 0;
+    runner.state.resultFor = (input) =>
+      isToolRun(input)
+        ? { code: ExitCode(0), stdout: `call ${(calls += 1)}\n`, timedOut: false }
+        : { code: ExitCode(0), stdout: "", timedOut: false };
+    runner.state.onRun = (input) => {
+      const dir = input.env?.T3_TOOL_OUTPUT_DIR;
+      if (dir === undefined || isToolRun(input)) return Effect.void;
+      return fileSystem.readFileString(path.join(dir, "bal.out")).pipe(
+        Effect.map((text) => {
+          seen.push(text);
+        }),
+        Effect.orDie,
+      );
+    };
+    yield* watchers.runDue;
+    assert.deepStrictEqual(seen, ["call 1\n", "call 1\n"]);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("refuses watchers whose tools would run more than twelve times a minute", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const names = ["t0", "t1", "t2", "t3"];
+    for (const name of names) yield* installTool(botThread.id, name);
+    const four = names.map((name) => ({ name, args: [] }));
+    // Four tools every minute is four runs a minute: three such watchers are twelve.
+    for (const name of ["w1", "w2", "w3"]) {
+      yield* installWatcher(botThread.id, name, { tools: four });
+    }
+    // Any more, however slow, is over: every watcher's own interval counts, none is forgiven.
+    const over = yield* proposeWatcher(botThread.id, "w4", {
+      tools: [{ name: "t0", args: [] }],
+      intervalSeconds: 3600,
+    }).pipe(Effect.flip);
+    assert.strictEqual(over.reason, "invalid");
+    assert.include(over.message, "Lengthen");
+    assert.notInclude(yield* statuses(botThread.id).pipe(Effect.map(JSON.stringify)), "w4");
+    // A watcher without tools costs none.
+    yield* installWatcher(botThread.id, "plain", { run: "echo one\n" });
+
+    // A revision replaces its own load: w1 at two minutes is two runs, which leaves room for one more.
+    yield* installWatcher(botThread.id, "w1", {
+      tools: four,
+      intervalSeconds: 120,
+      run: "echo r\n",
+    });
+    yield* installWatcher(botThread.id, "w4", { tools: [{ name: "t0", args: [] }] });
+    const still = yield* proposeWatcher(botThread.id, "w5", {
+      tools: four,
+      intervalSeconds: 60,
+    }).pipe(Effect.flip);
+    assert.strictEqual(still.reason, "invalid");
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect(
+  "a tool that writes its secret into its state folder fails the watcher's run, and nothing keeps the value",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+      yield* installTool(botThread.id, "writes", {
+        ...declaresGithub,
+        run: '#!/bin/sh\nprintf %s "$GITHUB_TOKEN" > "$T3_WATCHER_STATE_DIR/leak"\necho fine\n',
+      });
+      yield* installWatcher(botThread.id, "w", {
+        mode: "events",
+        run: '#!/bin/sh\ncat "$T3_TOOL_OUTPUT_DIR/writes.out"\n',
+        tools: [{ name: "writes", args: [] }],
+      });
+      yield* watchers.runDue;
+      const [wake, ...others] = orchestration.sent;
+      assert.lengthOf(others, 0);
+      assert.include(wake?.text, "exit: tool-failed");
+      assert.include(wake?.text, "tool writes did not run");
+      assert.notInclude(wake?.text, "fine");
+      assert.notInclude(wake?.text, SECRET);
+      const leak = yield* fileSystem.readFileString(
+        path.join(yield* watcherDirectory(botThread.id, "writes"), "data", "leak"),
+      );
+      assert.strictEqual(leak, "[secret GITHUB_TOKEN]");
+      const state = yield* fileSystem.readFileString(
+        path.join(yield* watcherDirectory(botThread.id, "w"), "state.json"),
+      );
+      assert.notInclude(state, SECRET);
+      assert.notInclude(JSON.stringify(yield* watchers.list(botThread.id)), SECRET);
+    }).pipe(provideWatchers(orchestration, realRunner));
+  },
+);
+
+it.effect("does not fail a watcher's run for a revision of its tool approved while it ran", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const reviewer = yield* FakeReviewer;
+    yield* installTool(botThread.id, "bal");
+    yield* installTool(botThread.id, "mail");
+    yield* installWatcher(botThread.id, "w", { tools: [BAL, MAIL] });
+    runner.state.inputs.length = 0;
+    // While the first tool runs, a revision of the second is approved and its old files go.
+    let revised = false;
+    runner.state.onRun = (input) =>
+      revised || !isToolRun(input)
+        ? Effect.void
+        : Effect.gen(function* () {
+            revised = true;
+            yield* reviewer.answer(matchName("mail"), APPROVES);
+            yield* proposeTool(botThread.id, "mail", { run: "echo two\n" });
+            yield* watchers.drainReviews;
+          }).pipe(Effect.provideService(WatcherService.WatcherService, watchers), Effect.orDie);
+    yield* watchers.runDue;
+    assert.lengthOf(scriptRuns(runner), 1);
+    assert.strictEqual(orchestration.sent.length, 0);
   }).pipe(provideWatchers(orchestration, runner.layer));
 });

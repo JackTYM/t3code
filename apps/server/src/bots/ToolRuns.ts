@@ -1,3 +1,6 @@
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+
 import {
   BOT_TOOL_ARG_MAX_CHARS,
   BOT_TOOL_MAX_ARGS,
@@ -101,7 +104,17 @@ export const normaliseToolRefs = (
   refs: ReadonlyArray<BotWatcherToolRef>,
 ): { readonly tools: ReadonlyArray<BotWatcherToolRef> } | { readonly refused: string } => {
   const byName = new Map<string, BotWatcherToolRef>();
+  // A tool's output is `<name>.out`, and two names that differ only in case are one file on a
+  // case-insensitive disk.
+  const byLowerName = new Map<string, string>();
   for (const ref of refs) {
+    const alike = byLowerName.get(ref.name.toLowerCase());
+    if (alike !== undefined && alike !== ref.name) {
+      return {
+        refused: `Tools ${alike} and ${ref.name} differ only in case; declare one of them.`,
+      };
+    }
+    byLowerName.set(ref.name.toLowerCase(), ref.name);
     const seen = byName.get(ref.name);
     if (seen !== undefined && !sameToolRefs([seen], [ref])) {
       return {
@@ -126,3 +139,35 @@ export const sameToolRefs = (
     JSON.stringify(refs.map(({ name, args }) => [name, args]));
   return key(a) === key(b ?? []);
 };
+
+// Watchers call tools on the server's account, so the Bot's six a minute never count them. What
+// bounds them is what the watchers declare: at most this many runs a minute in all, counting each
+// watcher's tools once per interval.
+export const MAX_WATCHER_TOOL_RUNS_PER_MINUTE = 12;
+export const WATCHER_TOOL_LOAD_MESSAGE = `Your watchers' tools would run more than ${MAX_WATCHER_TOOL_RUNS_PER_MINUTE} times a minute in all. Lengthen the watchers' intervals, or declare fewer tools.`;
+export const toolRunsPerMinute = (toolCount: number, everyMs: number) =>
+  (toolCount * MINUTE_MS) / everyMs;
+
+export const toolCallKey = (folder: string, name: string, args: ReadonlyArray<string>) =>
+  JSON.stringify([folder, name, args]);
+
+/** The calls made so far in one scheduler pass, by Bot, tool and arguments, each with its result. */
+export const makeToolCallMemo = <A, E>() => {
+  const calls = new Map<string, Deferred.Deferred<A, E>>();
+  return {
+    /**
+     * Runs `run` for the first caller of `key` and gives every other caller, even one that arrives
+     * while it is running, the same result: N watchers asking the same thing cost one run, and the
+     * tool's cursor moves once.
+     */
+    once: <R>(key: string, run: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+      Effect.suspend(() => {
+        const found = calls.get(key);
+        if (found !== undefined) return Deferred.await(found);
+        const result = Deferred.makeUnsafe<A, E>();
+        calls.set(key, result);
+        return run.pipe(Effect.onExit((exit) => Deferred.done(result, exit)));
+      }),
+  };
+};
+export type ToolCallMemo<A, E> = ReturnType<typeof makeToolCallMemo<A, E>>;
