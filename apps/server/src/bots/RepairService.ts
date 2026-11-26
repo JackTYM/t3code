@@ -472,9 +472,15 @@ export class RepairService extends Context.Service<
       { readonly threadId: ThreadId; readonly branch: string; readonly attempt: number },
       RepairError
     >;
-    /** The repair a crew thread was started for, if it is one. `RepairMergeGuard` guards their merges. */
-    readonly repairOf: (threadId: ThreadId) => Effect.Effect<
+    /**
+     * The repair a thread was started for, as its crew or, by lineage root, as a subagent of one.
+     * `RepairMergeGuard` guards their merges, and `BotHoldService` never counts them as the Bot's
+     * free crew: a repair crew has the user's reach.
+     */
+    readonly crewOf: (threadId: ThreadId) => Effect.Effect<
       | {
+          /** The crew thread itself: `threadId`, or the root a subagent descends from. */
+          readonly crewThreadId: ThreadId;
           readonly signalId: string;
           readonly botThreadId: ThreadId;
           readonly attempt: number;
@@ -685,21 +691,30 @@ const make = Effect.gen(function* () {
     return undefined;
   };
 
-  const repairOf: RepairService["Service"]["repairOf"] = (threadId) =>
-    Ref.get(state).pipe(
-      Effect.map((current) => {
-        const crew = crewOf(current.repairs, threadId);
-        const branch = crew?.repair.attempts[crew.attempt - 1]?.branch;
-        return crew === undefined || branch === undefined
-          ? undefined
-          : {
-              signalId: crew.signalId,
-              botThreadId: crew.repair.botThreadId,
-              attempt: crew.attempt,
-              branch,
-            };
-      }),
-    );
+  const recordedCrew = (repairs: Repairs, threadId: ThreadId) => {
+    const crew = crewOf(repairs, threadId);
+    const branch = crew?.repair.attempts[crew.attempt - 1]?.branch;
+    return crew === undefined || branch === undefined
+      ? undefined
+      : {
+          crewThreadId: threadId,
+          signalId: crew.signalId,
+          botThreadId: crew.repair.botThreadId,
+          attempt: crew.attempt,
+          branch,
+        };
+  };
+
+  const crewOfThread: RepairService["Service"]["crewOf"] = Effect.fn("RepairService.crewOf")(
+    function* (threadId) {
+      const own = recordedCrew((yield* Ref.get(state)).repairs, threadId);
+      if (own !== undefined) return own;
+      // A thread whose shell cannot be read is no crew's.
+      const shell = yield* threads.getThreadShell(threadId).pipe(Effect.orElseSucceed(() => null));
+      if (shell === null || shell.lineage.relationshipToParent === null) return undefined;
+      return recordedCrew((yield* Ref.get(state)).repairs, shell.lineage.rootThreadId);
+    },
+  );
 
   /** Wakes the Bot once, with the fixed words, that no more crew will start. Under the lock. */
   const tellGaveUp = Effect.fn("RepairService.tellGaveUp")(function* (signalId: string) {
@@ -1006,7 +1021,7 @@ const make = Effect.gen(function* () {
     clear,
     find,
     startRepair,
-    repairOf,
+    crewOf: crewOfThread,
     reportMerge,
     handleMilestone,
     start,

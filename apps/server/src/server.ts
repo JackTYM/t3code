@@ -853,10 +853,11 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
           Layer.provide(PeerMcpClient.layer.pipe(Layer.provide(PeerLinks.layer))),
         ),
       ),
+      // Holds a Bot's consequential calls while email influences its turn; WebSocket lists them.
+      // It asks which threads are repair crews, so it sits above the repair service.
+      Layer.provideMerge(BotHoldService.layer),
       // Tells a Bot when its own machinery fails; the watchers and the wake reactor report to it.
       Layer.provideMerge(RepairService.layer),
-      // Holds a Bot's consequential calls while email influences its turn; WebSocket lists them.
-      Layer.provideMerge(BotHoldService.layer),
       Layer.provideMerge(BotService.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
       Layer.provideMerge(layerOrchestrationApplication),
     ),

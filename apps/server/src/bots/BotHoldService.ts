@@ -15,6 +15,7 @@ import * as Schema from "effect/Schema";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as BotService from "./BotService.ts";
+import * as RepairService from "./RepairService.ts";
 import { HEALTH_WAKE_ID, REPAIR_START_TOOL } from "./RepairService.ts";
 
 /** The id every mail digest wake carries after `bot-wake:` (`BotMailService.digestFolder`). */
@@ -124,6 +125,7 @@ interface Held extends BotHeldAction {
 const make = Effect.gen(function* () {
   const bots = yield* BotService.BotService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  const repair = yield* RepairService.RepairService;
   const random = yield* SecureRandom.SecureRandom;
   const held = yield* Ref.make<ReadonlyMap<ThreadId, ReadonlyArray<Held>>>(new Map());
   // Runs that read or started something email shaped after they began. Only a run's own id is
@@ -204,20 +206,24 @@ const make = Effect.gen(function* () {
       Effect.ignore,
     );
 
+  /**
+   * The Bot's own thread or a thread of its crew. A repair crew (and its subagents) is not: it runs
+   * unattended with the user's reach and its id is easy to find, so a Bot steering it would be a
+   * Bot steering that agent, which an influenced turn must not.
+   */
   const isCrew = (botThreadId: ThreadId, threadId: unknown) =>
     typeof threadId !== "string"
       ? Effect.succeed(true)
-      : threads.getThreadShell(threadId as ThreadId).pipe(
-          Effect.map(
-            (shell) =>
-              shell !== null &&
-              (shell.id === botThreadId ||
-                shell.groupedUnderThreadId === botThreadId ||
-                (shell.lineage.relationshipToParent === "subagent" &&
-                  shell.lineage.parentThreadId === botThreadId)),
-          ),
-          Effect.orElseSucceed(() => false),
-        );
+      : Effect.gen(function* () {
+          const shell = yield* threads.getThreadShell(threadId as ThreadId);
+          if (shell === null) return false;
+          const grouped =
+            shell.id === botThreadId ||
+            shell.groupedUnderThreadId === botThreadId ||
+            (shell.lineage.relationshipToParent === "subagent" &&
+              shell.lineage.parentThreadId === botThreadId);
+          return grouped && (yield* repair.crewOf(shell.id)) === undefined;
+        }).pipe(Effect.orElseSucceed(() => false));
 
   const hold = Effect.fn("BotHoldService.hold")(function* (
     botThreadId: ThreadId,

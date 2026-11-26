@@ -193,17 +193,6 @@ const make = Effect.gen(function* () {
   const pullRequests = yield* PullRequestService.PullRequestService;
   const sourceControl = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
 
-  /** The crew a thread is, or is a subagent of. A thread whose shell cannot be read is no crew's. */
-  const crewOf = Effect.fn("RepairMergeGuard.crewOf")(function* (threadId: ThreadId) {
-    const own = yield* repair.repairOf(threadId);
-    if (own !== undefined) return { crewThreadId: threadId, ...own };
-    const shell = yield* threads.getThreadShell(threadId).pipe(Effect.orElseSucceed(() => null));
-    if (shell === null || shell.lineage.relationshipToParent === null) return undefined;
-    const root = shell.lineage.rootThreadId;
-    const inherited = yield* repair.repairOf(root);
-    return inherited === undefined ? undefined : { crewThreadId: root, ...inherited };
-  });
-
   /** Every path the pull request changes, renames on both sides; nothing when the list is not whole. */
   const changedPaths = Effect.fn("RepairMergeGuard.changedPaths")(function* (
     ref: PullRequestRef,
@@ -338,7 +327,7 @@ const make = Effect.gen(function* () {
 
   const check: RepairMergeGuard["Service"]["check"] = Effect.fn("RepairMergeGuard.check")(
     function* ({ threadId, environmentId, arguments: raw }) {
-      const crew = yield* crewOf(threadId);
+      const crew = yield* repair.crewOf(threadId);
       if (crew === undefined) return { kind: "unguarded" } as const;
       const call = callOf(raw, environmentId);
       const refuse = (reason: RepairService.MergeRefusalReason) =>

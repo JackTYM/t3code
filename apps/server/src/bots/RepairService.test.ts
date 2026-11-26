@@ -1002,7 +1002,7 @@ it.effect(
       // The watcher recovers and the episode goes; the repair's record is not part of it.
       yield* repair.clear({ kind: "watcher", botThreadId: botThread.id, name: "disk" });
       assert.isUndefined(yield* repair.find(signalId));
-      assert.strictEqual((yield* repair.repairOf(first.threadId))?.signalId, signalId);
+      assert.strictEqual((yield* repair.crewOf(first.threadId))?.signalId, signalId);
 
       // It fails again: a new signal and a new episode, but the day's count is the Bot's.
       for (const name of ["two", "three"]) {
@@ -1032,15 +1032,55 @@ it.effect("looks up a signal in the registry, and a crew thread's repair", () =>
     assert.isUndefined(yield* repair.find("ffffffffffff"));
 
     const started = yield* start(botThread, signalId);
-    assert.deepStrictEqual(yield* repair.repairOf(started.threadId), {
+    assert.deepStrictEqual(yield* repair.crewOf(started.threadId), {
+      crewThreadId: started.threadId,
       signalId,
       botThreadId: botThread.id,
       attempt: 1,
       branch: `repair/${signalId}`,
     });
-    assert.isUndefined(yield* repair.repairOf(botThread.id));
+    assert.isUndefined(yield* repair.crewOf(botThread.id));
   }).pipe(provideRepair(orchestration));
 });
+
+it.effect(
+  "a subagent of a crew is that crew's, by lineage root; a thread that merely resembles one is not",
+  () => {
+    const fixture = repairFixture();
+    const { orchestration, botThread } = fixture;
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(START);
+      const repair = yield* RepairService.RepairService;
+      const started = yield* start(botThread, yield* wakeBot(fixture));
+      const subagent = orchestration.addThread("thread:crew-subagent", {
+        lineage: {
+          parentThreadId: started.threadId,
+          relationshipToParent: "subagent",
+          rootThreadId: started.threadId,
+        },
+      });
+      const sibling = orchestration.addThread("thread:sibling", {
+        groupedUnderThreadId: botThread.id,
+      });
+      const lookalike = orchestration.addThread(`repair-crew:${"0".repeat(12)}:1`);
+      // A subagent of an ordinary thread is nobody's crew, however it is named.
+      const ordinaryChild = orchestration.addThread("thread:ordinary-child", {
+        lineage: {
+          parentThreadId: sibling.id,
+          relationshipToParent: "subagent",
+          rootThreadId: sibling.id,
+        },
+      });
+
+      const inherited = yield* repair.crewOf(subagent.id);
+      assert.strictEqual(inherited?.crewThreadId, started.threadId);
+      assert.strictEqual(inherited?.branch, started.branch);
+      for (const thread of [sibling, lookalike, ordinaryChild, botThread]) {
+        assert.isUndefined(yield* repair.crewOf(thread.id), thread.id);
+      }
+    }).pipe(provideRepair(orchestration));
+  },
+);
 
 it.effect("remembers repairs across a restart, signed with the rest of the state", () => {
   const fixture = repairFixture();
@@ -1065,7 +1105,7 @@ it.effect("remembers repairs across a restart, signed with the rest of the state
     const second = yield* boot;
     yield* Effect.gen(function* () {
       const repair = yield* RepairService.RepairService;
-      assert.strictEqual((yield* repair.repairOf(started.threadId))?.signalId, signalId);
+      assert.strictEqual((yield* repair.crewOf(started.threadId))?.signalId, signalId);
       assert.strictEqual((yield* refusal(botThread, signalId)).reason, "already_started");
       yield* crewFails(started.threadId);
     }).pipe(second);
@@ -1190,8 +1230,8 @@ it.effect("drops repairs that fail their signature, as it drops episodes", () =>
     const second = yield* boot;
     yield* Effect.gen(function* () {
       const repair = yield* RepairService.RepairService;
-      assert.isUndefined(yield* repair.repairOf(ThreadId.make("thread:forged")));
-      assert.isUndefined(yield* repair.repairOf(started.threadId));
+      assert.isUndefined(yield* repair.crewOf(ThreadId.make("thread:forged")));
+      assert.isUndefined(yield* repair.crewOf(started.threadId));
     }).pipe(second);
   }).pipe(Effect.provide(NodeServices.layer));
 });
@@ -1255,7 +1295,7 @@ it.effect("lists every protected path, so a change to the list is a deliberate o
   }),
 );
 
-it.effect("a second attempt's crew merges its own branch, which repairOf names", () => {
+it.effect("a second attempt's crew merges its own branch, which crewOf names", () => {
   const fixture = repairFixture();
   const { orchestration, botThread } = fixture;
   return Effect.gen(function* () {
@@ -1272,8 +1312,9 @@ it.effect("a second attempt's crew merges its own branch, which repairOf names",
     });
     const second = yield* start(botThread, signalId);
 
-    assert.strictEqual((yield* repair.repairOf(first.threadId))?.branch, `repair/${signalId}`);
-    assert.deepStrictEqual(yield* repair.repairOf(second.threadId), {
+    assert.strictEqual((yield* repair.crewOf(first.threadId))?.branch, `repair/${signalId}`);
+    assert.deepStrictEqual(yield* repair.crewOf(second.threadId), {
+      crewThreadId: second.threadId,
       signalId,
       botThreadId: botThread.id,
       attempt: 2,

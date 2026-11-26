@@ -151,12 +151,24 @@ const makeScenario = (overrides: Partial<Scenario> = {}) => {
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(RepairService.RepairService)({
-          repairOf: (threadId) =>
+          crewOf: (threadId) =>
             Effect.succeed(
-              threadId === CREW
-                ? { signalId: SIGNAL, botThreadId: BOT, attempt: 1, branch: BRANCH }
+              threadId === CREW || threadId === SUBAGENT
+                ? {
+                    crewThreadId: CREW,
+                    signalId: SIGNAL,
+                    botThreadId: BOT,
+                    attempt: 1,
+                    branch: BRANCH,
+                  }
                 : threadId === CREW_TWO
-                  ? { signalId: SIGNAL, botThreadId: BOT, attempt: 2, branch: `${BRANCH}-2` }
+                  ? {
+                      crewThreadId: CREW_TWO,
+                      signalId: SIGNAL,
+                      botThreadId: BOT,
+                      attempt: 2,
+                      branch: `${BRANCH}-2`,
+                    }
                   : undefined,
             ),
           reportMerge: (report) =>

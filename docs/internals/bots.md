@@ -288,7 +288,10 @@ no signal at all.
   influenced turn the middleware in `McpHttpServer` (`layerBotMailHold`, global, so it sees every
   toolkit's calls) answers any Bot call that is not read-only, not the Bot's own `t3_bot_*` memory
   tool or `task_cancel`, not `t3_thread_configure` on the Bot's own thread (see Model), not a mail
-  reader's start and not a message to its own crew with an error result instead of running it. That is a deny-by-default list, so a tool added later is held
+  reader's start and not a message to its own crew with an error result instead of running it. A
+  repair crew and its subagents are never "its own crew" here (`RepairService.crewOf` decides): they
+  run unattended with the user's reach, so `t3_thread_send`, `t3_thread_send_attachments` and
+  `t3_thread_interrupt` aimed at one are held like any other thread's. That is a deny-by-default list, so a tool added later is held
   until someone decides it is free; anything naming a linked environment is held too. Thread
   launches, other delegations, messages outside the crew, schedules and project changes therefore
   wait for the user. A held call is stored in memory with its arguments (a restart drops it, and

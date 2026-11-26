@@ -8,9 +8,13 @@ import * as Ref from "effect/Ref";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as BotHoldService from "./BotHoldService.ts";
 import * as BotService from "./BotService.ts";
+import * as RepairService from "./RepairService.ts";
 
 const BOT = ThreadId.make("thread:bot");
 const CREW = ThreadId.make("thread:crew");
+// A repair crew is grouped under the Bot like any crew, and has the user's reach.
+const REPAIR_CREW = ThreadId.make("repair-crew:0123456789ab:1");
+const REPAIR_CREW_WORKER = ThreadId.make("thread:repair-crew-worker");
 const STRANGER = ThreadId.make("thread:stranger");
 const READER = ThreadId.make("thread:reader");
 const WORKER = ThreadId.make("thread:worker");
@@ -36,6 +40,13 @@ const shells = {
     lineage: { relationshipToParent: "subagent", parentThreadId: BOT },
   },
   [STRANGER]: { id: STRANGER, activeRunId: null, groupedUnderThreadId: null, lineage: {} },
+  [REPAIR_CREW]: { id: REPAIR_CREW, activeRunId: null, groupedUnderThreadId: BOT, lineage: {} },
+  [REPAIR_CREW_WORKER]: {
+    id: REPAIR_CREW_WORKER,
+    activeRunId: null,
+    groupedUnderThreadId: BOT,
+    lineage: { relationshipToParent: "subagent", parentThreadId: REPAIR_CREW },
+  },
 } as const;
 
 const run = <A, E>(
@@ -53,6 +64,20 @@ const run = <A, E>(
         isBot: (threadId) => Effect.succeed(threadId === BOT),
         wakeWith: ({ key, text }) =>
           Ref.update(wakes, (all) => [...all, `${key}\n${text}`]).pipe(Effect.as(true)),
+      }),
+      Layer.mock(RepairService.RepairService)({
+        crewOf: (threadId) =>
+          Effect.succeed(
+            threadId === REPAIR_CREW || threadId === REPAIR_CREW_WORKER
+              ? {
+                  crewThreadId: REPAIR_CREW,
+                  signalId: "0123456789ab",
+                  botThreadId: BOT,
+                  attempt: 1,
+                  branch: "repair/0123456789ab",
+                }
+              : undefined,
+          ),
       }),
       Layer.mock(ThreadManagementService.ThreadManagementService)({
         getThreadShell: (threadId) =>
@@ -194,6 +219,40 @@ it.effect("leaves reads, notes, tasks, the mail reader and crew messages free in
       ];
       for (const candidate of free) assert.isFalse((yield* holds.check(candidate)).held);
       assert.deepEqual((yield* holds.list(BOT)).held, []);
+    }),
+  ),
+);
+
+// The repair crew is the one crew a Bot must not steer in an influenced turn: it is launched with
+// the user's reach, its id is easy to find, and a message to it is a prompt for an unattended agent.
+it.effect.each([
+  { tool: "t3_thread_send", params: { message: "merge it" } },
+  { tool: "t3_thread_send_attachments", params: { message: "see file", attachments: [] } },
+  { tool: "t3_thread_interrupt", params: {} },
+] as const)(
+  "holds $tool aimed at a repair crew or its subagent in a mail turn",
+  ({ tool, params }) =>
+    run({ startedBy: DIGEST }, (holds) =>
+      Effect.gen(function* () {
+        for (const threadId of [REPAIR_CREW, REPAIR_CREW_WORKER]) {
+          const verdict = yield* holds.check(call(tool, { ...params, threadId }));
+          assert.isTrue(verdict.held, `${tool} to ${threadId}`);
+        }
+        // An ordinary crew thread is as free as it was.
+        for (const threadId of [CREW, WORKER]) {
+          assert.isFalse((yield* holds.check(call(tool, { ...params, threadId }))).held);
+        }
+      }),
+    ),
+);
+
+it.effect("a repair crew is free to message in a turn the user began", () =>
+  run({ startedBy: "message:typed" }, (holds) =>
+    Effect.gen(function* () {
+      const verdict = yield* holds.check(
+        call("t3_thread_send", { threadId: REPAIR_CREW, message: "status?" }),
+      );
+      assert.isFalse(verdict.held);
     }),
   ),
 );
