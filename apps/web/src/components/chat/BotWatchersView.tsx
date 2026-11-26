@@ -48,10 +48,13 @@ import {
   botWatcherControls,
   botWatcherDryRunOf,
   botWatcherInterval,
+  botWatcherKind,
   botWatcherPlaces,
   botWatcherReviseMessage,
   botWatcherSecretStatus,
   botWatcherState,
+  botWatcherToolCall,
+  botWatchersUsingTool,
   groupBotWatchers,
   latestReview,
   parseBotWatcherDiff,
@@ -70,6 +73,7 @@ const STATE_BADGE = {
   waiting: "warning",
   failing: "error",
   running: "success",
+  ready: "success",
 } as const satisfies Record<BotWatcherState, "warning" | "error" | "outline" | "success" | "info">;
 
 function StateBadge(props: { state: BotWatcherState }) {
@@ -116,7 +120,39 @@ function StateBadge(props: { state: BotWatcherState }) {
           <T>running</T>
         </Badge>
       );
+    case "ready":
+      return (
+        <Badge variant={STATE_BADGE.ready}>
+          <T>ready</T>
+        </Badge>
+      );
   }
+}
+
+/** Every sentence that names a row says what it is, so a tool is never called a watcher. */
+function useKindWords(kind: "watch" | "tool") {
+  const gt = useGT();
+  const tool = kind === "tool";
+  return {
+    kind: tool ? gt("tool") : gt("watcher"),
+    failedRun: tool ? gt("Failed to run the tool") : gt("Failed to run the watcher"),
+    failedPause: tool ? gt("Failed to pause the tool") : gt("Failed to pause the watcher"),
+    failedResume: tool ? gt("Failed to resume the tool") : gt("Failed to resume the watcher"),
+    failedRemove: tool ? gt("Failed to remove the tool") : gt("Failed to remove the watcher"),
+    inReview: tool
+      ? gt("The Bot proposed this. It can call it once a reviewer model has approved it.")
+      : gt("The Bot proposed this. It runs once a reviewer model has approved it."),
+    paused: tool
+      ? gt("Paused by you. The approved version is kept and the Bot cannot call it.")
+      : gt("Paused by you. The approved version is kept and does not run."),
+    removeBody: tool
+      ? gt(
+          "This deletes the tool and its versions. The Bot can propose it again, and the reviewer would check it again.",
+        )
+      : gt(
+          "This deletes the watcher and its versions. The Bot can propose it again, and the reviewer would check it again.",
+        ),
+  };
 }
 
 function useBlockedReason() {
@@ -199,6 +235,8 @@ type Busy = "run" | "move" | "pause" | "resume" | "remove" | "revise";
 function WatcherCard(props: {
   threadRef: ScopedThreadRef;
   watcher: BotWatcher;
+  /** The watchers that declare this row as a tool, which fail while it is paused or gone. */
+  usedBy: ReadonlyArray<string>;
   linked: ReadonlyMap<EnvironmentId, string>;
   grants: { readonly runCode: boolean; readonly operate: boolean };
   /** The Bot's secret grants, or null while they load. */
@@ -209,6 +247,9 @@ function WatcherCard(props: {
   const intervalLabel = useIntervalLabel();
   const modeLabel = useModeLabel();
   const { watcher } = props;
+  const kind = botWatcherKind(watcher);
+  const isTool = kind === "tool";
+  const words = useKindWords(kind);
   const { environmentId, threadId } = props.threadRef;
   const thread = useThreadShell(props.threadRef);
   const dryRun = useAtomCommand(botFilesEnvironment.watcherDryRun, { reportFailure: false });
@@ -238,7 +279,8 @@ function WatcherCard(props: {
   const verdict = latestReview(watcher);
   const secrets = botWatcherSecretStatus(watcher, props.secretGrants);
   const runnableHash = watcher.pendingHash ?? watcher.approvedHash;
-  const showsMove = controls.move || (!controls.pending && target !== watcher.runsOn);
+  const showsMove =
+    controls.choosesPlace && (controls.move || (!controls.pending && target !== watcher.runsOn));
 
   const settle = async (
     action: Busy,
@@ -263,7 +305,7 @@ function WatcherCard(props: {
 
   const runOnce = () => {
     if (runnableHash === undefined) return;
-    void settle("run", gt("Failed to run the watcher"), () =>
+    void settle("run", words.failedRun, () =>
       dryRun({
         environmentId,
         input: { ...base, hash: runnableHash, runsOn: target },
@@ -279,7 +321,7 @@ function WatcherCard(props: {
   const togglePaused = () =>
     void settle(
       watcher.paused ? "resume" : "pause",
-      watcher.paused ? gt("Failed to resume the watcher") : gt("Failed to pause the watcher"),
+      watcher.paused ? words.failedResume : words.failedPause,
       () =>
         watcher.paused
           ? resume({ environmentId, input: base })
@@ -287,9 +329,7 @@ function WatcherCard(props: {
     );
   const removeWatcher = () => {
     setConfirmingRemove(false);
-    void settle("remove", gt("Failed to remove the watcher"), () =>
-      remove({ environmentId, input: base }),
-    );
+    void settle("remove", words.failedRemove, () => remove({ environmentId, input: base }));
   };
   const askForRevision = async () => {
     if (thread === null) return;
@@ -334,13 +374,14 @@ function WatcherCard(props: {
     <li className="flex flex-col gap-2 py-3">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="font-medium">{watcher.name}</span>
+        <Badge variant="outline">{words.kind}</Badge>
         <StateBadge state={state} />
         {watcher.paused && state !== "paused" ? (
           <Badge variant="outline">
             <T>paused</T>
           </Badge>
         ) : null}
-        {watcher.intervalSeconds === undefined ? null : (
+        {isTool || watcher.intervalSeconds === undefined ? null : (
           <span className="text-muted-foreground text-xs">
             {intervalLabel(watcher.intervalSeconds)}
           </span>
@@ -348,32 +389,63 @@ function WatcherCard(props: {
         {watcher.runtime === undefined ? null : (
           <span className="text-muted-foreground text-xs">{watcher.runtime}</span>
         )}
-        <span className="text-muted-foreground text-xs">{modeLabel(watcher.mode)}</span>
-        <label className="ms-auto flex items-center gap-1.5 text-muted-foreground text-xs">
-          <T>Runs on</T>
-          <Select<BotWatcherRunsOn, false>
-            value={target}
-            disabled={!props.grants.runCode || controls.pending || !idle}
-            onValueChange={(value) => {
-              if (value !== null) setPicked(value);
-            }}
-          >
-            <SelectTrigger size="xs" variant="ghost" aria-label={gt("Runs on")}>
-              <SelectValue>{(value: BotWatcherRunsOn) => placeLabel(value)}</SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              {places.map((place) => (
-                <SelectItem hideIndicator key={place.value} value={place.value}>
-                  {place.name ?? placeLabel(place.value)}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-        </label>
+        {isTool ? null : (
+          <span className="text-muted-foreground text-xs">{modeLabel(watcher.mode)}</span>
+        )}
+        {controls.choosesPlace ? (
+          <label className="ms-auto flex items-center gap-1.5 text-muted-foreground text-xs">
+            <T>Runs on</T>
+            <Select<BotWatcherRunsOn, false>
+              value={target}
+              disabled={!props.grants.runCode || controls.pending || !idle}
+              onValueChange={(value) => {
+                if (value !== null) setPicked(value);
+              }}
+            >
+              <SelectTrigger size="xs" variant="ghost" aria-label={gt("Runs on")}>
+                <SelectValue>{(value: BotWatcherRunsOn) => placeLabel(value)}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {places.map((place) => (
+                  <SelectItem hideIndicator key={place.value} value={place.value}>
+                    {place.name ?? placeLabel(place.value)}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          </label>
+        ) : null}
       </div>
 
       {watcher.purpose === undefined || watcher.purpose.length === 0 ? null : (
         <p className="text-sm break-words">{watcher.purpose}</p>
+      )}
+
+      {watcher.usage === undefined || watcher.usage.length === 0 ? null : (
+        <p className="text-muted-foreground text-xs break-words">
+          <T>Usage</T> <code className="font-mono">{watcher.usage}</code>
+        </p>
+      )}
+
+      {watcher.tools === undefined || watcher.tools.length === 0 ? null : (
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+          <span className="text-muted-foreground text-xs">
+            <T>Reads tools</T>
+          </span>
+          {watcher.tools.map((declared) => (
+            <Badge key={botWatcherToolCall(declared)} variant="outline">
+              {botWatcherToolCall(declared)}
+            </Badge>
+          ))}
+        </div>
+      )}
+
+      {props.usedBy.length === 0 ? null : (
+        <p className="text-muted-foreground text-xs break-words">
+          {gt("Used by {names}. They fail while this tool is paused or removed.", {
+            names: props.usedBy.join(", "),
+          })}
+        </p>
       )}
 
       {secrets.length === 0 ? null : (
@@ -423,9 +495,7 @@ function WatcherCard(props: {
       )}
 
       {state === "reviewing" ? (
-        <p className="text-muted-foreground text-xs">
-          <T>The Bot proposed this. It runs once a reviewer model has approved it.</T>
-        </p>
+        <p className="text-muted-foreground text-xs">{words.inReview}</p>
       ) : state === "revising" ? (
         <p className="text-muted-foreground text-xs">
           {gt(
@@ -463,9 +533,7 @@ function WatcherCard(props: {
           )}
         </p>
       ) : state === "paused" ? (
-        <p className="text-muted-foreground text-xs">
-          <T>Paused by you. The approved version is kept and does not run.</T>
-        </p>
+        <p className="text-muted-foreground text-xs">{words.paused}</p>
       ) : null}
       {watcher.lastRunAt === undefined ? null : (
         <p className="text-muted-foreground text-xs">
@@ -689,10 +757,15 @@ function WatcherCard(props: {
           <AlertDialogHeader>
             <AlertDialogTitle>{gt("Remove {name}?", { name: watcher.name })}</AlertDialogTitle>
             <AlertDialogDescription>
-              <T>
-                This deletes the watcher and its versions. The Bot can propose it again, and the
-                reviewer would check it again.
-              </T>
+              {words.removeBody}
+              {props.usedBy.length === 0 ? null : (
+                <>
+                  {" "}
+                  {gt("These watchers use it and will fail until it is back: {names}.", {
+                    names: props.usedBy.join(", "),
+                  })}
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -715,7 +788,7 @@ function GroupHeading(props: { group: BotWatcherGroup; count: number }) {
       {props.group === "attention" ? (
         <T>Needs you</T>
       ) : props.group === "running" ? (
-        <T>Running</T>
+        <T>Active</T>
       ) : (
         <T>Paused</T>
       )}{" "}
@@ -725,8 +798,9 @@ function GroupHeading(props: { group: BotWatcherGroup; count: number }) {
 }
 
 /**
- * The scripts the Bot proposes to watch things for free. A reviewer model approves each version;
- * the user can read it, run it once, move, pause or remove it. The source is never editable here.
+ * The scripts the Bot proposes: watchers that poll on a timer and tools it calls on demand. A
+ * reviewer model approves each version; the user can read it, run it once, pause or remove it, and
+ * move a watcher. The source is never editable here.
  */
 export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
   const gt = useGT();
@@ -756,21 +830,23 @@ export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
     runCode: canDryRun && canMove && canResume,
     operate: canPause && canRemove,
   };
-  const groups = groupBotWatchers(watchers.data.watchers);
+  const allWatchers = watchers.data.watchers;
+  const groups = groupBotWatchers(allWatchers);
 
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-start justify-between gap-2">
         <p className="text-muted-foreground text-xs">
           <T>
-            The Bot writes these. A reviewer model checks each version before it runs; you can run
-            one once, move, pause or remove it.
+            The Bot writes these. Watchers check on a timer and tools run when the Bot asks. A
+            reviewer model checks each version before it runs; you can run one once, pause or remove
+            it, and move a watcher.
           </T>
         </p>
         <Button
           variant="ghost-muted"
           size="icon-xs"
-          aria-label={gt("Refresh watchers")}
+          aria-label={gt("Refresh watchers and tools")}
           disabled={watchers.isPending}
           onClick={() => {
             watchers.refresh();
@@ -787,8 +863,8 @@ export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
           </AlertTitle>
           <AlertDescription>
             <T>
-              The saved approvals failed their signature check, so every watcher was dropped. The
-              Bot can propose them again.
+              The saved approvals failed their signature check, so every watcher and tool was
+              dropped. The Bot can propose them again.
             </T>
           </AlertDescription>
         </Alert>
@@ -808,7 +884,10 @@ export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
       ) : null}
       {groups.length === 0 ? (
         <p className="text-muted-foreground text-sm">
-          <T>The Bot has no watchers yet. Ask it to watch something and it will propose one.</T>
+          <T>
+            The Bot has no watchers or tools yet. Ask it to watch something or look something up and
+            it will propose one.
+          </T>
         </p>
       ) : (
         <ScrollArea className="max-h-[28rem]">
@@ -821,6 +900,7 @@ export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
                     key={watcher.name}
                     threadRef={props.threadRef}
                     watcher={watcher}
+                    usedBy={botWatchersUsingTool(allWatchers, watcher)}
                     linked={linked}
                     grants={grants}
                     secretGrants={secretGrants.data?.grants ?? null}

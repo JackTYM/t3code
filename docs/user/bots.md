@@ -24,20 +24,54 @@ in the same project with a summary of the thread, and that thread becomes its fi
 - The **Bot** button in its header shows its notes and preferences, which you can edit, and can mute
   crew notifications other than requests for input. Its **Tasks** tab lists what the Bot is
   tracking and which threads work on each. Tick a task to mark it done and untick it to reopen it;
-  the Bot reads your change on its next turn. Its **Watchers** tab lists the scripts the Bot
-  writes to watch things for free and wake it when something changes. You do not approve them: a
-  reviewer model reads each script first, and a script it rejects never runs. The tab shows each
-  script's verdict, what it is for and where it runs. **Pause** and **Resume** appear once a version is approved, and **Remove** is always there. To move a watcher to a linked environment, pick the place under **Runs on**, press **Run once there** to see what it prints, then **Move**; a watcher cannot be moved while a new version is under review. To change a script, use **Ask the Bot to revise**; you cannot edit
-  it yourself. A watcher on a linked environment shows **waiting** while that environment does not
-  answer. The reviewer uses your text-generation model, so if it cannot run, choose another in
-  Settings. A count on the **Bot** button shows how many watchers are failing or broken and how many
-  calls the Bot holds for you; it updates when you return to the window, close the popover or the Bot finishes
-  a turn.
+  the Bot reads your change on its next turn. Its **Watchers and tools** tab lists the scripts the
+  Bot writes: watchers, which check something on a timer and wake the Bot only when it changes, and
+  [tools](#secrets-and-tools), which the Bot calls when it wants to look something up. You do not
+  approve them: a reviewer model reads each script first, and a script it rejects never runs. Each
+  row shows whether it is a watcher or a tool, its verdict, what it is for and, for a watcher, where
+  it runs. **Pause** and **Resume** appear once a version is approved, and **Remove** is always
+  there; removing or pausing a tool makes the watchers that use it fail, and the tool's row lists
+  them. To move a watcher to a linked environment, pick the place under **Runs on**, press **Run
+  once there** to see what it prints, then **Move**; a watcher cannot be moved while a new version
+  is under review, and a tool, or a watcher that uses secrets or tools, always runs on this
+  machine. To change a script, use **Ask the Bot to revise**; you cannot edit it yourself. A watcher
+  on a linked environment shows **waiting** while that environment does not answer. The reviewer
+  uses your text-generation model, so if it cannot run, choose another in Settings. A count on the
+  **Bot** button shows how many watchers or tools are failing or broken and how many calls the Bot
+  holds for you; it updates when you return to the window, close the popover or the Bot finishes a
+  turn.
 - A Bot can switch itself to a stronger model for a task that needs more reasoning; when that turn
   ends, T3 Code puts it back on the model it was on, unless you changed the model yourself in the
   meantime. A server restart in between leaves it on the stronger one.
 - Settle or archive a Bot when you are done: its crew go back to the top of the sidebar and it stops
   being woken. Reopen it to take them back.
+
+## Secrets and tools
+
+A Bot can read things that need a login, such as your mail, an issue tracker or a calendar,
+through a script that uses a secret you gave it. You decide which secrets it gets:
+
+- In **Settings → Home**, open **Bot secret grants**, choose the Bot and press **Add grant**. Give
+  the secret a name in capitals, such as `GITHUB_TOKEN`, the hosts it may be sent to, and its value
+  (at least 8 characters), or pick a reference to a secret in your password manager.
+- A Bot only ever sees a grant's name and hosts, never its value. A script gets a secret only if it
+  names it, and only when it runs on this machine. Anything the script prints has the value
+  replaced by `[secret NAME]`, but that catches the value itself, not every disguise of it.
+- Hosts are shown to the reviewer model, but nothing yet stops a script from sending a secret
+  elsewhere. Grant only secrets whose misuse you would accept, such as a token limited to read
+  access.
+- Remove a grant to take the secret back. A row in the **Watchers and tools** tab marks a secret
+  that still needs a grant.
+
+A **tool** is a read-only script the Bot calls when it wants an answer, with arguments, for
+example "what is open on this repository". It gets the same review as a watcher and appears in the
+same tab, marked as a tool. A watcher can also use a tool: T3 Code runs it first and hands the
+watcher what it printed, so the watcher itself never holds the secret.
+
+What a tool or watcher prints can contain text from outside sources, such as the subject of an
+email or an issue title, and anyone can write that text. The Bot treats it as information, not as
+instructions, and once it has called a tool in a turn, actions that reach beyond its notes and
+crew wait for your approval, as they do after an email.
 
 ## Self-repair
 
@@ -102,7 +136,7 @@ starts without asking you. The Bot acts only on the short summary that comes bac
 task list. Even so, treat that summary as information, not as a command: anyone can send you an
 email that tries to give your Bot orders, and the reader's summary can be steered too.
 
-When outside content started or shaped what the Bot is doing (an email, or the output of a watcher), it can still read, take notes and add tasks,
+When outside content started or shaped what the Bot is doing (an email, or the output of a watcher or tool), it can still read, take notes and add tasks,
 but anything that could act on the world waits for you: starting a thread or helper, messaging a
 thread that is not its own crew, scheduling something or touching a linked environment. Those
 appear at the top of the **Bot** popover with what the Bot asked for; **Allow** lets the Bot do

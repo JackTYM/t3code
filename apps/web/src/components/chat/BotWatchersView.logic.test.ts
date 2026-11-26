@@ -11,11 +11,14 @@ import {
   botWatcherControls,
   botWatcherDryRunOf,
   botWatcherInterval,
+  botWatcherKind,
   botWatcherPlaces,
   botWatcherReviseMessage,
   botWatcherSecretStatus,
   botWatcherState,
+  botWatcherToolCall,
   botWatchersNeedingYou,
+  botWatchersUsingTool,
   groupBotWatchers,
   latestReview,
   parseBotWatcherDiff,
@@ -70,7 +73,21 @@ const revising = (overrides: Partial<BotWatcher> = {}) =>
 const proposed = (overrides: Partial<BotWatcher> = {}) =>
   revising({ status: "needs_approval", approvedHash: undefined, ...overrides });
 
+const tool = (overrides: Partial<BotWatcher> & { name: string }) =>
+  watcher({ kind: "tool", usage: "gh-issues <repo>", ...overrides });
+
 describe("botWatcherState", () => {
+  it("calls an approved tool ready, not running, and keeps it with the active rows", () => {
+    expect(botWatcherKind(watcher({ name: "a" }))).toBe("watch");
+    expect(botWatcherState(tool({ name: "gh" }))).toBe("ready");
+    expect(botWatcherState(tool({ name: "gh", pendingHash: "bbbbbbbbbbbbbbbbbbbb" }))).toBe(
+      "revising",
+    );
+    expect(groupBotWatchers([tool({ name: "gh" })]).map((entry) => entry.group)).toEqual([
+      "running",
+    ]);
+  });
+
   it("tells a first version under review from a revision beside a running one", () => {
     expect(botWatcherState(proposed())).toBe("reviewing");
     expect(botWatcherState(revising())).toBe("revising");
@@ -193,6 +210,7 @@ describe("botWatcherControls", () => {
   it("has no approve or reject: a reviewer model decides", () => {
     const controls = botWatcherControls(revising(), "local", both);
     expect(Object.keys(controls).toSorted()).toEqual([
+      "choosesPlace",
       "move",
       "pause",
       "pending",
@@ -268,6 +286,67 @@ describe("botWatcherControls", () => {
   });
 });
 
+describe("where a row can run", () => {
+  const declared = [{ name: "gh", args: ["owner/repo"] }];
+
+  it("offers no place for a tool, nor to move one, even with a dry run on file", () => {
+    const row = tool({
+      name: "gh",
+      lastDryRun: run({ hash: "aaaaaaaaaaaaaaaaaaaa", runsOn: LAPTOP }),
+    });
+    const controls = botWatcherControls(row, LAPTOP, both);
+    expect(controls.choosesPlace).toBe(false);
+    expect(controls.move).toBe(false);
+  });
+
+  it("offers none for a watcher that uses secrets or tools, which the server keeps here", () => {
+    expect(
+      botWatcherControls(watcher({ name: "a", secrets: ["KEY"] }), "local", both),
+    ).toMatchObject({
+      choosesPlace: false,
+    });
+    expect(
+      botWatcherControls(watcher({ name: "a", tools: declared }), "local", both),
+    ).toMatchObject({
+      choosesPlace: false,
+    });
+    expect(botWatcherControls(watcher({ name: "a" }), "local", both).choosesPlace).toBe(true);
+  });
+
+  it("keeps the picker for a row that already sits elsewhere", () => {
+    expect(
+      botWatcherControls(watcher({ name: "a", tools: declared, runsOn: LAPTOP }), "local", both)
+        .choosesPlace,
+    ).toBe(true);
+  });
+});
+
+describe("declared tools", () => {
+  it("writes a call the way the Bot makes it, quoting what needs it", () => {
+    expect(botWatcherToolCall({ name: "gh", args: ["owner/repo", "is open"] })).toBe(
+      'gh owner/repo "is open"',
+    );
+    expect(botWatcherToolCall({ name: "inbox", args: [] })).toBe("inbox");
+  });
+
+  it("lists the watchers that stop working when a tool goes", () => {
+    const rows = [
+      watcher({ name: "zed", tools: [{ name: "gh", args: [] }] }),
+      watcher({
+        name: "alpha",
+        tools: [
+          { name: "gh", args: ["x"] },
+          { name: "other", args: [] },
+        ],
+      }),
+      watcher({ name: "beta", tools: [{ name: "other", args: [] }] }),
+      watcher({ name: "plain" }),
+    ];
+    expect(botWatchersUsingTool(rows, tool({ name: "gh" }))).toEqual(["alpha", "zed"]);
+    expect(botWatchersUsingTool(rows, tool({ name: "none" }))).toEqual([]);
+  });
+});
+
 describe("botWatcherPlaces", () => {
   it("offers this environment first, then linked machines", () => {
     const linked = new Map<EnvironmentId, string>([[LAPTOP, "MacBook"]]);
@@ -327,6 +406,14 @@ describe("botWatcherReviseMessage", () => {
   it("names the watcher and the version and carries the user's note", () => {
     expect(botWatcherReviseMessage(revising(), "  Only look at announcements.  ")).toBe(
       'Please revise the watcher "deadlines" (version bbbbbbbbbbbb) and propose the new version. Only look at announcements.',
+    );
+  });
+});
+
+describe("botWatcherReviseMessage for a tool", () => {
+  it("calls it a tool", () => {
+    expect(botWatcherReviseMessage(tool({ name: "gh" }), "Add paging.")).toBe(
+      'Please revise the tool "gh" (version aaaaaaaaaaaa) and propose the new version. Add paging.',
     );
   });
 });

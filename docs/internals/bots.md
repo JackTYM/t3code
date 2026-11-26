@@ -38,7 +38,9 @@ Bot instructions ride on every Bot turn's prompt
 not reach every provider; a seeded file also went stale for existing Bots. The text tells a Bot to
 delegate and never run shell commands, read code or edit files, and to start crew for anything that
 needs a browser, an MCP server or a code change. It also tells a Bot how to read a health wake, which is
-why that wake's wording is fixed. `evals/mcp-tool-use` holds the case for the delegation rule.
+why that wake's wording is fixed, and that a secret is the user's to give: the Bot learns names and
+hosts, never values, and says what to grant instead of asking for one. It rides on every turn, so
+each sentence added costs every Bot turn; keep it short. `evals/mcp-tool-use` holds the case for the delegation rule.
 
 ## Who may act as a Bot
 
@@ -555,8 +557,8 @@ with the `Scheduler`.
     it runs in a short `node:vm` timer; a version whose pattern timed out stays unhealthy until it
     is replaced. The values are constants in `WatcherService`.
   - **Limits.** The reviewer is a model, so a script written to talk it into approving can succeed.
-    The boundary that holds is the egress allowlist, which is not built yet (spec step 5), so until
-    it is no source that needs a secret is enabled. The cooldown and the slow-pattern memory are in
+    Nothing on the network holds a script to its declared hosts yet (see
+    [Secret grants](#secret-grants)), so a secret a reviewer let through can go anywhere. The cooldown and the slow-pattern memory are in
     memory and reset on a restart.
 - **The user can always act.** `pause`, `resume`, `remove` and moving a watcher (`setRunsOn`) are
   protected RPCs (`botWatcher.*`) the user's client calls whatever woke the Bot, and a moved watcher
@@ -585,25 +587,88 @@ with the `Scheduler`.
   were, and it is asked again after a minute (the link itself is kept alive by
   `PeerLinkKeepalive`). A peer that answers with a refusal is a failure like any other.
 
-A **tool** is a watcher the Bot calls instead of one a timer runs (`kind: "tool"` in `watcher.json`
-and the approvals record). It has the same versions, reviewer, dry run, state folder, secrets and
-redaction, and shares the watchers' namespace, so a name cannot be both. What differs is a trap:
-the scheduler skips tools by the record's kind and again by the version's, a tool runs only on
-this machine, and `t3_bot_tool_run` runs the approved hash only, with arguments as argv. A call is
-free in any turn but taints it, and returns its output framed as untrusted data, never as a wake.
-A call a Bot got wrong (any non-zero exit) is not a watcher failure and is never counted: bad
-arguments must not reach the repair path. Only the exits that say the machine failed (`timeout`,
-`spawn-error`, `secret-written`) count, and three in a row within an hour signal under the tool's
-own name with kind `watcher`, since the validated name has no room for a prefix and the repair
-crew looks for the folder by it. Calls do not take the global one-script-at-a-time gate, which a
-30 second tool would hold against every watcher: each tool has its own lock (its state folder is a
-cursor), four calls run at once overall, and the lock is held across re-reading the record, so a
-pause, removal or approved revision that came while a call waited decides what it does. The call
-limits (six a minute per Bot, twelve tools) and the failure streaks are in memory.
-
 A health wake is deduplicated per failure: a trip, or new output, wakes at once, and the same
 output wakes again after a delay that doubles up to a ceiling. Recovery clears the state silently.
 `state.json` is saved with the wake `pending` before `BotService.wakeWith` queues it, and its key
 carries the failure's start, wake count and output fingerprint, so a restart resends the same key
 instead of waking twice. An `events` wake is not deduplicated, since each is news; its key carries
 the run's time. Output reaches the Bot framed as untrusted data, with a random tag.
+
+### Tools
+
+A **tool** is a second kind of watcher record (`kind: "tool"` in `watcher.json` and the approvals
+record): a read-only script the Bot calls with arguments instead of one a timer runs. Both kinds
+share the namespace, version store, reviewer, dry run, state folder, secrets and approvals file, so
+a name cannot be both and review has one path. What differs is a trap:
+
+- The scheduler skips tools by the record's kind and again by the version's. A tool runs only on this
+  machine (`setRunsOn` refuses it), and `t3_bot_tool_run` runs the approved hash only, with
+  arguments as argv, never a shell.
+- A call is free in any turn but taints it, as a mail search does
+  ([`BotHoldService`](../../apps/server/src/bots/BotHoldService.ts)): the rest of that turn counts as
+  influenced by outside text, so starting crew, messaging other threads and scheduling are held for
+  the user. The output comes back framed as untrusted data, never as a wake.
+- A call a Bot got wrong (any non-zero exit) is not a watcher failure and is never counted: bad
+  arguments must not reach the repair path. Only the exits that say the machine failed (`timeout`,
+  `spawn-error`, `secret-written`) count, and three in a row within an hour signal under the tool's
+  own name with kind `watcher`, since the validated name has no room for a prefix and the repair
+  crew looks for the folder by it.
+- Calls do not take the global one-script-at-a-time gate, which a 30 second tool would hold against
+  every watcher. Each tool has its own lock (its state folder is a cursor), four calls run at once
+  overall, and the lock is held across re-reading the record, so a pause, removal or approved
+  revision that came while a call waited decides what it does.
+- What stops a loop from spending a paid API is the call limit (six calls a minute and twelve tools per Bot)
+  and the failure streaks, both in memory.
+
+**A watcher can declare tools** (`tools`: name and fixed arguments). Before each run the server runs
+them, with their own secrets and state folders, and leaves what each printed as
+`<name>.out` and `<name>.exit` in `$T3_TOOL_OUTPUT_DIR`. The reason is that the watcher never holds
+the tool's secrets, and the text it reads has already been through the tool's redaction. It is still
+outside text, so the watcher treats it as data. The first tool that cannot run ends the run: it
+fails with a fixed `tool-failed` exit and stderr, so no tool output rides on it, or waits when the
+tool needs a grant. A user who pauses or removes a tool makes the watchers that use it fail; the
+Bot is not let remove one in use.
+
+- Watchers due in one scheduler pass that make the same call (Bot, tool, arguments) share one run
+  and its output, so the tool's cursor moves once.
+- These are the server's calls, so the Bot's six a minute do not count them. A proposal is refused
+  when its watchers' declared tools would run more than twelve times a minute in all (from each
+  watcher's interval and tool count), since the interval is the only bound they have.
+- A watcher that declares tools runs only on this machine, as one that declares secrets does.
+
+### Secret grants
+
+A grant is the user's decision to let one Bot's scripts use one named secret for requests to the
+listed hosts. [`BotSecretGrantService`](../../apps/server/src/bots/BotSecretGrantService.ts) owns
+them.
+
+- **Where they live.** A Bot writes its memory folder and its watchers' files, so a grant kept
+  there it could give itself. The list is `<stateDir>/bot-secret-grants.json`, signed like the
+  approvals file, and the newest version saved is also kept in the secret store, because a restored
+  older copy is signed correctly and would otherwise be believed. A file that fails the check is set
+  aside and every grant in it dropped; stored values are not touched. The file holds names, hosts and
+  a reference, never a value: a stored value is in the server's secret store, and a reference is
+  read through its secret provider at each use.
+- **Who may create one.** `botSecretGrant.set` and `.remove` need operate scope, and a reference
+  also needs `providers:manage`, which reading a provider's secrets already takes (decided in
+  `clientRpcPermissions`). No RPC or tool returns a value. A Bot sees names, hosts and last use
+  (`t3_bot_secret_grants_list`). The server's `resolve` is the only reader and answers only when the
+  grant covers every host the version declares; a miss says one fixed thing.
+- **Injection.** A script gets only the names its approved version declares, as environment
+  variables, and only in a run on this machine: a run for a linked environment never gets one. A missing grant makes the run wait with a fixed text naming the secret and
+  hosts, which the Bot passes on to the user.
+- **Redaction** covers every text the server records or sends: output, errors, the dry-run record,
+  wakes and tool output. It hides the value and its trimmed, base64, base64url, URL-encoded and
+  JSON-escaped forms, and a grant needs at least 8 characters because hiding less would rewrite
+  unrelated text. Two traps follow from this. The runner reads the output cap plus a slack, the
+  longest a form can run past its value, so a form that straddles the cap is whole before it is hidden
+  and then cut. And a script can write a secret to a file instead, so after a run the state folder
+  (bounded in files, depth and bytes, links not followed) is rewritten with the value hidden, and a
+  hit fails the run as `secret-written`.
+- **Known limits.** Values that are split, reversed, hex-encoded or otherwise transformed are not
+  found, nor are values past the scan's bounds, or written by a descendant that outlives the run,
+  after the scan. The reviewer is meant to catch those, and it is a model.
+- **Hosts are not enforced.** They gate the grant (it must cover every declared host), the reviewer
+  reads them and the view shows them. Nothing stops a script that holds a value from sending it
+  elsewhere. The egress proxy, which is not built, is what would hold a run's requests to its
+  declared hosts; until then granting a secret trusts the reviewer and the redaction above.

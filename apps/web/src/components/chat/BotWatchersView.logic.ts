@@ -1,14 +1,19 @@
 import type {
   BotSecretGrant,
   BotWatcher,
+  BotWatcherKind,
   BotWatcherReview,
   BotWatcherRunsOn,
   EnvironmentId,
 } from "@t3tools/contracts";
 
+/** The contract leaves `kind` off a watcher. */
+export const botWatcherKind = (watcher: BotWatcher): BotWatcherKind => watcher.kind ?? "watch";
+
 /**
  * What the badge says. `reviewing` is a first version the reviewer has not approved, so nothing
- * runs. `revising` is a running watcher with a newer version under review.
+ * runs. `revising` is a running watcher with a newer version under review. `ready` is an approved
+ * tool: it runs only when the Bot calls it, so "running" would say more than is true.
  */
 export type BotWatcherState =
   | "reviewing"
@@ -17,7 +22,8 @@ export type BotWatcherState =
   | "paused"
   | "waiting"
   | "failing"
-  | "running";
+  | "running"
+  | "ready";
 
 export function botWatcherState(watcher: BotWatcher): BotWatcherState {
   switch (watcher.status) {
@@ -32,7 +38,11 @@ export function botWatcherState(watcher: BotWatcher): BotWatcherState {
     case "tripped":
       return "failing";
     case "healthy":
-      return watcher.pendingHash === undefined ? "running" : "revising";
+      return watcher.pendingHash !== undefined
+        ? "revising"
+        : botWatcherKind(watcher) === "tool"
+          ? "ready"
+          : "running";
   }
 }
 
@@ -45,10 +55,11 @@ const GROUP_OF = {
   failing: "attention",
   waiting: "running",
   running: "running",
+  ready: "running",
   paused: "paused",
 } as const satisfies Record<BotWatcherState, BotWatcherGroup>;
 
-/** What needs the user first, then what runs, then what they stopped. */
+/** What needs the user first, then what is active, then what they stopped. */
 export function groupBotWatchers(
   watchers: ReadonlyArray<BotWatcher>,
 ): ReadonlyArray<{ group: BotWatcherGroup; watchers: ReadonlyArray<BotWatcher> }> {
@@ -64,8 +75,8 @@ export function groupBotWatchers(
 }
 
 /**
- * How many watchers the Bot button badge counts: failing ones and invalid ones (files that no
- * longer match what was reviewed). A version waiting on the reviewer asks nothing of the user.
+ * How many watchers or tools the Bot button badge counts: failing ones and invalid ones (files
+ * that no longer match what was reviewed). A version waiting on the reviewer asks nothing of the user.
  */
 export const botWatchersNeedingYou = (watchers: ReadonlyArray<BotWatcher>): number =>
   watchers.filter((watcher) => watcher.status === "tripped" || watcher.status === "invalid").length;
@@ -125,7 +136,20 @@ export interface BotWatcherControls {
   readonly move: boolean;
   /** Whether a version waits on the reviewer. */
   readonly pending: boolean;
+  /** Whether the user can choose where it runs. */
+  readonly choosesPlace: boolean;
 }
+
+/**
+ * A tool, and a watcher that uses secrets or tools, run only on this machine, and the server
+ * refuses to move them. One that already sits elsewhere keeps its picker, so the user can see it
+ * and bring it back.
+ */
+const botWatcherChoosesPlace = (watcher: BotWatcher): boolean =>
+  watcher.runsOn !== "local" ||
+  (botWatcherKind(watcher) === "watch" &&
+    (watcher.secrets ?? []).length === 0 &&
+    (watcher.tools ?? []).length === 0);
 
 /**
  * Which controls work for `watcher` when the user means it to run on `target`, and why Run once
@@ -162,12 +186,14 @@ export function botWatcherControls(
     resume: grants.runCode,
     remove: grants.operate,
     move:
+      botWatcherChoosesPlace(watcher) &&
       grants.runCode &&
       watcher.approvedHash !== undefined &&
       !pending &&
       target !== watcher.runsOn &&
       botWatcherDryRunHolds(watcher, watcher.approvedHash, target),
     pending,
+    choosesPlace: botWatcherChoosesPlace(watcher),
   };
 }
 
@@ -218,6 +244,26 @@ export function botWatcherSecretStatus(
   });
 }
 
+/** A declared tool as the Bot would call it: its name, then its arguments, quoted when they need it. */
+export const botWatcherToolCall = (tool: {
+  readonly name: string;
+  readonly args: ReadonlyArray<string>;
+}) =>
+  [
+    tool.name,
+    ...tool.args.map((arg) => (/^[\w./:@=+-]+$/u.test(arg) ? arg : JSON.stringify(arg))),
+  ].join(" ");
+
+/** The watchers that declare `tool`, which stop working if it is paused or removed. */
+export const botWatchersUsingTool = (
+  watchers: ReadonlyArray<BotWatcher>,
+  tool: BotWatcher,
+): ReadonlyArray<string> =>
+  watchers
+    .filter((candidate) => (candidate.tools ?? []).some((declared) => declared.name === tool.name))
+    .map((candidate) => candidate.name)
+    .toSorted((a, b) => a.localeCompare(b));
+
 export const shortBotWatcherHash = (hash: string) => hash.slice(0, 12);
 
 export type BotWatcherDiffLine = {
@@ -249,6 +295,7 @@ export function parseBotWatcherDiff(diff: string): ReadonlyArray<BotWatcherDiffL
 /** What the Bot is sent to ask for a revision. It is sent as the user, so it is not translated. */
 export function botWatcherReviseMessage(watcher: BotWatcher, note: string): string {
   const version = shortBotWatcherHash(watcher.pendingHash ?? watcher.approvedHash ?? watcher.hash);
+  const kind = botWatcherKind(watcher);
   // oxlint-disable-next-line t3code/no-untranslated-copy -- sent to the Bot as the user's message, so it stays English like the Bot's instructions
-  return `Please revise the watcher "${watcher.name}" (version ${version}) and propose the new version. ${note.trim()}`;
+  return `Please revise the ${kind === "tool" ? "tool" : "watcher"} "${watcher.name}" (version ${version}) and propose the new version. ${note.trim()}`;
 }

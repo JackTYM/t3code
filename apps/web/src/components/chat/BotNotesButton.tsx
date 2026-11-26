@@ -253,7 +253,7 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
               <T>Tasks</T>
             </Toggle>
             <Toggle value="watchers">
-              <T>Watchers</T>
+              <T>Watchers and tools</T>
             </Toggle>
             <Toggle value="mail">
               <T>Mail</T>
