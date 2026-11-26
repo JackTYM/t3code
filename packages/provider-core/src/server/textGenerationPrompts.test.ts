@@ -193,6 +193,7 @@ describe("buildWatcherReviewPrompt", () => {
     for (const text of [
       "- Sends a secret named in Secrets to any host other than one listed in Hosts.",
       "- Writes a secret anywhere but memory: it prints it, saves it in a file (the state folder included), or puts it on a command line.",
+      "- Follows HTTP redirects (curl -L or --location, or a fetch or request option that follows them) in a request that carries a secret in a header or body.",
     ]) {
       expect(before).toContain(text);
     }

@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 
-import { redactSecrets } from "./redactSecrets.ts";
+import { redactSecrets, redactionSlack } from "./redactSecrets.ts";
 
 it("replaces a value with the name of the grant it came from", () => {
   assert.strictEqual(
@@ -116,4 +116,44 @@ it("leaves no part of two secrets that overlap each other in the text", () => {
 it("returns the text as it was when there is nothing to hide", () => {
   assert.strictEqual(redactSecrets("plain", []), "plain");
   assert.strictEqual(redactSecrets("", [{ name: "KEY", value: "abcdefgh" }]), "");
+});
+
+it("does not throw on a value with a lone surrogate, and still hides it", () => {
+  const value = "abc\uD800defghij";
+  assert.strictEqual(redactSecrets(`x ${value} y`, [{ name: "KEY", value }]), "x [secret KEY] y");
+});
+
+it("hides the base64url, unpadded base64, JSON-escaped and lowercase percent-encoded forms", () => {
+  const value = 'k?>~"tok\\en\n12345';
+  const base64 = Buffer.from(value).toString("base64");
+  const forms = {
+    base64url: Buffer.from(value).toString("base64url"),
+    unpadded: base64.replace(/=+$/u, ""),
+    json: JSON.stringify(value).slice(1, -1),
+    lowerPercent: encodeURIComponent(value).replace(/%[0-9A-F]{2}/gu, (match) =>
+      match.toLowerCase(),
+    ),
+  };
+  assert.notStrictEqual(forms.lowerPercent, encodeURIComponent(value));
+  for (const [label, form] of Object.entries(forms)) {
+    assert.strictEqual(
+      redactSecrets(`<${form}>`, [{ name: "KEY", value }]),
+      "<[secret KEY]>",
+      label,
+    );
+  }
+});
+
+it("says how much longer than a value its longest form can be", () => {
+  assert.strictEqual(redactionSlack([]), 0);
+  const value = "p@ss word/with+chars=";
+  const longest = Math.max(
+    ...[
+      value,
+      Buffer.from(value).toString("base64"),
+      encodeURIComponent(value),
+      JSON.stringify(value),
+    ].map((form) => Buffer.byteLength(form)),
+  );
+  assert.isAtLeast(redactionSlack([{ value }]), longest);
 });

@@ -1,4 +1,5 @@
 import {
+  BOT_SECRET_GRANT_MIN_VALUE_LENGTH,
   BOT_SECRET_GRANTS_MAX_PER_BOT,
   BotSecretGrant,
   BotSecretGrantError,
@@ -305,6 +306,9 @@ const make = Effect.gen(function* () {
       if (secret !== undefined && secret.trim() === "") {
         return yield* failure(botThreadId, name, "invalid");
       }
+      if (secret !== undefined && secret.trim().length < BOT_SECRET_GRANT_MIN_VALUE_LENGTH) {
+        return yield* failure(botThreadId, name, "too_short");
+      }
       const folder = BotService.memoryFolderName(botThreadId);
       const valueName = storedSecretName(folder, name);
       yield* Effect.gen(function* () {
@@ -405,7 +409,7 @@ const make = Effect.gen(function* () {
     }
     // Outside the lock: a provider may take a while to unlock, and the user's changes wait for nobody.
     const value = yield* readValue(folder, name, record);
-    if (value === undefined || value.trim() === "") {
+    if (value === undefined || value.trim().length < BOT_SECRET_GRANT_MIN_VALUE_LENGTH) {
       return { _tag: "Missing", reason: "unreadable" } as const;
     }
     return yield* Effect.gen(function* () {

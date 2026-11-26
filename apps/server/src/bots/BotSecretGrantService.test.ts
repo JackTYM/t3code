@@ -266,7 +266,7 @@ it.effect("reads a reference from the provider at each use, and keeps no stored 
   withService((harness, service) =>
     Effect.gen(function* () {
       const bot = harness.botThread.id;
-      harness.provided.set("op://vault/item/field", "first");
+      harness.provided.set("op://vault/item/field", "first-value-1");
       yield* grant(service, bot, "OP_TOKEN", {
         type: "reference",
         reference: reference("op://vault/item/field"),
@@ -281,15 +281,19 @@ it.effect("reads a reference from the provider at each use, and keeps no stored 
 
       const read = () => service.resolve({ botThreadId: bot, name: "OP_TOKEN", hosts: GITHUB });
       const first = yield* read();
-      assert.strictEqual(first._tag === "Ok" ? Redacted.value(first.value) : undefined, "first");
-      harness.provided.set("op://vault/item/field", "rotated");
+      assert.strictEqual(
+        first._tag === "Ok" ? Redacted.value(first.value) : undefined,
+        "first-value-1",
+      );
+      harness.provided.set("op://vault/item/field", "rotated-value");
       const second = yield* read();
       assert.strictEqual(
         second._tag === "Ok" ? Redacted.value(second.value) : undefined,
-        "rotated",
+        "rotated-value",
       );
 
-      for (const unreadable of [undefined, "", "   "]) {
+      // Too short to hide in text without rewriting unrelated words, so it is not used.
+      for (const unreadable of [undefined, "", "   ", "  seven77  "]) {
         harness.provided.set("op://vault/item/field", unreadable);
         assert.deepStrictEqual(yield* read(), { _tag: "Missing", reason: "unreadable" });
       }
@@ -391,8 +395,8 @@ it.effect("replaces the hosts and the value when a name is given again", () =>
       const bot = harness.botThread.id;
       const storedName = "bot-grant-thread-thread~3abot-GITHUB_TOKEN";
       yield* grant(service, bot, "GITHUB_TOKEN");
-      yield* grant(service, bot, "GITHUB_TOKEN", stored("second"), ["uploads.github.com"]);
-      assert.deepStrictEqual(yield* harness.storedValue(storedName), Option.some("second"));
+      yield* grant(service, bot, "GITHUB_TOKEN", stored("second-value"), ["uploads.github.com"]);
+      assert.deepStrictEqual(yield* harness.storedValue(storedName), Option.some("second-value"));
       assert.deepStrictEqual((yield* service.list(bot)).grants, [
         { name: "GITHUB_TOKEN", hosts: ["uploads.github.com"], source: "stored" },
       ]);
@@ -420,14 +424,14 @@ it.effect("keeps the old value and hosts when a replacement cannot be saved", ()
     Effect.gen(function* () {
       const bot = harness.botThread.id;
       const storedName = "bot-grant-thread-thread~3abot-GITHUB_TOKEN";
-      yield* grant(service, bot, "GITHUB_TOKEN", stored("first"));
+      yield* grant(service, bot, "GITHUB_TOKEN", stored("first-value-1"));
 
       yield* harness.breakWrites;
-      const failed = yield* grant(service, bot, "GITHUB_TOKEN", stored("second"), [
+      const failed = yield* grant(service, bot, "GITHUB_TOKEN", stored("second-value"), [
         "uploads.github.com",
       ]).pipe(Effect.flip);
       assert.strictEqual(failed.reason, "io");
-      assert.deepStrictEqual(yield* harness.storedValue(storedName), Option.some("first"));
+      assert.deepStrictEqual(yield* harness.storedValue(storedName), Option.some("first-value-1"));
       assert.deepStrictEqual(
         (yield* service.list(bot)).grants.map(({ hosts }) => hosts),
         [GITHUB],
@@ -441,7 +445,7 @@ it.effect("keeps the old value and hosts when a replacement cannot be saved", ()
 
       yield* harness.mendWrites;
       const ok = yield* service.resolve({ botThreadId: bot, name: "GITHUB_TOKEN", hosts: GITHUB });
-      assert.strictEqual(ok._tag === "Ok" ? Redacted.value(ok.value) : undefined, "first");
+      assert.strictEqual(ok._tag === "Ok" ? Redacted.value(ok.value) : undefined, "first-value-1");
     }),
   ),
 );
@@ -480,9 +484,29 @@ it.effect("holds at most 24 grants per Bot, but a name already held can still ch
       assert.isTrue(
         Option.isNone(yield* harness.storedValue("bot-grant-thread-thread~3abot-ONE_TOO_MANY")),
       );
-      yield* grant(service, bot, "TOKEN_3", stored("changed"));
+      yield* grant(service, bot, "TOKEN_3", stored("changed-value"));
       yield* grant(service, harness.otherBot.id, "ONE_TOO_MANY");
       assert.strictEqual((yield* service.list(bot)).grants.length, BOT_SECRET_GRANTS_MAX_PER_BOT);
+    }),
+  ),
+);
+
+it.effect("refuses a stored value of fewer than eight characters, trimmed", () =>
+  withService((harness, service) =>
+    Effect.gen(function* () {
+      for (const short of ["seven77", "  seven77  ", "a\n"]) {
+        const refused = yield* grant(
+          service,
+          harness.botThread.id,
+          "GITHUB_TOKEN",
+          stored(short),
+        ).pipe(Effect.flip);
+        assert.strictEqual(refused.reason, "too_short");
+        assert.notInclude(refused.message, "seven77");
+      }
+      assert.deepStrictEqual((yield* service.list(harness.botThread.id)).grants, []);
+      yield* grant(service, harness.botThread.id, "GITHUB_TOKEN", stored(" eight888 "));
+      assert.lengthOf((yield* service.list(harness.botThread.id)).grants, 1);
     }),
   ),
 );

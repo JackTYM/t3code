@@ -26,6 +26,8 @@ import {
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { createTwoFilesPatch } from "diff";
 import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import * as NodeVM from "node:vm";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -57,7 +59,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as BotSecretGrantService from "./BotSecretGrantService.ts";
 import * as BotService from "./BotService.ts";
-import { redactSecrets } from "./redactSecrets.ts";
+import { redactionSlack, redactSecrets } from "./redactSecrets.ts";
 import * as RepairService from "./RepairService.ts";
 
 // A version lives in `<bot folder>/watchers/<name>/<sha256>/` (`run` and `watcher.json`). What is
@@ -72,6 +74,13 @@ const PEER_RUN_TOOL = "t3_watcher_run";
 const PEER_RETRY_MS = BOT_WATCHER_MIN_INTERVAL_SECONDS * 1000;
 const STDOUT_MAX_BYTES = 4096;
 const STDERR_MAX_CHARS = 1024;
+// What is looked at in a script's state folder for a value it wrote there: a few small files.
+const STATE_SCAN_MAX_FILES = 64;
+const STATE_SCAN_MAX_ENTRIES = 1024;
+const STATE_SCAN_MAX_DEPTH = 8;
+const STATE_SCAN_MAX_BYTES = 1024 * 1024;
+const SECRET_WRITTEN_EXIT = "secret-written";
+const SECRET_WRITTEN_STDERR = "a secret was written to the state folder";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 10 * 60_000;
 const FIRST_BACKOFF_MS = 15 * 60_000;
@@ -171,6 +180,11 @@ const WatcherRecord = Schema.Struct({
   /** The reviewer's verdicts, newest last. Records saved before reviews existed have none. */
   reviews: Schema.optional(Schema.Array(BotWatcherReview)),
   lastDryRun: Schema.optional(BotWatcherRun),
+  /**
+   * Set while the reviewer's approved pending version waits for a grant its first run needs. Not a
+   * verdict: the version stays, and a later pass tries its first run again.
+   */
+  holding: Schema.optional(Schema.Struct({ since: Schema.Number, reason: Schema.String })),
 });
 type WatcherRecord = typeof WatcherRecord.Type;
 /** Bot memory folder, then watcher name. */
@@ -287,6 +301,79 @@ const computeHash = (input: {
 
 const sha256 = (data: string | Uint8Array) =>
   NodeCrypto.createHash("sha256").update(data).digest("hex");
+
+/**
+ * A captured output with the values hidden, then cut to `max`. It is read with room for the
+ * longest form, so a value that starts inside `max` is whole when it is hidden. When the read
+ * itself was cut, the end may hold the front of a value that nothing can match: that room is dropped.
+ */
+const hideThenCut = (
+  text: string,
+  readWasCut: boolean,
+  secrets: ReadonlyArray<InjectedSecret>,
+  slack: number,
+  max: { readonly bytes: number } | { readonly chars: number },
+) => {
+  const hidden = redactSecrets(text, secrets);
+  const kept =
+    readWasCut && slack > 0
+      ? Buffer.from(hidden)
+          .subarray(0, Math.max(0, Buffer.byteLength(hidden) - slack))
+          .toString()
+      : hidden;
+  return "bytes" in max
+    ? Buffer.from(kept).subarray(0, max.bytes).toString()
+    : kept.slice(0, max.chars);
+};
+
+/**
+ * Replaces, in place, every value found in the regular files of a script's state folder, and says
+ * whether any was. Bounded in files, entries, depth and bytes; links and special files are left
+ * alone, and a file is opened without following a link. A value past the first megabyte of a larger
+ * file is not seen, and one that is split across two files is not either.
+ */
+const hideInStateFolder = (root: string, secrets: ReadonlyArray<InjectedSecret>) =>
+  Effect.promise(async () => {
+    let files = 0;
+    let entries = 0;
+    let found = false;
+    const hideIn = async (target: string) => {
+      const handle = await NodeFSP.open(
+        target,
+        NodeFSP.constants.O_RDWR | NodeFSP.constants.O_NOFOLLOW | NodeFSP.constants.O_NONBLOCK,
+      );
+      try {
+        const stat = await handle.stat();
+        if (!stat.isFile()) return;
+        const buffer = Buffer.alloc(Math.min(stat.size, STATE_SCAN_MAX_BYTES));
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        const text = buffer.subarray(0, bytesRead).toString();
+        const hidden = redactSecrets(text, secrets);
+        if (hidden === text) return;
+        found = true;
+        await handle.truncate(0);
+        await handle.write(hidden, 0);
+      } finally {
+        await handle.close();
+      }
+    };
+    const walk = async (directory: string, depth: number): Promise<void> => {
+      for (const entry of await NodeFSP.readdir(directory, { withFileTypes: true })) {
+        entries += 1;
+        if (entries > STATE_SCAN_MAX_ENTRIES || files >= STATE_SCAN_MAX_FILES) return;
+        const target = NodePath.join(directory, entry.name);
+        // A `Dirent` from `readdir` is not a link's target: a link is neither a file nor a directory.
+        if (entry.isDirectory()) {
+          if (depth < STATE_SCAN_MAX_DEPTH) await walk(target, depth + 1).catch(() => undefined);
+        } else if (entry.isFile()) {
+          files += 1;
+          await hideIn(target).catch(() => undefined);
+        }
+      }
+    };
+    await walk(root, 0).catch(() => undefined);
+    return found;
+  });
 
 const regexSandbox: { expect?: RegExp; text?: string } = {};
 NodeVM.createContext(regexSandbox);
@@ -746,6 +833,8 @@ const make = Effect.gen(function* () {
     readonly secrets?: ReadonlyArray<InjectedSecret> | undefined;
   }) {
     const runtime = RUNTIMES[input.runtime];
+    const secrets = input.secrets ?? [];
+    const slack = redactionSlack(secrets);
     return yield* Effect.gen(function* () {
       const scratch = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-watcher-" });
       yield* fileSystem.chmod(scratch, 0o700);
@@ -754,33 +843,59 @@ const make = Effect.gen(function* () {
       const file = path.join(scratch, runtime.file);
       yield* fileSystem.writeFile(file, input.source, { mode: 0o700 });
       yield* fileSystem.chmod(file, 0o700);
-      return yield* runner.run({
+      const output = yield* runner.run({
         command: runtime.command,
         args: [file],
         cwd: scratch,
-        env: scrubbedEnv(scratch, stateDir, input.dryRun, input.secrets ?? []),
+        env: scrubbedEnv(scratch, stateDir, input.dryRun, secrets),
         inheritEnv: false,
         // Closed at once, so a script that reads stdin sees the end instead of waiting.
         stdin: "",
         timeout: Duration.millis(input.timeoutMs),
         timeoutBehavior: "timedOutResult",
-        maxOutputBytes: STDOUT_MAX_BYTES,
+        // Read past the cap by the longest form of a value, so one that starts before the cap is
+        // whole when it is hidden; `hideThenCut` then cuts to the cap.
+        maxOutputBytes: STDOUT_MAX_BYTES + slack,
         outputMode: "truncate",
       });
+      // Before the scope ends: a dry run's state folder is under the scratch directory.
+      const written = secrets.length > 0 && (yield* hideInStateFolder(stateDir, secrets));
+      return { output, written };
     }).pipe(
       Effect.scoped,
-      Effect.map((output): RawRun => {
-        const stderr = output.stderr.slice(0, STDERR_MAX_CHARS);
-        if (output.timedOut) return { exit: "timeout", stdout: "", stderr };
-        // Not `stdoutTruncated`: a remote run result has no such flag, so `judge` counts bytes.
-        return { exit: String(output.code), stdout: output.stdout, stderr };
+      Effect.map(({ output, written }) => {
+        if (written) {
+          return {
+            raw: { exit: SECRET_WRITTEN_EXIT, stdout: "", stderr: SECRET_WRITTEN_STDERR },
+            cut: false,
+          };
+        }
+        const stderr = hideThenCut(output.stderr, output.stderrTruncated, secrets, slack, {
+          chars: STDERR_MAX_CHARS,
+        });
+        if (output.timedOut) return { raw: { exit: "timeout", stdout: "", stderr }, cut: false };
+        // Judged from the bytes read: a remote run result has no truncation flag, so `judge`
+        // counts bytes, and what hiding takes out must not make a cut output look whole.
+        return {
+          raw: {
+            exit: String(output.code),
+            stdout: hideThenCut(output.stdout, output.stdoutTruncated, secrets, slack, {
+              bytes: STDOUT_MAX_BYTES,
+            }),
+            stderr,
+          },
+          cut: Buffer.byteLength(output.stdout) >= STDOUT_MAX_BYTES,
+        };
       }),
       // A script that cannot start is as tripped as one that fails.
       Effect.catch((error) =>
-        Effect.succeed<RawRun>({
-          exit: "spawn-error",
-          stdout: "",
-          stderr: error.message.slice(0, STDERR_MAX_CHARS),
+        Effect.succeed({
+          raw: {
+            exit: "spawn-error",
+            stdout: "",
+            stderr: hideThenCut(error.message, false, secrets, slack, { chars: STDERR_MAX_CHARS }),
+          },
+          cut: false,
         }),
       ),
       oneRunAtATime,
@@ -931,7 +1046,8 @@ const make = Effect.gen(function* () {
     if (secrets._tag === "Waiting") {
       return { _tag: "Unreachable", reason: secrets.reason } as const satisfies Placed;
     }
-    const raw = yield* runScript({
+    // What comes back has the values hidden already, so nothing judged, recorded or sent carries one.
+    const { raw, cut } = yield* runScript({
       source: version.source,
       runtime: version.config.runtime,
       timeoutMs: version.config.timeoutMs,
@@ -939,17 +1055,7 @@ const make = Effect.gen(function* () {
       dataDir: scheduled === undefined ? undefined : dataDir(scheduled.folder, scheduled.name),
       secrets: secrets.injected,
     });
-    // Hidden before anything is judged, recorded or sent, so no later step can carry a value. What
-    // the output cap cut off is not seen here, so a value split by it can lose its tail unhidden.
-    const hidden: RawRun = {
-      ...raw,
-      stdout: redactSecrets(raw.stdout, secrets.injected),
-      stderr: redactSecrets(raw.stderr, secrets.injected),
-    };
-    return {
-      _tag: "Ran",
-      outcome: judge(version, hidden, cutAtCap(raw.stdout)),
-    } as const satisfies Placed;
+    return { _tag: "Ran", outcome: judge(version, raw, cut) } as const satisfies Placed;
   });
 
   const wakeText = Effect.fn("WatcherService.wakeText")(function* (
@@ -1223,6 +1329,9 @@ const make = Effect.gen(function* () {
             ),
           }),
       ...(record.lastDryRun === undefined ? {} : { lastDryRun: record.lastDryRun }),
+      ...(record.holding === undefined || record.pendingHash === undefined
+        ? {}
+        : { waiting: record.holding }),
       // Only an approved version that runs has run state worth showing.
       ...(status !== "healthy" && status !== "tripped" && status !== "waiting"
         ? {}
@@ -1400,6 +1509,17 @@ const make = Effect.gen(function* () {
       ) {
         return yield* invalid(SECRETS_STAY_HERE);
       }
+      // Hostile text can steer a wake turn, so it may keep what the user approved but not widen it.
+      if (fromWake && existing?.approvedHash !== undefined) {
+        const approved = yield* readVersion(folder, name, existing.approvedHash);
+        const same = (a: ReadonlyArray<string>, b: ReadonlyArray<string> | undefined) =>
+          a.length === (b ?? []).length && a.every((item, index) => item === (b ?? [])[index]);
+        if (!same(secrets, approved?.config.secrets) || !same(hosts, approved?.config.hosts)) {
+          return yield* invalid(
+            "Changing a watcher's secrets or hosts needs a turn the user starts. Tell the user what you would change.",
+          );
+        }
+      }
       const versionConfig = {
         runtime: input.runtime,
         everyMs: input.intervalSeconds * 1000,
@@ -1423,7 +1543,7 @@ const make = Effect.gen(function* () {
         if (existing.pendingHash !== undefined) {
           yield* stopReview(folder, name);
           yield* removeQuietly(versionDir(folder, name, existing.pendingHash));
-          const { pendingHash: _discarded, ...resumed } = existing;
+          const { pendingHash: _discarded, holding: _held, ...resumed } = existing;
           yield* commit(folder, name, resumed).pipe(Effect.mapError(ioError(botThreadId, name)));
         }
         return { hash, pending: false };
@@ -1620,7 +1740,7 @@ const make = Effect.gen(function* () {
       );
     }
     const approvedAt = yield* isoNow;
-    const { pendingHash: _approved, ...rest } = record;
+    const { pendingHash: _approved, holding: _held, ...rest } = record;
     yield* commit(folder, name, {
       ...rest,
       approvedHash: hash,
@@ -1650,7 +1770,7 @@ const make = Effect.gen(function* () {
     const record = yield* recordOf(folder, name);
     if (record?.pendingHash !== hash) return;
     // A dry run recorded while a version is pending is that version's.
-    const { pendingHash: _discarded, lastDryRun: _dropped, ...rest } = record;
+    const { pendingHash: _discarded, lastDryRun: _dropped, holding: _held, ...rest } = record;
     yield* commit(folder, name, record.approvedHash === undefined ? undefined : rest).pipe(
       Effect.mapError(ioError(botThreadId, name)),
     );
@@ -1772,6 +1892,22 @@ const make = Effect.gen(function* () {
       yield* discardPending(botThreadId, name, hash, reason, "discarded", review.at);
     }
   });
+
+  /** Notes why an approved pending version has not gone live; the record is saved only when that changes. */
+  const holdPending = Effect.fn("WatcherService.holdPending")(function* (
+    botThreadId: ThreadId,
+    name: string,
+    hash: string,
+    reason: string,
+  ) {
+    const record = yield* recordOf(BotService.memoryFolderName(botThreadId), name);
+    if (record?.pendingHash !== hash || record.holding?.reason === reason) return;
+    const since = yield* Clock.currentTimeMillis;
+    yield* commit(BotService.memoryFolderName(botThreadId), name, {
+      ...record,
+      holding: { since, reason },
+    }).pipe(Effect.mapError(ioError(botThreadId, name)));
+  }, lock);
 
   const reviewTimeoutText = "it gave no answer within two minutes";
   const couldNotRun = (cause: string) =>
@@ -1942,14 +2078,21 @@ const make = Effect.gen(function* () {
         Effect.result,
       );
       if (dry._tag === "Failure") {
+        // The reviewer approved it, and a grant that is not there yet says nothing against the
+        // script: it stays as it is, and a later pass runs it once more.
+        if (dry.failure.reason === "unreachable" && (version.config.secrets ?? []).length > 0) {
+          return yield* holdPending(
+            botThreadId,
+            name,
+            hash,
+            dry.failure.detail ?? "A secret it declares has no grant yet.",
+          );
+        }
         return yield* failVersion(
           botThreadId,
           name,
           hash,
-          // A grant that is missing is the one cause the Bot can say something about.
-          dry.failure.reason === "unreachable" && (version.config.secrets ?? []).length > 0
-            ? "The first run could not complete where the watcher will run. A secret it declares may not be granted yet for its hosts."
-            : "The first run could not complete where the watcher will run.",
+          "The first run could not complete where the watcher will run.",
         );
       }
       // The dry run took a while, and a newer proposal may have come in: that one needs its own review.
@@ -2084,7 +2227,7 @@ const make = Effect.gen(function* () {
         detail: "stateKey is a sha256 hex string.",
       });
     }
-    return yield* runScript({
+    const { raw } = yield* runScript({
       source,
       runtime: input.runtime,
       timeoutMs: Math.min(Math.max(input.timeoutMs, 1), MAX_TIMEOUT_MS),
@@ -2094,17 +2237,25 @@ const make = Effect.gen(function* () {
           ? undefined
           : path.join(config.stateDir, "watcher-data", input.stateKey),
     });
+    return raw;
   });
 
   // A restart is not a verdict: a version that was waiting for one is reviewed again, or, when its
   // verdict was already saved, finished from there.
-  const resumeReviews = Effect.fn("WatcherService.resumeReviews")(function* () {
+  // `stalledOnly`: just the versions the reviewer approved whose first run is waiting on a grant,
+  // which no review is working on, so a pass can try them again.
+  const resumeReviews = Effect.fn("WatcherService.resumeReviews")(function* (stalledOnly: boolean) {
     const current = yield* Ref.get(approvals);
     yield* Effect.forEach(
       Object.entries(current),
       Effect.fnUntraced(function* ([folder, records]) {
         const pending = Object.entries(records).flatMap(([name, record]) =>
-          record.pendingHash === undefined ? [] : [{ name, hash: record.pendingHash }],
+          record.pendingHash === undefined ||
+          (stalledOnly &&
+            (!hasModelApproval(record, record.pendingHash) ||
+              reviewingHash.has(watcherKey(folder, name))))
+            ? []
+            : [{ name, hash: record.pendingHash }],
         );
         if (pending.length === 0) return;
         const botThreadId =
@@ -2123,9 +2274,12 @@ const make = Effect.gen(function* () {
     );
   });
 
+  // Each pass also tries again the approved versions that were waiting for a grant.
+  const pass = runDue.pipe(Effect.andThen(resumeReviews(true)));
+
   const start: WatcherService["Service"]["start"] = Effect.fn("WatcherService.start")(function* () {
-    yield* scheduler.register("bot-watchers", runDue);
-    yield* resumeReviews();
+    yield* scheduler.register("bot-watchers", pass);
+    yield* resumeReviews(false);
   });
 
   return WatcherService.of({
@@ -2138,7 +2292,7 @@ const make = Effect.gen(function* () {
     dryRun,
     setRunsOn,
     runForPeer,
-    runDue,
+    runDue: pass,
     drainReviews: FiberMap.awaitEmpty(reviewing),
     start,
   });

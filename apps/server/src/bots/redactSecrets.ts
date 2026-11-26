@@ -2,16 +2,40 @@
 const ENCODED_FORM_MIN_LENGTH = 8;
 
 const formsOf = (value: string): ReadonlyArray<string> => {
-  const plain = [value, value.trim()].filter((form) => form !== "");
+  // `encodeURIComponent` throws on a lone surrogate; the original is kept so a script that printed
+  // it as it was is still found.
+  const wellFormed = value.toWellFormed();
+  const plain = [value, wellFormed, value.trim(), wellFormed.trim()].filter((form) => form !== "");
   const encoded =
     value.length < ENCODED_FORM_MIN_LENGTH
       ? []
-      : plain.flatMap((form) => [Buffer.from(form).toString("base64"), encodeURIComponent(form)]);
+      : plain.flatMap((form) => {
+          const base64 = Buffer.from(form).toString("base64");
+          const percent = encodeURIComponent(form.toWellFormed());
+          return [
+            base64,
+            base64.replace(/=+$/u, ""),
+            Buffer.from(form).toString("base64url"),
+            percent,
+            percent.replace(/%[0-9A-F]{2}/gu, (match) => match.toLowerCase()),
+            JSON.stringify(form).slice(1, -1),
+          ];
+        });
   return [...new Set([...plain, ...encoded])];
 };
 
 /**
- * Replaces each value and its trimmed, base64 and URL-encoded forms with `[secret NAME]`, as plain
+ * How many bytes longer than its value the longest form of any of these can be: the room a
+ * captured output needs so that a form that starts inside the cap also ends inside what was read.
+ */
+export const redactionSlack = (secrets: ReadonlyArray<{ readonly value: string }>): number =>
+  Math.max(
+    0,
+    ...secrets.flatMap(({ value }) => formsOf(value).map((form) => Buffer.byteLength(form))),
+  );
+
+/**
+ * Replaces each value and its trimmed, base64, base64url, URL-encoded and JSON-escaped forms with `[secret NAME]`, as plain
  * text. Overlapping matches merge, so one secret inside another, or two running into each other,
  * leave no part behind. Split, reversed or hex shapes are not found: the reviewer covers those.
  */

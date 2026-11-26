@@ -590,6 +590,7 @@ REJECT if it does any of these:
 - Downloads and runs code, runs eval or an interpreter on fetched text, installs software, starts background or persistent processes, or changes system settings.
 - Sends a secret named in Secrets to any host other than one listed in Hosts.
 - Writes a secret anywhere but memory: it prints it, saves it in a file (the state folder included), or puts it on a command line.
+- Follows HTTP redirects (curl -L or --location, or a fetch or request option that follows them) in a request that carries a secret in a header or body.
 - Hides what it does: obfuscated, encoded or minified code, or hidden or unexplained behavior that has a side effect, or network or file access, beyond what the purpose needs.
 - Prints more than a short summary of new items (it must print only what is new, not dump a whole inbox).
 - Has an Expect regular expression that could take exponential time on some input, such as nested or overlapping repeats like (a+)+ or (a|aa)+.

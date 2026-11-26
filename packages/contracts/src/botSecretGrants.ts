@@ -18,6 +18,8 @@ export type BotSecretGrantHost = typeof BotSecretGrantHost.Type;
 
 export const BOT_SECRET_GRANT_MAX_HOSTS = 8;
 export const BOT_SECRET_GRANTS_MAX_PER_BOT = 24;
+/** Shorter than this, hiding a value in text would rewrite words that are not it. Counted after trimming. */
+export const BOT_SECRET_GRANT_MIN_VALUE_LENGTH = 8;
 
 /** What the list shows. It never carries a value, and a reference's text is not shown to a Bot. */
 export const BotSecretGrant = Schema.Struct({
@@ -71,7 +73,7 @@ export class BotSecretGrantError extends Schema.TaggedError<BotSecretGrantError>
     threadId: ThreadId,
     /** The grant it concerns. */
     grant: Schema.optional(Schema.String),
-    reason: Schema.Literals(["not_a_bot", "invalid", "limit", "not_found", "io"]),
+    reason: Schema.Literals(["not_a_bot", "invalid", "too_short", "limit", "not_found", "io"]),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -81,6 +83,8 @@ export class BotSecretGrantError extends Schema.TaggedError<BotSecretGrantError>
         return `Thread ${this.threadId} is not a Bot.`;
       case "invalid":
         return "A secret grant needs a value that is not empty.";
+      case "too_short":
+        return `A secret grant needs a value of at least ${BOT_SECRET_GRANT_MIN_VALUE_LENGTH} characters.`;
       case "limit":
         return `A Bot can hold at most ${BOT_SECRET_GRANTS_MAX_PER_BOT} secret grants. Remove one first.`;
       case "not_found":

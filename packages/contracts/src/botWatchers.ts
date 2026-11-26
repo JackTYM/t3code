@@ -124,7 +124,7 @@ export const BotWatcher = Schema.Struct({
   diff: Schema.optional(Schema.String),
   lastDryRun: Schema.optional(BotWatcherRun),
   lastRunAt: Schema.optional(Schema.Number),
-  /** While `status` is `waiting`: since when, and why the environment was not reached. */
+  /** While `status` is `waiting`: since when, and why the environment was not reached. Also while a reviewed version waits for a grant its first run needs. */
   waiting: Schema.optional(Schema.Struct({ since: Schema.Number, reason: Schema.String })),
   failingSince: Schema.optional(Schema.Number),
   nextWakeAt: Schema.optional(Schema.Number),

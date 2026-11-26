@@ -3653,19 +3653,182 @@ it.effect("waits without spawning, failing or telling the Bot while a secret has
   }).pipe(provideWatchersWithHealth(orchestration, runner.layer));
 });
 
-it.effect("tells the Bot to look at its grants when a first run could not have the secret", () => {
+it.effect(
+  "keeps a reviewed version pending, without telling the Bot, until its secret is granted",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const runner = makeScriptedRunner();
+    runner.state.result = { code: ExitCode(0), stdout: "", timedOut: false };
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      // A watcher that is live, so a revision of it can be proposed from a wake turn later.
+      yield* installWatcher(botThread.id, "disk");
+      yield* installWatcher(botThread.id, "gh", declaresGithub);
+      const listed = (name: string) =>
+        watchers
+          .list(botThread.id)
+          .pipe(Effect.map(({ watchers }) => watchers.find((watcher) => watcher.name === name)!));
+
+      // The reviewer approved it; its first run waited for a grant that is not there yet.
+      assert.strictEqual(runner.state.dryInputs.filter(({ env }) => env?.GITHUB_TOKEN).length, 0);
+      const held = yield* listed("gh");
+      assert.strictEqual(held.status, "needs_approval");
+      assert.isDefined(held.pendingHash);
+      assert.strictEqual(held.waiting?.reason, NEEDS_GRANT);
+      assert.deepStrictEqual(
+        held.reviews.map(({ verdict, source }) => [verdict, source]),
+        [["approve", "model"]],
+      );
+      assert.strictEqual(orchestration.sent.length, 0);
+
+      // A pass with the grant still missing changes nothing and asks the reviewer nothing.
+      const reviewsBefore = (yield* FakeReviewer).calls.length;
+      yield* watchers.runDue;
+      yield* watchers.drainReviews;
+      assert.strictEqual((yield* listed("gh")).status, "needs_approval");
+      assert.strictEqual((yield* FakeReviewer).calls.length, reviewsBefore);
+
+      // Its cooldown was never started: a wake turn may still revise another watcher.
+      orchestration.startRun(botThread, { id: "bot-wake:watcher:disk:1", createdBy: "system" });
+      const revised = yield* proposeWatcher(botThread.id, "disk", { run: "echo two\n" });
+      assert.isTrue(revised.pending);
+      orchestration.startRun(botThread, userMessage);
+      yield* (yield* FakeReviewer).answer(matchName("disk"), APPROVES);
+
+      // Granted, the next pass runs the version once, approves it, and the watcher goes live.
+      yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+      yield* watchers.runDue;
+      yield* watchers.drainReviews;
+      const live = yield* listed("gh");
+      assert.strictEqual(live.status, "healthy");
+      assert.isUndefined(live.pendingHash);
+      assert.isUndefined(live.waiting);
+      assert.isTrue(runner.state.dryInputs.some(({ env }) => env?.GITHUB_TOKEN === SECRET));
+      assert.strictEqual(orchestration.sent.length, 0);
+    }).pipe(provideWatchers(orchestration, runner.layer));
+  },
+);
+
+it.effect("a turn the user did not start cannot add or change a watcher's secrets or hosts", () => {
   const orchestration = makeOrchestration();
   const botThread = addBot(orchestration, "thread:bot");
   const runner = makeScriptedRunner();
   return Effect.gen(function* () {
+    yield* grantSecret(botThread.id, "GITHUB_TOKEN", SECRET, [
+      "api.github.com",
+      "uploads.github.com",
+    ]);
+    yield* grantSecret(botThread.id, "LINEAR_KEY", OTHER_SECRET, [
+      "api.github.com",
+      "uploads.github.com",
+    ]);
     yield* installWatcher(botThread.id, "gh", declaresGithub);
-    assert.strictEqual(runner.state.runs + runner.state.dryInputs.length, 0);
-    assert.deepStrictEqual(yield* statuses(botThread.id), []);
-    assert.strictEqual(orchestration.sent.length, 1);
-    assert.include(orchestration.sent[0]?.text, "first run could not complete");
-    assert.include(orchestration.sent[0]?.text, "granted");
+    yield* installWatcher(botThread.id, "plain", { run: "echo one\n" });
+
+    orchestration.startRun(botThread, { id: "bot-wake:watcher:gh:1", createdBy: "system" });
+    const refused = (name: string, options: Parameters<typeof proposeWatcher>[2]) =>
+      proposeWatcher(botThread.id, name, options).pipe(Effect.flip);
+    for (const attempt of [
+      // A different secret, none at all, more hosts, and secrets where there were none.
+      refused("gh", { secrets: ["LINEAR_KEY"], hosts: GITHUB }),
+      refused("gh", { run: "echo no secrets\n" }),
+      refused("gh", { secrets: ["GITHUB_TOKEN"], hosts: [...GITHUB, "uploads.github.com"] }),
+      refused("gh", { secrets: ["GITHUB_TOKEN", "LINEAR_KEY"], hosts: GITHUB }),
+      refused("plain", { run: "echo two\n", ...declaresGithub }),
+    ]) {
+      const error = yield* attempt;
+      assert.strictEqual(error.reason, "invalid");
+      assert.include(error.message, "needs a turn the user starts");
+    }
+    // The same set, in another order and with another script, is an ordinary revision.
+    const kept = yield* proposeWatcher(botThread.id, "gh", {
+      run: "echo revised\n",
+      secrets: ["GITHUB_TOKEN", "GITHUB_TOKEN"],
+      hosts: ["api.github.com"],
+    });
+    assert.isTrue(kept.pending);
+
+    // The user's own turn may change them: it is a new version for the reviewer.
+    orchestration.startRun(botThread, userMessage);
+    const changed = yield* proposeWatcher(botThread.id, "gh", {
+      secrets: ["LINEAR_KEY"],
+      hosts: GITHUB,
+    });
+    assert.isTrue(changed.pending);
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
+
+const realRunner = ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer));
+
+it.effect("hides a value that the output cap would have cut in two", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+    // The token starts at byte 4090 of stdout and character 1020 of stderr: both caps fall inside it.
+    yield* installWatcher(botThread.id, "cut", {
+      ...declaresGithub,
+      run: "#!/bin/sh\nhead -c 4090 /dev/zero | tr '\\0' x\nprintf %s \"$GITHUB_TOKEN\"\nhead -c 1020 /dev/zero | tr '\\0' y >&2\nprintf %s \"$GITHUB_TOKEN\" >&2\nexit 1\n",
+    });
+    yield* watchers.runDue;
+
+    const prefix = SECRET.slice(0, 4);
+    const texts = orchestration.sent.map(({ text }) => text);
+    assert.isAbove(texts.length, 0);
+    const directory = yield* watcherDirectory(botThread.id, "cut");
+    texts.push(yield* fileSystem.readFileString(path.join(directory, "state.json")));
+    texts.push(JSON.stringify(yield* watchers.list(botThread.id)));
+    for (const text of texts) assert.notInclude(text, prefix);
+    const dry = (yield* watchers.list(botThread.id)).watchers[0]!.lastDryRun!;
+    assert.isAtMost(Buffer.byteLength(dry.stdout), 4096);
+    assert.isAtMost(dry.stderr.length, 1024);
+    assert.strictEqual(dry.exit, "1");
+  }).pipe(provideWatchers(orchestration, realRunner));
+});
+
+it.effect(
+  "replaces a value a script wrote to its state folder, and counts the run as failed",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+      // A file outside the state folder that a link inside it points at, which is never followed.
+      const outside = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-outside-" });
+      const outsideFile = path.join(outside, "elsewhere");
+      yield* fileSystem.writeFileString(outsideFile, SECRET);
+      const base64 = '$(printf %s "$GITHUB_TOKEN" | base64)';
+      yield* installWatcher(botThread.id, "keeps", {
+        ...declaresGithub,
+        mode: "events",
+        run: `#!/bin/sh\nd="$T3_WATCHER_STATE_DIR"\nprintf %s "$GITHUB_TOKEN" > "$d/plain"\nmkdir -p "$d/sub"\nprintf %s "${base64}" > "$d/sub/encoded"\nprintf %s fine > "$d/clean"\nln -s ${outsideFile} "$d/link"\n`,
+      });
+      yield* watchers.runDue;
+
+      const directory = path.join(yield* watcherDirectory(botThread.id, "keeps"), "data");
+      const read = (...parts: Array<string>) =>
+        fileSystem.readFileString(path.join(directory, ...parts));
+      assert.strictEqual(yield* read("plain"), "[secret GITHUB_TOKEN]");
+      assert.strictEqual(yield* read("sub", "encoded"), "[secret GITHUB_TOKEN]");
+      assert.strictEqual(yield* read("clean"), "fine");
+      assert.strictEqual(yield* fileSystem.readFileString(outsideFile), SECRET);
+
+      const [listed] = (yield* watchers.list(botThread.id)).watchers;
+      assert.strictEqual(listed?.status, "tripped");
+      const [wake] = orchestration.sent;
+      assert.include(wake?.text, "exit: secret-written");
+      assert.include(wake?.text, "a secret was written to the state folder");
+      assert.notInclude(wake?.text, SECRET);
+    }).pipe(Effect.scoped, provideWatchers(orchestration, realRunner));
+  },
+);
 
 it.effect("keeps the old version's secrets running until the revised ones are approved", () => {
   const orchestration = makeOrchestration();
