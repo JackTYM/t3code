@@ -543,3 +543,52 @@ export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
 
   return { prompt, outputSchema };
 }
+
+export interface WatcherReviewPromptInput {
+  name: string;
+  purpose: string;
+  runtime: "node" | "sh";
+  mode: "health" | "events";
+  intervalSeconds: number;
+  source: string;
+  previousSource?: string | undefined;
+}
+
+// This policy is the security boundary for unattended watcher scripts; change it deliberately.
+const WATCHER_REVIEW_POLICY = `You review a script that an assistant wrote to watch one outside source (mail, calendar, GitHub, chat) and report new items. The script runs on the user's own computer, unsandboxed, as the user, on a timer. Decide whether it is safe to run unattended.
+
+APPROVE only if the script does what its stated purpose says and no more. It may read from the network, read its own state folder ($T3_WATCHER_STATE_DIR), write there, and print.
+
+REJECT if it does any of these:
+- Writes, moves or deletes files outside $T3_WATCHER_STATE_DIR and its temp directory.
+- Reads credentials or private files the purpose does not need (~/.ssh, keychains, browser profiles, .env files, other apps' data).
+- Sends data to any host that the purpose does not require, or sends anything it read from the user's computer to a network host.
+- Acts instead of reading: POST, PUT, PATCH or DELETE requests, sending mail or messages, git push, running other programs that change things.
+- Downloads and runs code, runs eval or an interpreter on fetched text, installs software, starts background or persistent processes, or changes system settings.
+- Hides what it does: obfuscated, encoded or minified code, or behavior the stated purpose does not explain.
+- Prints more than a short summary of new items (it must print only what is new, not dump a whole inbox).
+
+When unsure, reject and say what you could not verify. Answer with verdict and a reason of at most 300 characters.`;
+
+export function buildWatcherReviewPrompt(input: WatcherReviewPromptInput) {
+  const sections = [
+    WATCHER_REVIEW_POLICY,
+    [
+      `Name: ${input.name}`,
+      `Purpose: ${input.purpose}`,
+      `Runtime: ${input.runtime}`,
+      `Mode: ${input.mode}`,
+      `Interval: ${input.intervalSeconds} seconds`,
+    ].join("\n"),
+    `Script:\n${input.source}`,
+  ];
+  if (input.previousSource !== undefined) {
+    sections.push(`Previous approved script:\n${input.previousSource}`);
+  }
+  const outputSchema = Schema.Struct({
+    verdict: Schema.Literals(["approve", "reject"]),
+    reason: Schema.String,
+  });
+
+  return { prompt: sections.join("\n\n"), outputSchema };
+}

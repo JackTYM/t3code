@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildThreadTitlePrompt } from "./textGenerationPrompts.ts";
+import { buildThreadTitlePrompt, buildWatcherReviewPrompt } from "./textGenerationPrompts.ts";
 import { normalizeCliError } from "./textGenerationUtils.ts";
 
 describe("normalizeCliError", () => {
@@ -33,5 +33,45 @@ describe("buildThreadTitlePrompt", () => {
     expect(buildThreadTitlePrompt({ message: "Fix login", instructions: " " }).prompt).toContain(
       "3-8 words, fewer than 40 characters.",
     );
+  });
+});
+
+describe("buildWatcherReviewPrompt", () => {
+  const watcher = {
+    name: "github",
+    purpose: "Report new GitHub notifications.",
+    runtime: "sh" as const,
+    mode: "events" as const,
+    intervalSeconds: 300,
+    source: "gh api notifications --jq '.[].subject.title'",
+  };
+
+  it("builds a watcher review prompt from the script alone", () => {
+    const { prompt } = buildWatcherReviewPrompt({ ...watcher, previousSource: undefined });
+    expect(prompt).toContain("gh api notifications");
+    expect(prompt).toContain("Report new GitHub notifications.");
+    expect(prompt).toContain("reject");
+    expect(prompt).toContain("Script:");
+    expect(prompt).not.toContain("Previous approved script:");
+  });
+
+  it("includes the previous script and nothing the caller passes beyond the watcher fields", () => {
+    const input = {
+      ...watcher,
+      previousSource: "gh api notifications --jq length",
+      cwd: "/Users/someone/private-project",
+      projectId: "project-secret-id",
+      modelSelection: { instanceId: "secret-instance", model: "secret-model" },
+    };
+    const { prompt } = buildWatcherReviewPrompt(input);
+    expect(prompt).toContain("Previous approved script:\ngh api notifications --jq length");
+    for (const leaked of [
+      "private-project",
+      "project-secret-id",
+      "secret-instance",
+      "secret-model",
+    ]) {
+      expect(prompt).not.toContain(leaked);
+    }
   });
 });

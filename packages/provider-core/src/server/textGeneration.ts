@@ -118,10 +118,32 @@ export interface TranscriptionPostProcessingResult {
   transcription: string;
 }
 
+export interface WatcherReviewInput {
+  cwd: string;
+  name: string;
+  purpose: string;
+  runtime: "node" | "sh";
+  mode: "health" | "events";
+  intervalSeconds: number;
+  source: string;
+  previousSource?: string | undefined;
+  modelSelection: ModelSelection;
+  projectId?: ProjectId | null | undefined;
+}
+
+export interface WatcherReviewResult {
+  verdict: "approve" | "reject";
+  reason: string;
+}
+
 export interface ProviderTextGeneration {
   readonly generateTranscriptionPostProcessing: (
     input: TranscriptionPostProcessingInput,
   ) => Effect.Effect<TranscriptionPostProcessingResult, TextGenerationError>;
+
+  readonly reviewWatcher: (
+    input: WatcherReviewInput,
+  ) => Effect.Effect<WatcherReviewResult, TextGenerationError>;
 
   readonly generateCommitMessage: (
     input: CommitMessageGenerationInput,

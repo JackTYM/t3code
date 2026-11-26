@@ -12,6 +12,7 @@ import {
   buildPrContentPrompt,
   buildReviewGuidePrompt,
   buildThreadTitlePrompt,
+  buildWatcherReviewPrompt,
 } from "./textGenerationPrompts.ts";
 import {
   sanitizeCommitSubject,
@@ -189,6 +190,18 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
       });
     });
 
+  const reviewWatcher: ProviderTextGeneration["reviewWatcher"] = Effect.fn(`${name}.reviewWatcher`)(
+    function* (input) {
+      const reply = yield* run({
+        operation: "reviewWatcher",
+        cwd: input.cwd,
+        modelSelection: input.modelSelection,
+        ...buildWatcherReviewPrompt(input),
+      });
+      return { verdict: reply.verdict, reason: reply.reason.trim().slice(0, 300) };
+    },
+  );
+
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = Effect.fn(
     `${name}.generateReviewGuide`,
   )(function* (input) {
@@ -208,5 +221,6 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     generateThreadTitle,
     generateReviewGuide,
     generateTranscriptionPostProcessing,
+    reviewWatcher,
   } satisfies ProviderTextGeneration;
 }

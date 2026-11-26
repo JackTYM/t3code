@@ -67,6 +67,7 @@ const UNSUPPORTED_TEXT_GENERATION: ProviderTextGeneration = {
   generateThreadTitle: () => unsupported("generateThreadTitle"),
   generateReviewGuide: () => unsupported("generateReviewGuide"),
   generateTranscriptionPostProcessing: () => unsupported("generateTranscriptionPostProcessing"),
+  reviewWatcher: () => unsupported("reviewWatcher"),
 };
 
 export type ClaudeCloudDriverEnv =

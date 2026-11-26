@@ -33,6 +33,7 @@ import {
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
+  buildWatcherReviewPrompt,
 } from "@t3tools/provider-core/server/textGenerationPrompts";
 import {
   sanitizeCommitSubject,
@@ -392,6 +393,16 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
         modelSelection: input.modelSelection,
       });
     });
+  const reviewWatcher: ProviderTextGeneration["reviewWatcher"] = Effect.fn(
+    "MuseTextGeneration.reviewWatcher",
+  )(function* (input) {
+    const reply = yield* runMuseJson({
+      operation: "reviewWatcher",
+      ...buildWatcherReviewPrompt(input),
+      modelSelection: input.modelSelection,
+    });
+    return { verdict: reply.verdict, reason: reply.reason.trim().slice(0, 300) };
+  });
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = () =>
     Effect.fail(investigationUnsupported("generateReviewGuide", "Muse Code"));
   return {
@@ -401,5 +412,6 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     generateThreadTitle,
     generateReviewGuide,
     generateTranscriptionPostProcessing,
+    reviewWatcher,
   } satisfies ProviderTextGeneration;
 });
