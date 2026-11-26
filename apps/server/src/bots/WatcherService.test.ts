@@ -1209,23 +1209,129 @@ it.effect("events mode: never wakes twice for one run, even across a restart", (
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     yield* installWatcher(botThread.id, "inbox", { mode: "events", purpose: "New assignments" });
+    const statePath = path.join(yield* watcherDirectory(botThread.id, "inbox"), "state.json");
+    const readState = fileSystem
+      .readFileString(statePath)
+      .pipe(Effect.map((text) => JSON.parse(text)));
+
+    // The Bot cannot take the wake: the event is saved, with the key and text that will be sent.
+    botThread.settledOverride = "settled";
+    yield* watchers.runDue;
+    assert.strictEqual(orchestration.sent.length, 0);
+    const refused = (yield* readState).pendingEvent;
+    assert.match(refused.key, /^watcher:.+:inbox:event:/u);
+    assert.include(refused.text, "new assignment");
+
+    botThread.settledOverride = null;
     yield* watchers.runDue;
     assert.strictEqual(orchestration.sent.length, 1);
+    assert.isUndefined((yield* readState).pendingEvent);
 
-    // A crash after the send but before the save leaves the event pending: it goes out again
-    // under the same key and does not run the script.
-    const statePath = path.join(yield* watcherDirectory(botThread.id, "inbox"), "state.json");
-    const saved = JSON.parse(yield* fileSystem.readFileString(statePath));
-    assert.isUndefined(saved.pendingEvent);
-    saved.pendingEvent = { key: "watcher:resent", text: orchestration.sent[0]!.text };
-    yield* fileSystem.writeFileString(statePath, JSON.stringify(saved));
+    // A crash after the send but before the save leaves the same event pending: it goes out
+    // again under the same key, which the Bot's idempotent command replays, and the script stays idle.
+    yield* fileSystem.writeFileString(
+      statePath,
+      JSON.stringify({ ...(yield* readState), pendingEvent: refused }),
+    );
     yield* watchers.runDue;
     assert.strictEqual(runner.state.runs, 1);
     assert.strictEqual(orchestration.sent.length, 2);
+    assert.strictEqual(orchestration.sent[1]?.commandId, orchestration.sent[0]?.commandId);
     assert.strictEqual(orchestration.sent[1]?.text, orchestration.sent[0]?.text);
-    const cleared = JSON.parse(yield* fileSystem.readFileString(statePath));
-    assert.isUndefined(cleared.pendingEvent);
+    assert.isUndefined((yield* readState).pendingEvent);
   }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("events mode: an undelivered event survives approving a new version", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  runner.state.result = { code: ExitCode(0), stdout: "new assignment", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const options = { mode: "events", purpose: "New assignments" } as const;
+    yield* installWatcher(botThread.id, "inbox", { ...options, run: "echo one\n" });
+    botThread.settledOverride = "settled";
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 1);
+    assert.strictEqual(orchestration.sent.length, 0);
+
+    // The script's cursor is in the kept data folder, so dropping the event would lose it for good.
+    yield* installWatcher(botThread.id, "inbox", { ...options, run: "echo two\n" });
+    botThread.settledOverride = null;
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 1);
+    assert.strictEqual(orchestration.sent.length, 1);
+    assert.include(orchestration.sent[0]?.text, "new assignment");
+
+    // The new version runs once the old news is delivered.
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 2);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("events mode: an undelivered event survives moving the watcher", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  const peer = makeFakePeer();
+  runner.state.result = { code: ExitCode(0), stdout: "new assignment", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const target = { botThreadId: botThread.id, name: "inbox" };
+    const hash = yield* installWatcher(botThread.id, "inbox", {
+      mode: "events",
+      purpose: "New assignments",
+    });
+    botThread.settledOverride = "settled";
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 1);
+
+    yield* watchers.dryRun({ ...target, hash, runsOn: LAPTOP });
+    yield* watchers.setRunsOn({ ...target, runsOn: LAPTOP });
+    botThread.settledOverride = null;
+    yield* watchers.runDue;
+    assert.strictEqual(orchestration.sent.length, 1);
+    assert.include(orchestration.sent[0]?.text, "new assignment");
+    // Before the event is delivered the laptop is not asked to run anything.
+    assert.strictEqual(
+      peer.state.calls.filter((call) => call.arguments.dryRun === false).length,
+      0,
+    );
+
+    yield* TestClock.adjust(EVERY_MS);
+    yield* watchers.runDue;
+    assert.strictEqual(
+      peer.state.calls.filter((call) => call.arguments.dryRun === false).length,
+      1,
+    );
+  }).pipe(provideWatchers(orchestration, runner.layer, peer.layer));
+});
+
+it.effect("events mode: output cut at the cap is a failure, never a partial event", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* installWatcher(botThread.id, "inbox", {
+      mode: "events",
+      purpose: "New assignments",
+      run: "#!/bin/sh\nhead -c 6000 /dev/zero | tr '\\0' x\n",
+    });
+    yield* watchers.runDue;
+    assert.strictEqual(orchestration.sent.length, 1);
+    const text = orchestration.sent[0]!.text;
+    assert.include(text, "Watcher inbox tripped");
+    assert.include(
+      text,
+      "Output was cut at 4096 bytes; some events may be missing. Print only a short line per new item.",
+    );
+    assert.notInclude(text, "reported new events");
+    assert.strictEqual((yield* watchers.list(botThread.id)).watchers[0]?.status, "tripped");
+  }).pipe(
+    provideWatchers(orchestration, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
+  );
 });
 
 it.effect("events mode: does not run the script again while an event is undelivered", () => {
@@ -1426,9 +1532,15 @@ it.effect("gives a script run for a linked environment a state folder only when 
     yield* run({ stateKey });
     yield* run({ stateKey });
     yield* run({});
+    yield* run({ dryRun: true, stateKey });
+    yield* run({ stateKey: "../../escape" });
     assert.strictEqual(seen[0], seen[1]);
     assert.include(seen[0]!, stateKey);
-    // Without a key the folder is a throwaway one.
-    assert.notStrictEqual(seen[2], seen[0]);
+    // Without a key, on a dry run, or with a key that is not a sha256, the folder is a throwaway one.
+    for (const dir of seen.slice(2)) {
+      assert.notStrictEqual(dir, seen[0]);
+      assert.notInclude(dir, "watcher-data");
+    }
+    assert.strictEqual(new Set(seen).size, 4);
   }).pipe(provideWatchers(orchestration, runner.layer));
 });

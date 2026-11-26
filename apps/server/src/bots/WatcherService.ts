@@ -71,6 +71,7 @@ const RUNTIMES = {
 } as const satisfies Record<BotWatcherRuntime, { command: string; file: string }>;
 
 const Sha256Hex = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
+const isSha256Hex = Schema.is(Sha256Hex);
 
 /** What a version's `watcher.json` holds, and so what its hash covers besides the source. */
 const VersionConfig = Schema.Struct({
@@ -616,6 +617,16 @@ const make = Effect.gen(function* () {
   ): RunOutcome => {
     // Events mode: exit 0 is the only health there is, and what it printed is the news.
     if (mode === "events") {
+      // Output that hit the cap was cut after the script's cursor moved, so what is left is not
+      // the whole event: a failure the Bot can act on, not news with a hole in it.
+      if (raw.exit === "0" && Buffer.byteLength(raw.stdout) >= STDOUT_MAX_BYTES) {
+        return {
+          ...raw,
+          stderr: `Output was cut at ${STDOUT_MAX_BYTES} bytes; some events may be missing. Print only a short line per new item.`,
+          healthy: false,
+          news: false,
+        };
+      }
       const healthy = raw.exit === "0";
       return { ...raw, healthy, news: healthy && raw.stdout.trim() !== "" };
     }
@@ -674,6 +685,8 @@ const make = Effect.gen(function* () {
       );
   });
 
+  // A linked environment that predates `stateKey` ignores it and gives the script a throwaway
+  // folder, and a watcher removed here leaves its folder on the laptop. Neither is handled yet.
   /** `scheduled` names the watcher whose state folder a scheduled run gets; a dry run passes none. */
   const runPlaced = (
     version: Version,
@@ -857,6 +870,26 @@ const make = Effect.gen(function* () {
       { concurrency: 4, discard: true },
     );
   }).pipe(Effect.withSpan("WatcherService.runDue"));
+
+  /**
+   * A new version or a new place starts clean, except for an event the Bot has not heard: the
+   * script's cursor lives in the kept data folder and is already past it.
+   */
+  const resetState = Effect.fn("WatcherService.resetState")(function* (
+    folder: string,
+    name: string,
+  ) {
+    const directory = watcherDir(folder, name);
+    const pendingEvent = (yield* readState(directory))?.pendingEvent;
+    if (pendingEvent === undefined) {
+      yield* removeQuietly(path.join(directory, "state.json"));
+      return;
+    }
+    // lastRunAt 0: the next run is due as soon as the event is delivered.
+    yield* writeState(directory, { lastRunAt: 0, pendingEvent }).pipe(
+      Effect.catch((cause) => Effect.logWarning("Watcher state could not be reset.", { cause })),
+    );
+  });
 
   /** What the user compares: the settings that are part of approval, then the source. */
   const textForDiff = (version: Version) =>
@@ -1204,7 +1237,7 @@ const make = Effect.gen(function* () {
         ),
       }).pipe(Effect.mapError(ioError(botThreadId, name)));
       // A new version starts clean: the old one's failure and interval say nothing about it.
-      yield* removeQuietly(path.join(watcherDir(folder, name), "state.json"));
+      yield* resetState(folder, name);
       if (record.approvedHash !== undefined) {
         yield* removeQuietly(versionDir(folder, name, record.approvedHash));
       }
@@ -1245,7 +1278,7 @@ const make = Effect.gen(function* () {
         Effect.mapError(ioError(botThreadId, name)),
       );
       // What it did where it ran before says nothing about the new place.
-      yield* removeQuietly(path.join(watcherDir(folder, name), "state.json"));
+      yield* resetState(folder, name);
     },
     lock,
   );
@@ -1268,8 +1301,10 @@ const make = Effect.gen(function* () {
       runtime: input.runtime,
       timeoutMs: Math.min(Math.max(input.timeoutMs, 1), MAX_TIMEOUT_MS),
       dryRun: input.dryRun,
+      // A dry run gets a throwaway folder, and so does a key that is not a sha256: the key is
+      // a path segment here.
       dataDir:
-        input.stateKey === undefined
+        input.dryRun || input.stateKey === undefined || !isSha256Hex(input.stateKey)
           ? undefined
           : path.join(config.stateDir, "watcher-data", input.stateKey),
     });
