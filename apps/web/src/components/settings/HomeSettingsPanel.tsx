@@ -22,6 +22,7 @@ import { homeFailure, type HomeFailure } from "../home/homeErrors";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { BotSecretGrantsSettings } from "./BotSecretGrantsSettings";
 import { scheduledTaskDefaultModel } from "./scheduledTasksSettings.logic";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { useSearchableSetting } from "./settingsSearch";
@@ -222,6 +223,10 @@ function HomeSettingsContent({
           }
         />
       </SettingsSection>
+      <BotSecretGrantsSettings
+        environmentId={environmentId}
+        homeThreadId={home.enabled ? home.threadId : null}
+      />
     </SettingsPageContainer>
   );
 }

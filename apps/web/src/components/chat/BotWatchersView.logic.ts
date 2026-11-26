@@ -1,4 +1,5 @@
 import type {
+  BotSecretGrant,
   BotWatcher,
   BotWatcherReview,
   BotWatcherRunsOn,
@@ -195,6 +196,26 @@ export function botWatcherInterval(seconds: number): BotWatcherInterval {
   if (seconds % 3_600 === 0) return { count: seconds / 3_600, unit: "hour" };
   if (seconds % 60 === 0) return { count: seconds / 60, unit: "minute" };
   return { count: seconds, unit: "second" };
+}
+
+/**
+ * Each secret the version declares, and whether the user's grants cover it: a grant of that name
+ * that allows every host the version declares. `granted` is null while the grants are not loaded,
+ * so the view does not claim a secret is missing. The server decides again when the watcher runs.
+ */
+export function botWatcherSecretStatus(
+  watcher: BotWatcher,
+  grants: ReadonlyArray<BotSecretGrant> | null,
+): ReadonlyArray<{ readonly name: string; readonly granted: boolean | null }> {
+  const hosts = watcher.hosts ?? [];
+  return (watcher.secrets ?? []).map((name) => {
+    if (grants === null) return { name, granted: null };
+    const grant = grants.find((candidate) => candidate.name === name);
+    return {
+      name,
+      granted: grant !== undefined && hosts.every((host) => grant.hosts.includes(host)),
+    };
+  });
 }
 
 export const shortBotWatcherHash = (hash: string) => hash.slice(0, 12);

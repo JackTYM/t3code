@@ -25,12 +25,17 @@ type BotWatcherDecisionTag =
   | typeof WS_METHODS.botWatcherResume
   | typeof WS_METHODS.botWatcherRemove;
 
+type BotSecretGrantCommandTag =
+  | typeof WS_METHODS.botSecretGrantSet
+  | typeof WS_METHODS.botSecretGrantRemove;
+
 type BotHoldDecisionTag = typeof WS_METHODS.botHoldAllow | typeof WS_METHODS.botHoldReject;
 
 /**
  * A Bot's notes.md and preferences.md (a save refreshes the read), its tasks.md as a task list,
  * starting a Bot, the watchers it proposes (a reviewer model approves each version; the user can
- * run, move, pause and remove them), and the calls it held because email influenced its turn.
+ * run, move, pause and remove them), the calls it held because email influenced its turn, and the
+ * secrets the user grants it.
  */
 export function createBotFilesEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | Persistence.EnvironmentCacheStore | R, E>,
@@ -81,6 +86,25 @@ export function createBotFilesEnvironmentAtoms<R, E>(
           registry.refresh(watchers({ environmentId, input: { threadId: input.threadId } })),
         ),
     });
+  const secretGrants = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:bot-secret-grants:list",
+    tag: WS_METHODS.botSecretGrantList,
+  });
+  // A save and a removal both change the list, so they take turns per Bot.
+  const secretGrantCommand = <TTag extends BotSecretGrantCommandTag>(label: string, tag: TTag) =>
+    createEnvironmentRpcCommand(runtime, {
+      label: `environment-data:bot-secret-grants:${label}`,
+      tag,
+      scheduler: createAtomCommandScheduler(),
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.threadId]),
+      },
+      onSettled: ({ environmentId, input }, registry) =>
+        Effect.sync(() =>
+          registry.refresh(secretGrants({ environmentId, input: { threadId: input.threadId } })),
+        ),
+    });
   const holds = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:bot-holds:list",
     tag: WS_METHODS.botHoldList,
@@ -105,6 +129,9 @@ export function createBotFilesEnvironmentAtoms<R, E>(
     tasks,
     watchers,
     holds,
+    secretGrants,
+    secretGrantSet: secretGrantCommand("set", WS_METHODS.botSecretGrantSet),
+    secretGrantRemove: secretGrantCommand("remove", WS_METHODS.botSecretGrantRemove),
     holdAllow: holdDecision("allow", WS_METHODS.botHoldAllow),
     holdReject: holdDecision("reject", WS_METHODS.botHoldReject),
     mailStatus,

@@ -1149,6 +1149,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("coordinator agent across projects linked environments turn on off model")],
   },
   {
+    id: "bot-secret-grants",
+    title: msg("Bot secret grants"),
+    to: "/settings/home",
+    searchTerms: [
+      msg("bot watcher secrets tokens api keys hosts allow grant password 1password reference"),
+    ],
+  },
+  {
     id: "agent-browser-access",
     title: msg("Agent browser access"),
     to: "/settings/browser",

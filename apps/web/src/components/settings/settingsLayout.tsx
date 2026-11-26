@@ -45,6 +45,8 @@ const EMPTY_MANAGED_PATHS: readonly string[] = [];
 declare module "@tanstack/react-router" {
   interface HistoryState {
     settingsTargetHighlight?: boolean;
+    /** The Bot whose grants the settings page opens on, from that Bot's watchers. */
+    botSecretGrantsThreadId?: string;
   }
 }
 

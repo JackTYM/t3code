@@ -1,4 +1,5 @@
 import type {
+  BotSecretGrant,
   BotWatcher,
   BotWatcherReview,
   BotWatcherRun,
@@ -12,6 +13,7 @@ import {
   botWatcherInterval,
   botWatcherPlaces,
   botWatcherReviseMessage,
+  botWatcherSecretStatus,
   botWatcherState,
   botWatchersNeedingYou,
   groupBotWatchers,
@@ -326,5 +328,49 @@ describe("botWatcherReviseMessage", () => {
     expect(botWatcherReviseMessage(revising(), "  Only look at announcements.  ")).toBe(
       'Please revise the watcher "deadlines" (version bbbbbbbbbbbb) and propose the new version. Only look at announcements.',
     );
+  });
+});
+
+describe("botWatcherSecretStatus", () => {
+  const grant = (name: string, hosts: string[]): BotSecretGrant => ({
+    name,
+    hosts,
+    source: "stored",
+  });
+  const declaring = watcher({
+    name: "a",
+    secrets: ["GITHUB_TOKEN", "SLACK_TOKEN"],
+    hosts: ["api.github.com", "slack.com"],
+  });
+
+  it("is granted when a grant of that name allows every declared host", () => {
+    const status = botWatcherSecretStatus(declaring, [
+      grant("GITHUB_TOKEN", ["slack.com", "api.github.com", "extra.example.com"]),
+    ]);
+    expect(status).toEqual([
+      { name: "GITHUB_TOKEN", granted: true },
+      { name: "SLACK_TOKEN", granted: false },
+    ]);
+  });
+
+  it("needs a grant when it allows only some of the declared hosts", () => {
+    expect(
+      botWatcherSecretStatus(declaring, [grant("GITHUB_TOKEN", ["api.github.com"])])[0],
+    ).toEqual({ name: "GITHUB_TOKEN", granted: false });
+  });
+
+  it("needs a grant for every name when there are no grants", () => {
+    expect(botWatcherSecretStatus(declaring, []).every((entry) => !entry.granted)).toBe(true);
+  });
+
+  it("does not call a secret missing while the grants are unknown", () => {
+    expect(botWatcherSecretStatus(declaring, null).map((entry) => entry.granted)).toEqual([
+      null,
+      null,
+    ]);
+  });
+
+  it("lists nothing for a version that declares no secrets", () => {
+    expect(botWatcherSecretStatus(watcher({ name: "b" }), [grant("X", ["a.com"])])).toEqual([]);
   });
 });

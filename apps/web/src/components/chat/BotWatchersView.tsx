@@ -6,11 +6,13 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import {
+  type BotSecretGrant,
   type BotWatcher,
   type BotWatcherRunsOn,
   type EnvironmentId,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
+import { Link } from "@tanstack/react-router";
 import { T, useGT } from "gt-react";
 import { ChevronRightIcon, RefreshCwIcon } from "lucide-react";
 import { useState } from "react";
@@ -48,6 +50,7 @@ import {
   botWatcherInterval,
   botWatcherPlaces,
   botWatcherReviseMessage,
+  botWatcherSecretStatus,
   botWatcherState,
   groupBotWatchers,
   latestReview,
@@ -198,6 +201,8 @@ function WatcherCard(props: {
   watcher: BotWatcher;
   linked: ReadonlyMap<EnvironmentId, string>;
   grants: { readonly runCode: boolean; readonly operate: boolean };
+  /** The Bot's secret grants, or null while they load. */
+  secretGrants: ReadonlyArray<BotSecretGrant> | null;
 }) {
   const gt = useGT();
   const blockedReason = useBlockedReason();
@@ -231,6 +236,7 @@ function WatcherCard(props: {
       : (props.linked.get(place as EnvironmentId) ?? gt("A linked environment"));
   const dryRunShown = botWatcherDryRunOf(watcher);
   const verdict = latestReview(watcher);
+  const secrets = botWatcherSecretStatus(watcher, props.secretGrants);
   const runnableHash = watcher.pendingHash ?? watcher.approvedHash;
   const showsMove = controls.move || (!controls.pending && target !== watcher.runsOn);
 
@@ -368,6 +374,50 @@ function WatcherCard(props: {
 
       {watcher.purpose === undefined || watcher.purpose.length === 0 ? null : (
         <p className="text-sm break-words">{watcher.purpose}</p>
+      )}
+
+      {secrets.length === 0 ? null : (
+        <div className="flex flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+            <span className="text-muted-foreground text-xs">
+              <T>Uses secrets</T>
+            </span>
+            {secrets.map((secret) => (
+              <Badge
+                key={secret.name}
+                variant={
+                  secret.granted === null ? "outline" : secret.granted ? "success" : "warning"
+                }
+              >
+                {secret.granted === null
+                  ? secret.name
+                  : secret.granted
+                    ? gt("{name} granted", { name: secret.name })
+                    : gt("{name} needs a grant", { name: secret.name })}
+              </Badge>
+            ))}
+            {secrets.some((secret) => secret.granted === false) ? (
+              <Button
+                size="xs"
+                variant="ghost-muted"
+                render={
+                  <Link
+                    to="/settings/home"
+                    hash="bot-secret-grants"
+                    state={{ settingsTargetHighlight: true, botSecretGrantsThreadId: threadId }}
+                  />
+                }
+              >
+                <T>Grant access</T>
+              </Button>
+            ) : null}
+          </div>
+          {watcher.hosts === undefined || watcher.hosts.length === 0 ? null : (
+            <p className="text-muted-foreground text-xs break-all">
+              {gt("Sent only to {hosts}", { hosts: watcher.hosts.join(", ") })}
+            </p>
+          )}
+        </div>
       )}
 
       {state === "reviewing" ? (
@@ -682,6 +732,9 @@ export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
   const watchers = useEnvironmentQuery(
     botFilesEnvironment.watchers({ environmentId, input: { threadId } }),
   );
+  const secretGrants = useEnvironmentQuery(
+    botFilesEnvironment.secretGrants({ environmentId, input: { threadId } }),
+  );
   // Run once, move and resume all run code, so each needs terminal access. Every
   // permission is read before any is combined, since a short-circuit would skip a hook.
   const canDryRun = useAtomValue(botFilesEnvironment.watcherDryRun.permissionAtom(environmentId));
@@ -717,7 +770,10 @@ export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
           size="icon-xs"
           aria-label={gt("Refresh watchers")}
           disabled={watchers.isPending}
-          onClick={watchers.refresh}
+          onClick={() => {
+            watchers.refresh();
+            secretGrants.refresh();
+          }}
         >
           <RefreshCwIcon aria-hidden />
         </Button>
@@ -731,6 +787,19 @@ export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
             <T>
               The saved approvals failed their signature check, so every watcher was dropped. The
               Bot can propose them again.
+            </T>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      {secretGrants.data?.approvals === "unverified" ? (
+        <Alert variant="warning">
+          <AlertTitle>
+            <T>Secret grants could not be verified</T>
+          </AlertTitle>
+          <AlertDescription>
+            <T>
+              The saved secret grants failed their check, so none of them is in effect. Enter each
+              one again in Settings.
             </T>
           </AlertDescription>
         </Alert>
@@ -752,6 +821,7 @@ export function BotWatchersView(props: { threadRef: ScopedThreadRef }) {
                     watcher={watcher}
                     linked={linked}
                     grants={grants}
+                    secretGrants={secretGrants.data?.grants ?? null}
                   />
                 ))}
               </ul>
