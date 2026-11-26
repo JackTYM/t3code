@@ -122,6 +122,28 @@ describe("buildWatcherReviewPrompt", () => {
     expect(other).not.toContain(tag);
   });
 
+  it("lets a script run its source's own client and cache what it fetched, but not read credentials itself", () => {
+    const { before } = regionOf(buildWatcherReviewPrompt(watcher).prompt);
+    expect(before).toContain(
+      "A script may run the standard command-line client for the source named in its purpose (for example gh for GitHub, or curl for that service's documented read-only HTTP API), and that client reading its own saved login from its normal config location is expected: that is not the script reading a credential. Writing item ids, timestamps, cursors and short summaries of what it fetched into $T3_WATCHER_STATE_DIR is fine.",
+    );
+    expect(before).toContain(
+      "- Reads or prints credentials or private files itself (cat, grep, cp or reading ~/.ssh, keychains, browser profiles, .env files, other apps' data, or a client's token file such as ~/.config/gh/hosts.yml), or passes a credential to anything but the client it belongs to.",
+    );
+    expect(before).toContain("A client doing its normal work is not a reason to be unsure.");
+    // The rejections that keep the boundary stay.
+    for (const text of [
+      "- Writes, moves or deletes files outside $T3_WATCHER_STATE_DIR and its temp directory.",
+      "- Sends data to any host that the purpose does not require, or sends anything it read from the user's computer to a network host.",
+      "- Acts instead of reading: POST, PUT, PATCH or DELETE requests, sending mail or messages, git push, running other programs that change things.",
+      "- Downloads and runs code, runs eval or an interpreter on fetched text, installs software, starts background or persistent processes, or changes system settings.",
+      "- Hides what it does: obfuscated, encoded or minified code, or behavior the stated purpose does not explain.",
+      "When unsure, reject and say what you could not verify.",
+    ]) {
+      expect(before).toContain(text);
+    }
+  });
+
   it("includes the previous script and nothing the caller passes beyond the watcher fields", () => {
     const input = {
       ...watcher,
