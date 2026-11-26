@@ -23,6 +23,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as BotService from "./BotService.ts";
+import { repairBranchOf, signalOfRepairBranch } from "./repairBranch.ts";
 
 // A health wake holds fixed fields only and `BotHoldService` deliberately does not count it as
 // influenced: `bot-wake:health:` matches neither the mail nor the watcher prefix. Nothing a
@@ -187,6 +188,7 @@ type Episodes = Readonly<Record<string, Episode>>;
  */
 export const MergeRefusalReason = Schema.Literals([
   "bad_arguments",
+  "no_repair_record",
   "pull_request_unreadable",
   "not_open",
   "wrong_branch",
@@ -413,6 +415,8 @@ export class RepairError extends Schema.TaggedError<RepairError>()("RepairError"
 export const MERGE_REFUSAL_MESSAGES = {
   bad_arguments:
     "The merge was refused: the server cannot check this call. A repair crew merges one pull request, its own, and names it: pass `number`, pass the head commit you checked as `expectedHeadSha`, and leave out `repository`, `auto`, `stack`, `method` and another machine's `environmentId`. Leave the pull request open if you cannot.",
+  no_repair_record:
+    "The merge was refused: this pull request is from a repair branch, and the server has no record of a repair that made it. Only a repair the server started may merge such a pull request, and only once it passes every check. Leave it open: the user can merge it on the host.",
   pull_request_unreadable:
     "The merge was refused: the server could not read this pull request. Leave it open and say so in your report.",
   not_open:
@@ -627,6 +631,22 @@ export class RepairService extends Context.Service<
           readonly botThreadId: ThreadId;
           readonly attempt: number;
           /** The branch this crew was told to push, which is the only one it may merge. */
+          readonly branch: string;
+        }
+      | undefined
+    >;
+    /**
+     * The repair whose crew was told to push this exact branch, with that crew's thread, or
+     * nothing: a branch that merely looks like a repair's, or one whose record has gone, is no
+     * repair's. `RepairMergeGuard` asks it of any pull request from a `repair/` branch, so a merge
+     * is held to the crew's conditions whoever makes it.
+     */
+    readonly repairOfBranch: (branch: string) => Effect.Effect<
+      | {
+          readonly crewThreadId: ThreadId;
+          readonly signalId: string;
+          readonly botThreadId: ThreadId;
+          readonly attempt: number;
           readonly branch: string;
         }
       | undefined
@@ -957,6 +977,26 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const repairOfBranch: RepairService["Service"]["repairOfBranch"] = (branch) =>
+    Ref.get(state).pipe(
+      Effect.map(({ repairs }) => {
+        const signalId = signalOfRepairBranch(branch);
+        if (signalId === undefined || !Object.hasOwn(repairs, signalId)) return undefined;
+        const repair = repairs[signalId]!;
+        const index = repair.attempts.findIndex((attempt) => attempt.branch === branch);
+        const attempt = repair.attempts[index];
+        return attempt === undefined
+          ? undefined
+          : {
+              crewThreadId: attempt.threadId,
+              signalId,
+              botThreadId: repair.botThreadId,
+              attempt: index + 1,
+              branch,
+            };
+      }),
+    );
+
   /** Wakes the Bot once, with the fixed words, that no more crew will start. Under the lock. */
   const tellGaveUp = Effect.fn("RepairService.tellGaveUp")(function* (signalId: string) {
     const repairs = (yield* Ref.get(state)).repairs;
@@ -1140,7 +1180,7 @@ const make = Effect.gen(function* () {
           BotService.memoryFolderName(botThreadId),
         );
         const attempt = (repair?.attempts.length ?? 0) + 1;
-        const branch = `repair/${signalId}${attempt === 1 ? "" : `-${attempt}`}`;
+        const branch = repairBranchOf(signalId, attempt);
         const threadId = ThreadId.make(`repair-crew:${signalId}:${attempt}`);
         const workspaceStrategy = {
           type: "worktree" as const,
@@ -1264,6 +1304,7 @@ const make = Effect.gen(function* () {
     find,
     startRepair,
     crewOf: crewOfThread,
+    repairOfBranch,
     reportMerge,
     handleMilestone,
     start,

@@ -1545,6 +1545,43 @@ it.effect(
   },
 );
 
+it.effect(
+  "names the repair a branch was pushed for, and none for a branch that only looks like one",
+  () => {
+    const fixture = repairFixture();
+    const { orchestration, botThread } = fixture;
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(START);
+      const repair = yield* RepairService.RepairService;
+      const signalId = yield* wakeBot(fixture);
+      const started = yield* start(botThread, signalId);
+
+      assert.deepStrictEqual(yield* repair.repairOfBranch(`repair/${signalId}`), {
+        crewThreadId: started.threadId,
+        signalId,
+        botThreadId: botThread.id,
+        attempt: 1,
+        branch: `repair/${signalId}`,
+      });
+      for (const branch of [
+        // An attempt that never started, a signal that was never raised, and spellings of both.
+        `repair/${signalId}-2`,
+        `repair/${signalId}-0`,
+        `repair/${signalId}-`,
+        "repair/ffffffffffff",
+        `Repair/${signalId}`,
+        `repair/${signalId.toUpperCase()}`,
+        `repair/${signalId}/extra`,
+        `x/repair/${signalId}`,
+        "repair/",
+        "main",
+      ]) {
+        assert.isUndefined(yield* repair.repairOfBranch(branch), branch);
+      }
+    }).pipe(provideRepair(orchestration));
+  },
+);
+
 it.effect("remembers repairs across a restart, signed with the rest of the state", () => {
   const fixture = repairFixture();
   const { orchestration, botThread } = fixture;

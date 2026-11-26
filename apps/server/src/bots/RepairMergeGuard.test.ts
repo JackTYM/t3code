@@ -23,6 +23,9 @@ const CREW = ThreadId.make(`repair-crew:${SIGNAL}:1`);
 const CREW_TWO = ThreadId.make(`repair-crew:${SIGNAL}:2`);
 const SUBAGENT = ThreadId.make("thread:crew-subagent");
 const ORDINARY = ThreadId.make("thread:ordinary");
+// A thread a crew started with t3_thread_launch: nobody's crew, as far as lineage goes.
+const SIBLING = ThreadId.make("thread:sibling-of-crew");
+const ON_REPAIR_BRANCH = ThreadId.make("thread:on-repair-branch");
 const BRANCH = `repair/${SIGNAL}`;
 const HEAD = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const PROJECT_ID = ProjectId.make("project:t3code");
@@ -93,6 +96,13 @@ interface Scenario {
   readonly failPage: number | null;
   /** The headers for page n, in place of the files', for a host that cannot be read. */
   readonly pageCount: number | null;
+  /** The repair record is gone (the 500 cap), so no branch is known for any crew. */
+  readonly recordsLost: boolean;
+  /** The stack the pull request is in, if any, as the host lists it; `"fails"` when unreadable. */
+  readonly stack:
+    | ReadonlyArray<{ number: number; headBranch: string; state: string }>
+    | null
+    | "fails";
   /**
    * The head commit the host reports on its nth read of the pull request, the last one staying:
    * `undefined` when it reports none, `"fails"` when the read cannot be made.
@@ -110,6 +120,8 @@ const scenarioDefaults = {
   failing: [],
   failPage: null,
   pageCount: null,
+  recordsLost: false,
+  stack: null,
   heads: [],
 } satisfies Scenario;
 
@@ -135,9 +147,15 @@ const makeScenario = (overrides: Partial<Scenario> = {}) => {
     checks: [check("CI", "success")],
     ...scenario.detail,
   } as unknown as PullRequestDetail;
-  const shell = (id: ThreadId, root: ThreadId, parent: ThreadId | null) => ({
+  const shell = (
+    id: ThreadId,
+    root: ThreadId,
+    parent: ThreadId | null,
+    branch: string | null = null,
+  ) => ({
     id,
     projectId: PROJECT_ID,
+    branch,
     lineage: {
       parentThreadId: parent,
       relationshipToParent: parent === null ? null : ("subagent" as const),
@@ -148,7 +166,9 @@ const makeScenario = (overrides: Partial<Scenario> = {}) => {
     [CREW, shell(CREW, CREW, null)],
     [CREW_TWO, shell(CREW_TWO, CREW_TWO, null)],
     [SUBAGENT, shell(SUBAGENT, CREW, CREW)],
-    [ORDINARY, shell(ORDINARY, ORDINARY, null)],
+    [ORDINARY, shell(ORDINARY, ORDINARY, null, "feature/x")],
+    [SIBLING, shell(SIBLING, SIBLING, null, "feature/sibling")],
+    [ON_REPAIR_BRANCH, shell(ON_REPAIR_BRANCH, ON_REPAIR_BRANCH, null, BRANCH)],
     [BOT, shell(BOT, BOT, null)],
   ]);
   const unavailable = Effect.fail({ _tag: "PullRequestUnavailableError" } as never);
@@ -177,6 +197,28 @@ const makeScenario = (overrides: Partial<Scenario> = {}) => {
                       branch: `${BRANCH}-2`,
                     }
                   : undefined,
+            ),
+          repairOfBranch: (branch) =>
+            Effect.succeed(
+              scenario.recordsLost
+                ? undefined
+                : branch === BRANCH
+                  ? {
+                      crewThreadId: CREW,
+                      signalId: SIGNAL,
+                      botThreadId: BOT,
+                      attempt: 1,
+                      branch: BRANCH,
+                    }
+                  : branch === `${BRANCH}-2`
+                    ? {
+                        crewThreadId: CREW_TWO,
+                        signalId: SIGNAL,
+                        botThreadId: BOT,
+                        attempt: 2,
+                        branch: `${BRANCH}-2`,
+                      }
+                    : undefined,
             ),
           reportMerge: (report) =>
             Effect.sync(() => {
@@ -226,6 +268,17 @@ const makeScenario = (overrides: Partial<Scenario> = {}) => {
                     commits: [],
                     ...scenario.activity,
                   } as never);
+            }),
+          stack: () =>
+            Effect.suspend(() => {
+              log.push("stack");
+              return scenario.stack === "fails"
+                ? unavailable
+                : Effect.succeed(
+                    scenario.stack === null
+                      ? null
+                      : ({ number: 7, layers: scenario.stack } as never),
+                  );
             }),
           diff: ({ cursor }) =>
             Effect.suspend(() => {
@@ -280,20 +333,200 @@ const refusedWith = (verdict: RepairMergeGuard.MergeVerdict) => {
   return verdict.kind === "refused" ? verdict.reason : undefined;
 };
 
-it.effect("a thread that is not a repair crew is not the guard's business", () => {
-  const scenario = makeScenario({ failing: ["detail", "project"] });
+// The guard is on the pull request, not on who asks: an ordinary pull request is untouched, and a
+// pull request from a repair branch gets the same conditions from every caller.
+it.effect("an ordinary pull request is not the guard's business, whoever asks", () => {
+  // Dirty on every count: the guard would refuse it if it looked, so it must not look.
+  const ordinary = {
+    detail: { headBranch: "feature/x", checks: [check("CI", "failure")] },
+    files: [[".github/workflows/ci.yml"]],
+  };
   return Effect.gen(function* () {
-    for (const threadId of [ORDINARY, BOT, ThreadId.make("thread:unknown")]) {
+    for (const threadId of [ORDINARY, BOT, SIBLING, ON_REPAIR_BRANCH]) {
+      const scenario = makeScenario(ordinary);
       assert.deepStrictEqual(yield* askFor(scenario, goodArguments, threadId), {
         kind: "unguarded",
       });
+      // Only the pull request's own branch was read: no files, checks or reviews.
+      assert.deepStrictEqual(scenario.log, ["invalidate", "detail"]);
+      assert.deepStrictEqual(scenario.reports, []);
     }
-    assert.deepStrictEqual(yield* askWith(scenario, undefined, ORDINARY), { kind: "unguarded" });
-    // Nothing was read and nothing was reported for any of them.
-    assert.deepStrictEqual(scenario.log, []);
-    assert.deepStrictEqual(scenario.reports, []);
   });
 });
+
+it.effect(
+  "a call that names no pull request is left alone unless the thread is on a repair branch",
+  () => {
+    const scenario = makeScenario();
+    return Effect.gen(function* () {
+      for (const args of [undefined, {}, { expectedHeadSha: HEAD }, { method: "squash" }]) {
+        assert.deepStrictEqual(yield* askWith(scenario, args, ORDINARY), { kind: "unguarded" });
+      }
+      assert.deepStrictEqual(scenario.log, []);
+      // The thread's own pull request is the repair branch's, so the call has to say which.
+      const verdict = yield* askWith(scenario, { expectedHeadSha: HEAD }, ON_REPAIR_BRANCH);
+      assert.strictEqual(refusedWith(verdict), "bad_arguments");
+      assert.deepStrictEqual(scenario.log, []);
+    });
+  },
+);
+
+it.effect("a call for another machine is that machine's to guard", () => {
+  const scenario = makeScenario();
+  return Effect.gen(function* () {
+    assert.deepStrictEqual(
+      yield* askWith(scenario, { ...goodArguments, environmentId: "environment-2" }, ORDINARY),
+      { kind: "unguarded" },
+    );
+    assert.deepStrictEqual(scenario.log, []);
+  });
+});
+
+it.effect(
+  "refuses when an ordinary caller's pull request cannot be read, not merging blind",
+  () => {
+    const unreadable = makeScenario({ failing: ["detail"] });
+    const noProject = makeScenario({ failing: ["project"] });
+    return Effect.gen(function* () {
+      for (const scenario of [unreadable, noProject]) {
+        assert.strictEqual(
+          refusedWith(yield* askFor(scenario, goodArguments, ORDINARY)),
+          "pull_request_unreadable",
+        );
+        // Nobody's repair: nothing to tell a Bot.
+        assert.deepStrictEqual(scenario.reports, []);
+      }
+      assert.strictEqual(
+        refusedWith(yield* askFor(makeScenario(), goodArguments, ThreadId.make("thread:unknown"))),
+        "pull_request_unreadable",
+      );
+    });
+  },
+);
+
+// Every caller: the Bot itself, an ordinary thread, a sibling a crew started, a crew's own
+// subagent, and a thread whose crew record the 500 cap has dropped.
+it.effect.each([ORDINARY, BOT, SIBLING, ON_REPAIR_BRANCH] as const)(
+  "a repair branch's pull request gets the crew's conditions when %s asks",
+  (threadId) => {
+    const dirty = makeScenario({ files: [["apps/server/src/auth/Session.ts"]] });
+    const failing = makeScenario({ detail: { checks: [check("CI", "failure")] } });
+    const pending = makeScenario({ detail: { checks: [check("CI", "pending")] } });
+    const noChecks = makeScenario({ detail: { checks: [] } });
+    const wrongBase = makeScenario({ detail: { baseBranch: "release" } });
+    const fork = makeScenario({ detail: { headRepositoryNameWithOwner: "someone/else" } });
+    const requested = makeScenario({ reviews: [review("alice", "CHANGES_REQUESTED", 1)] });
+    const moved = makeScenario({ heads: [HEAD, OTHER_HEAD] });
+    const green = makeScenario();
+    return Effect.gen(function* () {
+      const refused = (scenario: ReturnType<typeof makeScenario>) =>
+        askFor(scenario, goodArguments, threadId).pipe(Effect.map(refusedWith));
+      assert.strictEqual(yield* refused(dirty), "protected_path");
+      assert.strictEqual(yield* refused(failing), "checks_failed");
+      assert.strictEqual(yield* refused(pending), "checks_pending");
+      assert.strictEqual(yield* refused(noChecks), "no_checks");
+      assert.strictEqual(yield* refused(wrongBase), "wrong_target");
+      assert.strictEqual(yield* refused(fork), "fork_pull_request");
+      assert.strictEqual(yield* refused(requested), "changes_requested");
+      assert.strictEqual(yield* refused(moved), "head_changed");
+      // The crew's Bot is told, as for a crew's own call: the record names the attempt's thread.
+      assert.deepStrictEqual(dirty.reports, [
+        { crewThreadId: CREW, number: 7, merged: false, reason: "protected_path" },
+      ]);
+      // A green one goes through, and its result is reported to the same repair.
+      assert.deepStrictEqual(yield* askFor(green, goodArguments, threadId), {
+        kind: "allowed",
+        crewThreadId: CREW,
+        number: 7,
+      });
+    });
+  },
+);
+
+it.effect("a repair branch's pull request from a record the server has lost is refused", () => {
+  const lost = makeScenario({ recordsLost: true });
+  const invented = makeScenario({ detail: { headBranch: "repair/ffffffffffff" } });
+  const shaped = makeScenario({ detail: { headBranch: "repair/anything-i-like" } });
+  const shouted = makeScenario({ detail: { headBranch: "Repair/0123456789ab" } });
+  const nextAttempt = makeScenario({ detail: { headBranch: `${BRANCH}-9` } });
+  return Effect.gen(function* () {
+    for (const scenario of [lost, invented, shaped, shouted, nextAttempt]) {
+      assert.strictEqual(
+        refusedWith(yield* askFor(scenario, goodArguments, ORDINARY)),
+        "no_repair_record",
+      );
+      // Not the files, checks or reviews: nothing says whose pull request this is.
+      assert.notInclude(scenario.log, "diff:0");
+      assert.deepStrictEqual(scenario.reports, []);
+    }
+  });
+});
+
+it.effect(
+  "a repair branch's pull request is only ever merged with a call the server can check",
+  () => {
+    const scenario = makeScenario();
+    return Effect.gen(function* () {
+      for (const args of [
+        { ...goodArguments, auto: true },
+        { ...goodArguments, stack: true },
+        { number: 7 },
+        { ...goodArguments, repository: "JackTYM/t3code" },
+        { ...goodArguments, surprise: 1 },
+      ]) {
+        assert.strictEqual(refusedWith(yield* askWith(scenario, args, ORDINARY)), "bad_arguments");
+      }
+      // Told to the Bot by the repair's record, since the branch names it.
+      assert.isAbove(scenario.reports.length, 0);
+      assert.isTrue(scenario.reports.every((report) => report.crewThreadId === CREW));
+    });
+  },
+);
+
+it.effect("a stack merge is refused when any layer is from a repair branch", () => {
+  const layers = [
+    { number: 3, headBranch: BRANCH, state: "open" },
+    { number: 7, headBranch: "feature/x", state: "open" },
+  ];
+  const withRepair = makeScenario({ detail: { headBranch: "feature/x" }, stack: layers });
+  const withoutRepair = makeScenario({
+    detail: { headBranch: "feature/x" },
+    stack: [{ number: 7, headBranch: "feature/x", state: "open" }],
+  });
+  const mergedRepair = makeScenario({
+    detail: { headBranch: "feature/x" },
+    stack: [{ number: 3, headBranch: BRANCH, state: "merged" }, layers[1]!],
+  });
+  const unreadable = makeScenario({ detail: { headBranch: "feature/x" }, stack: "fails" });
+  const args = { ...goodArguments, stack: true };
+  return Effect.gen(function* () {
+    assert.strictEqual(refusedWith(yield* askWith(withRepair, args, ORDINARY)), "bad_arguments");
+    assert.deepStrictEqual(yield* askWith(withoutRepair, args, ORDINARY), { kind: "unguarded" });
+    assert.deepStrictEqual(yield* askWith(mergedRepair, args, ORDINARY), { kind: "unguarded" });
+    assert.strictEqual(
+      refusedWith(yield* askWith(unreadable, args, ORDINARY)),
+      "pull_request_unreadable",
+    );
+    // Without stack, the same pull request is not looked at beyond its own branch.
+    const plain = makeScenario({ detail: { headBranch: "feature/x" }, stack: layers });
+    assert.deepStrictEqual(yield* askFor(plain, goodArguments, ORDINARY), { kind: "unguarded" });
+    assert.notInclude(plain.log, "stack");
+  });
+});
+
+it.effect(
+  "names the repository the way the merge tool does, for a caller that is not a crew",
+  () => {
+    const scenario = makeScenario({ detail: { headBranch: "feature/x" } });
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(
+        yield* askWith(scenario, { ...goodArguments, repository: "JackTYM/t3code" }, ORDINARY),
+        { kind: "unguarded" },
+      );
+      assert.deepStrictEqual(scenario.log, ["invalidate", "detail"]);
+    });
+  },
+);
 
 it.effect("allows a green pull request from the crew's own branch, read fresh", () => {
   const scenario = makeScenario();
@@ -585,7 +818,12 @@ it.effect("gives each thing it checks its own reason and its own words", () =>
       assert.match(RepairService.MERGE_REFUSAL_MESSAGES[reason], /^The merge was refused: /u);
     }
     // Every code is one a case above reaches, so none is a dead letter.
-    const reached = new Set([...refusals.map(([, , reason]) => reason), "bad_arguments"]);
+    // `no_repair_record` is the one a crew cannot reach, so it has a case of its own above.
+    const reached = new Set([
+      ...refusals.map(([, , reason]) => reason),
+      "bad_arguments",
+      "no_repair_record",
+    ]);
     assert.deepStrictEqual([...reached].sort(), [...reasons].sort());
   }),
 );

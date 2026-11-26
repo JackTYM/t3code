@@ -132,3 +132,83 @@ it("a step's pull requests are the ones its thread was linked to while it ran", 
     [['["github.com","me/app",2]', "https://github.com/me/app/pull/2"]],
   );
 });
+
+// A repair's pull request is merged through the server's guard or by the user. A workflow step is
+// another way to merge, so it cannot be a way around that guard.
+it.effect.each(["merge", "enable-auto-merge"] as const)(
+  "a step cannot %s a pull request from a repair branch, and can still act on others",
+  (action) => {
+    const calls: Array<string> = [];
+    const heads: Record<number, string> = {
+      7: "repair/0123456789ab",
+      8: "Repair/0123456789ab-2",
+      9: "feature/x",
+    };
+    const layer = WorkflowForge.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(IssueService.IssueService)({}),
+          Layer.mock(PullRequestService.PullRequestService)({
+            runAction: (input) =>
+              Effect.sync(() => void calls.push(`${input.action}:${input.number}`)) as never,
+            detail: (input) =>
+              Effect.succeed({
+                projectId,
+                repository: "Me/App",
+                number: input.number,
+                title: "A pull request",
+                url: `https://github.com/Me/App/pull/${input.number}`,
+                state: "open",
+                headBranch: heads[input.number],
+              } as never),
+          }),
+          Layer.mock(ProjectService.ProjectService)({
+            getByWorkspaceRoot: () => Effect.succeedSome({ id: projectId } as never),
+          }),
+        ),
+      ),
+    );
+    const at = (number: number) => ({
+      project: "/home/me/app",
+      url: `https://github.com/Me/App/pull/${number}`,
+    });
+    return Effect.gen(function* () {
+      const { pullRequests } = yield* WorkflowForge.WorkflowForge;
+      for (const number of [7, 8]) {
+        const refusal = yield* pullRequests.act(at(number), action).pipe(Effect.flip);
+        assert.include(refusal.message, "repair");
+      }
+      yield* pullRequests.act(at(9), action);
+      // Other things a step does to a repair's pull request are not merging it.
+      yield* pullRequests.act(at(7), "close");
+      yield* pullRequests.act(at(7), "update-branch");
+      assert.deepStrictEqual(calls, [`${action}:9`, "close:7", "update-branch:7"]);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it.effect("a step that cannot read the pull request does not merge it", () => {
+  const calls: Array<string> = [];
+  const layer = WorkflowForge.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(IssueService.IssueService)({}),
+        Layer.mock(PullRequestService.PullRequestService)({
+          runAction: () => Effect.sync(() => void calls.push("ran")) as never,
+          detail: () => Effect.fail({ _tag: "PullRequestUnavailableError" } as never),
+        }),
+        Layer.mock(ProjectService.ProjectService)({
+          getByWorkspaceRoot: () => Effect.succeedSome({ id: projectId } as never),
+        }),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const { pullRequests } = yield* WorkflowForge.WorkflowForge;
+    const failure = yield* pullRequests
+      .act({ project: "/home/me/app", url: "https://github.com/Me/App/pull/7" }, "merge")
+      .pipe(Effect.flip);
+    assert.include(failure.message, "Could not");
+    assert.deepStrictEqual(calls, []);
+  }).pipe(Effect.provide(layer));
+});

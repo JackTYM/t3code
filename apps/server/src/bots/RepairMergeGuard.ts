@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  OrchestrationProjectShell,
   PullRequestDetail,
   PullRequestRef,
   ThreadId,
@@ -16,13 +17,14 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { resolveTarget } from "../pullRequest/pullRequestTarget.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
+import { isRepairBranch } from "./repairBranch.ts";
 import * as RepairService from "./RepairService.ts";
 
 /**
- * Not a sandbox. A crew's shell runs as the user, with their `gh` login and git credentials, and
- * nothing here sees it: it can still `gh pr merge`, `git push origin HEAD:main` (or force), `gh api`
- * (merge, forge a passing status, dismiss a review) or start other threads. Only branch protection
- * and code owners on the host stop that; docs/internals/bots.md, "What it does not stop", has more.
+ * Not a sandbox: a crew's shell runs as the user and nothing here sees it (`gh pr merge`, a push,
+ * `gh api`). Only host protection stops that; docs/internals/bots.md, "What it does not stop".
+ * This covers the `pull_request_merge` tool, by the pull request: a `repair/` branch's is held to
+ * the crew's conditions whoever asks.
  */
 
 // GitHub lists at most 3000 files, 30 to a page; a list that is longer than this is not given whole.
@@ -78,7 +80,7 @@ export const protectedPatternOf = (path: string): string | undefined => {
 };
 
 export type MergeVerdict =
-  /** Not a repair crew's call: the merge goes on as it always did. */
+  /** Not a repair's pull request: the merge goes on as it always did. */
   | { readonly kind: "unguarded" }
   | { readonly kind: "allowed"; readonly crewThreadId: ThreadId; readonly number: number }
   | {
@@ -91,6 +93,11 @@ interface Call {
   readonly number: number | null;
   /** What the call may be checked as; absent when it holds something the server cannot check. */
   readonly checkable: { readonly number: number; readonly expectedHeadSha: string } | undefined;
+  /** It names another machine, where the merge is guarded by that machine's own server. */
+  readonly remote: boolean;
+  /** The repository it names, which only a caller that is not a crew may. */
+  readonly repository: string | undefined;
+  readonly stack: boolean;
 }
 
 /**
@@ -100,7 +107,13 @@ interface Call {
  */
 const callOf = (raw: unknown, environmentId: EnvironmentId): Call => {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { number: null, checkable: undefined };
+    return {
+      number: null,
+      checkable: undefined,
+      remote: false,
+      repository: undefined,
+      stack: false,
+    };
   }
   const args = raw as Readonly<Record<string, unknown>>;
   const number =
@@ -118,7 +131,17 @@ const callOf = (raw: unknown, environmentId: EnvironmentId): Call => {
     (args.stack === undefined || args.stack === false)
       ? { number, expectedHeadSha: head }
       : undefined;
-  return { number, checkable };
+  const repository =
+    typeof args.repository === "string" && args.repository.trim() !== ""
+      ? args.repository.trim()
+      : undefined;
+  return {
+    number,
+    checkable,
+    remote: args.environmentId !== undefined && args.environmentId !== environmentId,
+    repository,
+    stack: args.stack === true,
+  };
 };
 
 type CheckClass = "success" | "skipped" | "pending" | "failed" | "unknown";
@@ -162,15 +185,17 @@ const checksReason = (detail: PullRequestDetail): RepairService.MergeRefusalReas
 };
 
 /**
- * Whether a repair crew's `pull_request_merge` may go ahead: its own pull request, into the default
- * branch, every check passed, no protected path changed, no review asking for changes.
+ * Whether a `pull_request_merge` may go ahead. A pull request from a repair branch merges only if
+ * it is the repair's own, into the default branch, every check passed, no protected path changed
+ * and no review asking for changes, for every caller. Any other pull request is not the guard's.
  */
 export class RepairMergeGuard extends Context.Service<
   RepairMergeGuard,
   {
     /**
-     * Whether a `pull_request_merge` call from this thread may go ahead. A thread that is not a
-     * repair crew, or a subagent of one, is left alone. A refused call is reported to the Bot, once.
+     * Whether a `pull_request_merge` call may go ahead. A crew (or its subagent) may merge only its
+     * own branch; any other thread is held to the same conditions only for a `repair/` branch's
+     * pull request. One that cannot be read, or has no repair on record, is refused.
      */
     readonly check: (input: {
       readonly threadId: ThreadId;
@@ -252,45 +277,58 @@ const make = Effect.gen(function* () {
     return activity.value.commentsTruncated ? ("reviews_unreadable" as const) : undefined;
   });
 
-  /** The first thing wrong with merging this pull request, or nothing. */
-  const reasonToRefuse = Effect.fn("RepairMergeGuard.reasonToRefuse")(function* (
+  /**
+   * The pull request a call names, read fresh: the host is asked again, not a held answer, since
+   * head, checks, files and reviews are all read after this and a push or a check a minute ago
+   * must not decide. The project, repository and number are the ones the merge tool will resolve.
+   */
+  const readPullRequest = Effect.fn("RepairMergeGuard.readPullRequest")(function* (
     threadId: ThreadId,
-    branch: string,
-    call: { readonly number: number; readonly expectedHeadSha: string },
+    number: number,
+    repository: string | undefined,
   ) {
     const shell = yield* threads.getThreadShell(threadId).pipe(Effect.orElseSucceed(() => null));
-    if (shell === null) return "pull_request_unreadable" as const;
-    // The same project, repository and number the merge tool will resolve for this call.
+    if (shell === null) return { reason: "pull_request_unreadable" } as const;
     const project = yield* pullRequests
       .addressedProject(shell.projectId)
       .pipe(Effect.orElseSucceed(() => undefined));
-    if (project === undefined) return "pull_request_unreadable" as const;
+    if (project === undefined) return { reason: "pull_request_unreadable" } as const;
     const identity = project.repositoryIdentity;
     const target = yield* resolveTarget(
       {
-        number: call.number,
+        number,
         repository:
-          identity == null
+          repository ??
+          (identity == null
             ? undefined
-            : (sourceControlDefinitions.repositorySelector(identity) ?? undefined),
+            : (sourceControlDefinitions.repositorySelector(identity) ?? undefined)),
       },
       project,
     ).pipe(Effect.option);
-    if (Option.isNone(target)) return "pull_request_unreadable" as const;
+    if (Option.isNone(target)) return { reason: "pull_request_unreadable" } as const;
     const ref: PullRequestRef = {
       projectId: project.id,
       host: target.value.host,
       repository: target.value.repository,
       number: target.value.number,
     };
-
-    // The host is asked again, not a held answer: head, checks, files and reviews are all read
-    // after this, and a push or a check a minute ago must not decide.
     yield* pullRequests.invalidate({ reference: ref });
     const read = yield* pullRequests.detail({ ...ref, allowStale: false }).pipe(Effect.option);
-    if (Option.isNone(read)) return "pull_request_unreadable" as const;
-    const detail = read.value;
+    if (Option.isNone(read)) return { reason: "pull_request_unreadable" } as const;
+    return { project, ref, detail: read.value };
+  });
 
+  /** The first thing wrong with merging this pull request as the repair's own, or nothing. */
+  const reasonToRefuse = Effect.fn("RepairMergeGuard.reasonToRefuse")(function* (
+    read: {
+      readonly project: OrchestrationProjectShell;
+      readonly ref: PullRequestRef;
+      readonly detail: PullRequestDetail;
+    },
+    branch: string,
+    call: { readonly number: number; readonly expectedHeadSha: string },
+  ) {
+    const { project, ref, detail } = read;
     if (detail.state !== "open" || detail.isDraft) return "not_open" as const;
     if (detail.headBranch !== branch) return "wrong_branch" as const;
     const headRepository = detail.headRepositoryNameWithOwner;
@@ -337,44 +375,108 @@ const make = Effect.gen(function* () {
       : ("head_changed" as const);
   });
 
+  /** What the check came to, and whose repair it is when one is known (for telling its Bot). */
+  type Decision =
+    | { readonly kind: "unguarded" }
+    | { readonly kind: "allowed"; readonly owner: { readonly crewThreadId: ThreadId } }
+    | {
+        readonly kind: "refused";
+        readonly reason: RepairService.MergeRefusalReason;
+        readonly owner: { readonly crewThreadId: ThreadId } | undefined;
+      };
+  const refused = (
+    reason: RepairService.MergeRefusalReason,
+    owner?: { readonly crewThreadId: ThreadId },
+  ): Decision => ({ kind: "refused", reason, owner });
+
+  /** Whether a stack merge from this pull request would take a repair's layer along with it. */
+  const stackHasRepairLayer = Effect.fn("RepairMergeGuard.stackHasRepairLayer")(function* (
+    ref: PullRequestRef,
+  ) {
+    const stack = yield* pullRequests.stack(ref, { bypassCache: true }).pipe(Effect.option);
+    if (Option.isNone(stack)) return "unreadable" as const;
+    return (stack.value?.layers ?? []).some(
+      (layer) => layer.state !== "merged" && isRepairBranch(layer.headBranch),
+    );
+  });
+
+  const decide = Effect.fn("RepairMergeGuard.decide")(function* (
+    threadId: ThreadId,
+    call: Call,
+    crew: { readonly crewThreadId: ThreadId; readonly branch: string } | undefined,
+  ) {
+    if (crew !== undefined) {
+      // A crew merges one pull request, its own, and has to say so exactly.
+      if (call.checkable === undefined) return refused("bad_arguments", crew);
+      const read = yield* readPullRequest(threadId, call.checkable.number, undefined);
+      if ("reason" in read) return refused(read.reason, crew);
+      const reason = yield* reasonToRefuse(read, crew.branch, call.checkable);
+      return reason === undefined
+        ? ({ kind: "allowed", owner: crew } as const)
+        : refused(reason, crew);
+    }
+
+    // Anyone else: the pull request decides. Another machine guards its own merges.
+    if (call.remote) return { kind: "unguarded" } as const;
+    if (call.number === null) {
+      // No number means the thread's own branch's pull request, which is a repair's on that branch.
+      const shell = yield* threads.getThreadShell(threadId).pipe(Effect.orElseSucceed(() => null));
+      return shell?.branch != null && isRepairBranch(shell.branch)
+        ? refused("bad_arguments")
+        : ({ kind: "unguarded" } as const);
+    }
+    const read = yield* readPullRequest(threadId, call.number, call.repository);
+    if ("reason" in read) return refused(read.reason);
+    if (!isRepairBranch(read.detail.headBranch)) {
+      if (!call.stack) return { kind: "unguarded" } as const;
+      const layered = yield* stackHasRepairLayer(read.ref);
+      if (layered === "unreadable") return refused("pull_request_unreadable");
+      return layered ? refused("bad_arguments") : ({ kind: "unguarded" } as const);
+    }
+    const owner = yield* repair.repairOfBranch(read.detail.headBranch);
+    if (owner === undefined) return refused("no_repair_record");
+    if (call.checkable === undefined) return refused("bad_arguments", owner);
+    const reason = yield* reasonToRefuse(read, owner.branch, call.checkable);
+    return reason === undefined ? ({ kind: "allowed", owner } as const) : refused(reason, owner);
+  });
+
   const check: RepairMergeGuard["Service"]["check"] = Effect.fn("RepairMergeGuard.check")(
     function* ({ threadId, environmentId, arguments: raw }) {
-      const crew = yield* repair.crewOf(threadId);
-      if (crew === undefined) return { kind: "unguarded" } as const;
       const call = callOf(raw, environmentId);
-      const refuse = (reason: RepairService.MergeRefusalReason) =>
-        repair
-          .reportMerge({
-            crewThreadId: crew.crewThreadId,
-            number: call.number,
-            merged: false,
-            reason,
-          })
-          .pipe(
-            Effect.as({
-              kind: "refused",
-              reason,
-              message: RepairService.MERGE_REFUSAL_MESSAGES[reason],
-            } as const),
-          );
-      if (call.checkable === undefined) return yield* refuse("bad_arguments");
+      const crew = yield* repair.crewOf(threadId);
       // Anything that goes wrong in the checking is a refusal, never a merge.
-      const reason = yield* reasonToRefuse(threadId, crew.branch, call.checkable).pipe(
+      const decision = yield* decide(threadId, call, crew).pipe(
         Effect.catchCauseIf(
           (cause) => !Cause.hasInterruptsOnly(cause),
           (cause) =>
-            Effect.logWarning("A repair crew's merge could not be checked.", { cause }).pipe(
-              Effect.as("pull_request_unreadable" as const),
+            Effect.logWarning("A merge could not be checked.", { cause }).pipe(
+              Effect.as(refused("pull_request_unreadable", crew)),
             ),
         ),
       );
-      return reason === undefined
-        ? ({
-            kind: "allowed",
-            crewThreadId: crew.crewThreadId,
-            number: call.checkable.number,
-          } as const)
-        : yield* refuse(reason);
+      if (decision.kind === "unguarded") return { kind: "unguarded" } as const;
+      if (decision.kind === "allowed" && call.checkable !== undefined) {
+        return {
+          kind: "allowed",
+          crewThreadId: decision.owner.crewThreadId,
+          number: call.checkable.number,
+        } as const;
+      }
+      const reason = decision.kind === "refused" ? decision.reason : "bad_arguments";
+      const owner = decision.kind === "refused" ? decision.owner : undefined;
+      if (owner !== undefined) {
+        yield* repair.reportMerge({
+          crewThreadId: owner.crewThreadId,
+          number: call.number,
+          merged: false,
+          reason,
+        });
+      }
+      return {
+        kind: "refused",
+        reason,
+        message: RepairService.MERGE_REFUSAL_MESSAGES[reason],
+      } as const;
     },
   );
 

@@ -24,6 +24,7 @@ import * as Schema from "effect/Schema";
 import * as IssueService from "../issue/IssueService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import { isRepairBranch } from "../bots/repairBranch.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import {
   normalizeThreadPullRequestKey,
@@ -440,6 +441,19 @@ export const layer = Layer.effect(
         }),
         act: Effect.fn("WorkflowForge.pullRequests.act")(function* (pullRequest, action, options) {
           const ref = yield* pullRequestRef(pullRequest);
+          if (action === "merge" || action === "enable-auto-merge") {
+            // A repair's pull request merges through the server's guard (`RepairMergeGuard`) or by
+            // the user, and a workflow step is not that guard. Not being able to tell is a no.
+            const detail = yield* pullRequests
+              .detail({ ...ref, allowStale: false })
+              .pipe(Effect.mapError(failed("Could not read the pull request before merging it")));
+            if (isRepairBranch(detail.headBranch ?? "")) {
+              return yield* new WorkflowForgeError({
+                reason:
+                  "This pull request is from a repair branch. A repair's pull request merges through the repair crew's checked merge or by the user, not from a workflow.",
+              });
+            }
+          }
           yield* pullRequests
             .runAction({
               ...ref,

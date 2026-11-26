@@ -144,18 +144,31 @@ thread in a worktree, grouped under the Bot, no higher in runtime mode than the 
   reset them. The give-up and merge wakes (`bot-wake:health:<id>:gaveup`, `...:merge:...`) do not
   match the health pattern, so the turns they start cannot start another repair.
 - **Crew thread ids are written before the launch** and rolled back if it is refused, so a retry
-  replays the same launch and `repairOf(threadId)` always says which repair a thread belongs to and
+  replays the same launch and `crewOf(threadId)` always says which repair a thread belongs to and
   the branch that crew was told to push.
 
 ### Merge guard
 
 A crew merges its own pull request with `pull_request_merge`, and the server decides whether that
 call goes ahead. `layerRepairMergeGuard` (a global MCP middleware, like the mail hold) gives every
-`pull_request_merge` to [`RepairMergeGuard`](../../apps/server/src/bots/RepairMergeGuard.ts), which
-lets a thread through untouched unless it is a repair crew or a subagent of one (by lineage root).
-For a crew it merges only if all of this holds, each refusal being its own `MergeRefusalReason`
-with fixed words the crew can act on:
+`pull_request_merge` to [`RepairMergeGuard`](../../apps/server/src/bots/RepairMergeGuard.ts). The
+guard is on the **pull request, not on who asks**: one from a `repair/` branch merges only if all
+of the following holds, whoever calls (the Bot, an ordinary thread, a sibling a crew started with
+`t3_thread_launch`, a crew's subagent, a thread whose repair record the 500-entry cap dropped), and
+any other pull request is left alone after one fresh read of its branch. Each refusal is its own
+`MergeRefusalReason`, with fixed words the crew can act on:
 
+- **The pull request is a repair's, on the record.** A crew may merge only the branch it was told
+  to push. Anyone else's pull request from a `repair/` branch must be the exact branch of an attempt
+  in the signed registry (`RepairService.repairOfBranch`); a branch that only looks like one, or
+  whose record is gone, is refused (`no_repair_record`), so a lost record fails closed and a
+  hand-made `repair/` branch cannot dodge the checks. The result is reported to that repair's Bot
+  whoever asked. A pull request that cannot be read is refused for every caller, so a host outage
+  also holds an ordinary merge until it is asked again. A call for another machine is that
+  machine's guard's, and a call with no `number` is left alone unless the thread itself is on a
+  repair branch. `stack` merges are refused if any open layer is from a repair branch.
+  The workflow route (`WorkflowForge.pullRequests.act`, `merge` and `enable-auto-merge`) refuses a
+  repair branch's pull request outright; the user can still merge it on the host.
 - **The call is one the server can check.** Only `number`, `expectedHeadSha` and `method`: a
   `repository`, `auto`, `stack`, another machine or an unknown argument is refused, because
   auto-merge and stack merges would merge something this check never saw. The call is read raw and
@@ -200,15 +213,25 @@ root files such as `.gitignore`. A change there is merged when its checks pass.
 request's number, merged or left open, and the reason code, and no title, body or file name. It is
 sent once for each pull request and result and is capped per repair.
 
-**What it does not stop.** A crew is an ordinary full-access thread: a shell as the user, with the
-user's `gh` login and git credentials, and nothing here sees what that shell runs. It can still
-`gh pr merge` any pull request, push to the default branch, post a passing commit status with
-`gh api`, dismiss a review, or start another thread whose merges are not a crew's. Nothing in the
-codebase can refuse those before they run: no provider adapter asks a full-access thread whether a
-command may run, and the one command classifier, `changeRequestsClosedBy`, only reads finished work
-items. So the brief and the guard bind a crew that follows them. The control that holds is on
-GitHub: branch protection on the default branch requiring a pull request and the check, code owners
-for the `PROTECTED_PATHS`, and a crew login that is not an administrator. That also stops your own
+**What it does not stop.** The guard binds the `pull_request_merge` tool and the workflow merge
+route. It does not see a shell. A crew is an ordinary full-access thread: a shell as the user,
+with the user's `gh` login, git credentials and whatever secrets that account can read, and no
+provider adapter asks a full-access thread whether a command may run. So these remain open:
+
+- Raw shell: `gh pr merge` of any pull request, a push to the default branch (or a force-push),
+  `gh api` calls that merge, post a passing commit status or dismiss a review.
+- A sibling thread a crew starts with `t3_thread_launch` has a raw shell of its own. Its merge tool
+  is guarded now, but what it runs is not.
+- A crew can read what the user's credentials can: tokens in the environment, the keychain, git
+  and `gh` config, the T3 home (the signing key included, see Health wakes).
+- No bound on one crew's time or tokens: the daily start cap and the two failed attempts limit how
+  many start, not how long one runs or what it costs.
+- The head can still be swapped inside the guard's window (see above), and what the protected
+  list does not name merges when its checks pass.
+
+So the brief and the guard bind a crew that follows them. The control that holds is on GitHub:
+branch protection on the default branch requiring a pull request and the check, code owners for
+the `PROTECTED_PATHS`, and a crew login that is not an administrator. That also stops your own
 direct pushes to the default branch.
 
 ## Model
