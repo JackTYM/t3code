@@ -33,7 +33,7 @@ import { BotHeldActions } from "./BotHeldActions";
 import { BotMailView } from "./BotMailView";
 import { BotTasksView } from "./BotTasksView";
 import { BotWatchersView } from "./BotWatchersView";
-import { botWatchersNeedingYou } from "./BotWatchersView.logic";
+import { botWatchersTripped } from "./BotWatchersView.logic";
 
 // tasks.md is edited as a list in the Tasks view, not as text.
 const FILES: ReadonlyArray<Exclude<BotFileKind, "tasks">> = ["notes", "preferences"];
@@ -140,7 +140,7 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
   const watchersData = useEnvironmentQuerySelector(watchersAtom, selectEnvironmentQueryData);
   const { refresh: refreshWatchers, isPending: watchersPending } =
     useEnvironmentQueryRefresh(watchersAtom);
-  // Calls the Bot held because email influenced its turn; they wait for the user like a watcher.
+  // Calls the Bot held because email influenced its turn; they wait for the user, like a failing watcher.
   const heldAtom =
     botConfig == null
       ? null
@@ -151,7 +151,7 @@ export function BotNotesButton(props: { threadRef: ScopedThreadRef }) {
   const held = useEnvironmentQuerySelector(heldAtom, selectEnvironmentQueryData)?.held ?? [];
   const { refresh: refreshHeld } = useEnvironmentQueryRefresh(heldAtom);
   const needYou =
-    (watchersData === null ? 0 : botWatchersNeedingYou(watchersData.watchers)) + held.length;
+    (watchersData === null ? 0 : botWatchersTripped(watchersData.watchers)) + held.length;
   // A refresh restarts a read in flight, so one already running stands for this one.
   const refreshWatchersIfIdle = () => {
     refreshHeld();

@@ -1,4 +1,9 @@
-import type { BotWatcher, BotWatcherRun, EnvironmentId } from "@t3tools/contracts";
+import type {
+  BotWatcher,
+  BotWatcherReview,
+  BotWatcherRun,
+  EnvironmentId,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -8,8 +13,9 @@ import {
   botWatcherPlaces,
   botWatcherReviseMessage,
   botWatcherState,
-  botWatchersNeedingYou,
+  botWatchersTripped,
   groupBotWatchers,
+  latestReview,
   parseBotWatcherDiff,
 } from "./BotWatchersView.logic";
 
@@ -38,19 +44,43 @@ const run = (overrides: Partial<BotWatcherRun>): BotWatcherRun => ({
   ...overrides,
 });
 
-const pending = (overrides: Partial<BotWatcher> = {}) =>
+const review = (overrides: Partial<BotWatcherReview> = {}): BotWatcherReview => ({
+  hash: "bbbbbbbbbbbbbbbbbbbb",
+  at: "2026-11-25T10:00:00.000Z" as BotWatcherReview["at"],
+  verdict: "approve",
+  reason: "Reads only.",
+  model: "reviewer-model",
+  ...overrides,
+});
+
+/** A revision the reviewer has not finished with, beside the version that keeps running. */
+const revising = (overrides: Partial<BotWatcher> = {}) =>
   watcher({
     name: "deadlines",
-    status: "needs_approval",
     hash: "bbbbbbbbbbbbbbbbbbbb",
     pendingHash: "bbbbbbbbbbbbbbbbbbbb",
     ...overrides,
   });
 
+/** A first version the reviewer has not approved yet, so nothing runs. */
+const proposed = (overrides: Partial<BotWatcher> = {}) =>
+  revising({ status: "needs_approval", approvedHash: undefined, ...overrides });
+
 describe("botWatcherState", () => {
-  it("tells a brand new proposal from a change to an approved watcher", () => {
-    expect(botWatcherState(pending({ approvedHash: undefined }))).toBe("new");
-    expect(botWatcherState(pending())).toBe("changed");
+  it("tells a first version under review from a revision beside a running one", () => {
+    expect(botWatcherState(proposed())).toBe("reviewing");
+    expect(botWatcherState(revising())).toBe("revising");
+  });
+
+  it("keys the revision off the pending version, not the status", () => {
+    expect(botWatcherState(watcher({ name: "a" }))).toBe("running");
+    expect(botWatcherState(revising({ status: "needs_approval" }))).toBe("reviewing");
+  });
+
+  it("keeps a failing, paused or waiting watcher as that, with a revision pending", () => {
+    expect(botWatcherState(revising({ status: "tripped" }))).toBe("failing");
+    expect(botWatcherState(revising({ status: "paused", paused: true }))).toBe("paused");
+    expect(botWatcherState(revising({ status: "waiting" }))).toBe("waiting");
   });
 
   it("names the other statuses", () => {
@@ -68,19 +98,19 @@ describe("groupBotWatchers", () => {
       watcher({ name: "zeta" }),
       watcher({ name: "paused-one", status: "paused", paused: true }),
       watcher({ name: "beta", status: "tripped" }),
-      pending({ name: "alpha" }),
+      proposed({ name: "alpha" }),
       watcher({ name: "alpine", status: "waiting" }),
     ]);
     expect(groups.map((entry) => [entry.group, entry.watchers.map((w) => w.name)])).toEqual([
-      ["attention", ["alpha", "beta"]],
-      ["running", ["alpine", "zeta"]],
+      ["attention", ["beta"]],
+      ["running", ["alpha", "alpine", "zeta"]],
       ["paused", ["paused-one"]],
     ]);
   });
 
-  it("keeps a paused watcher with a newer version waiting in the first group", () => {
-    const [first] = groupBotWatchers([pending({ paused: true })]);
-    expect(first?.group).toBe("attention");
+  it("does not ask anything of the user while the reviewer is working", () => {
+    expect(groupBotWatchers([proposed()]).map((entry) => entry.group)).toEqual(["running"]);
+    expect(groupBotWatchers([revising()]).map((entry) => entry.group)).toEqual(["running"]);
   });
 
   it("leaves out empty groups", () => {
@@ -88,118 +118,111 @@ describe("groupBotWatchers", () => {
   });
 });
 
-describe("botWatchersNeedingYou", () => {
-  it("counts exactly the watchers listed under Needs you", () => {
-    const watchers = [
-      pending({ name: "new-one", approvedHash: undefined }),
-      pending({ name: "changed-one" }),
-      pending({ name: "paused-with-update", paused: true }),
-      watcher({ name: "failing-one", status: "tripped" }),
-      watcher({ name: "fine" }),
-      watcher({ name: "waiting-one", status: "waiting" }),
-      watcher({ name: "stopped", status: "paused", paused: true }),
-    ];
-    expect(botWatchersNeedingYou(watchers)).toBe(4);
-    expect(botWatchersNeedingYou(watchers)).toBe(
-      groupBotWatchers(watchers).find((entry) => entry.group === "attention")?.watchers.length,
+describe("botWatchersTripped", () => {
+  it("counts only the watchers that are failing", () => {
+    expect(
+      botWatchersTripped([
+        proposed({ name: "new-one" }),
+        revising({ name: "changed-one" }),
+        revising({ name: "paused-with-update", status: "paused", paused: true }),
+        watcher({ name: "failing-one", status: "tripped" }),
+        revising({ name: "failing-with-update", status: "tripped" }),
+        watcher({ name: "invalid-one", status: "invalid" }),
+        watcher({ name: "fine" }),
+        watcher({ name: "waiting-one", status: "waiting" }),
+        watcher({ name: "stopped", status: "paused", paused: true }),
+      ]),
+    ).toBe(2);
+  });
+
+  it("is zero with nothing failing", () => {
+    expect(botWatchersTripped([])).toBe(0);
+    expect(botWatchersTripped([watcher({ name: "fine" }), proposed()])).toBe(0);
+  });
+});
+
+describe("latestReview", () => {
+  it("is undefined before the reviewer has judged anything", () => {
+    expect(latestReview(watcher({ name: "a" }))).toBeUndefined();
+  });
+
+  it("returns the newest verdict by time, whatever the order they were saved in", () => {
+    const old = review({ hash: "a", at: "2026-11-25T09:00:00.000Z" as BotWatcherReview["at"] });
+    const newest = review({ hash: "c", at: "2026-11-25T11:00:00.000Z" as BotWatcherReview["at"] });
+    const middle = review({ hash: "b", at: "2026-11-25T10:00:00.000Z" as BotWatcherReview["at"] });
+    expect(latestReview(watcher({ name: "a", reviews: [old, newest, middle] }))?.review).toBe(
+      newest,
     );
   });
 
-  it("is zero with nothing waiting on the user", () => {
-    expect(botWatchersNeedingYou([])).toBe(0);
-    expect(botWatchersNeedingYou([watcher({ name: "fine" })])).toBe(0);
+  it("says whether the verdict is for the pending version", () => {
+    const verdict = review({ hash: "bbbbbbbbbbbbbbbbbbbb" });
+    expect(latestReview(revising({ reviews: [verdict] }))).toEqual({
+      review: verdict,
+      pending: true,
+    });
+  });
+
+  it("is not pending once the version it judged is gone", () => {
+    const rejected = review({ verdict: "reject", reason: "Sends mail." });
+    expect(latestReview(watcher({ name: "a", reviews: [rejected] }))).toEqual({
+      review: rejected,
+      pending: false,
+    });
+    expect(
+      latestReview(revising({ pendingHash: "cccccccccccccccccccc", reviews: [rejected] }))?.pending,
+    ).toBe(false);
   });
 });
 
 describe("botWatcherDryRunOf", () => {
   it("shows a dry run only of the version on show", () => {
-    expect(botWatcherDryRunOf(pending({ lastDryRun: run({ hash: "cccccccccccc" }) }))).toBe(
+    expect(botWatcherDryRunOf(revising({ lastDryRun: run({ hash: "cccccccccccc" }) }))).toBe(
       undefined,
     );
     const matching = run({});
-    expect(botWatcherDryRunOf(pending({ lastDryRun: matching }))).toBe(matching);
+    expect(botWatcherDryRunOf(revising({ lastDryRun: matching }))).toBe(matching);
   });
 });
 
-describe("botWatcherControls approve", () => {
-  it("is closed until the pending version has run once", () => {
-    expect(botWatcherControls(pending(), "local", both).approve).toEqual({
-      enabled: false,
-      reason: "run_once_first",
-    });
+describe("botWatcherControls", () => {
+  it("has no approve or reject: a reviewer model decides", () => {
+    const controls = botWatcherControls(revising(), "local", both);
+    expect(Object.keys(controls).toSorted()).toEqual([
+      "move",
+      "pause",
+      "pending",
+      "remove",
+      "resume",
+      "runOnce",
+    ]);
   });
 
-  it("is open after a dry run of exactly that version where it will run", () => {
-    expect(botWatcherControls(pending({ lastDryRun: run({}) }), "local", both).approve).toEqual({
-      enabled: true,
-    });
+  it("runs a version once when the files are there, and only with terminal access", () => {
+    expect(botWatcherControls(revising(), "local", both).runOnce).toEqual({ enabled: true });
     expect(
-      botWatcherControls(pending({ lastDryRun: run({ runsOn: LAPTOP }) }), LAPTOP, both).approve,
-    ).toEqual({ enabled: true });
+      botWatcherControls(revising(), "local", { runCode: false, operate: true }).runOnce,
+    ).toEqual({ enabled: false, reason: "needs_terminal_access" });
   });
 
-  it("stays closed when the dry run was somewhere else or of another version", () => {
-    expect(botWatcherControls(pending({ lastDryRun: run({}) }), LAPTOP, both).approve).toEqual({
+  it("cannot run a version whose files are missing", () => {
+    expect(botWatcherControls(revising({ source: undefined }), "local", both).runOnce).toEqual({
       enabled: false,
-      reason: "run_once_there_first",
-    });
-    expect(
-      botWatcherControls(pending({ lastDryRun: run({ hash: "cccccccccccc" }) }), "local", both)
-        .approve,
-    ).toEqual({ enabled: false, reason: "run_once_first" });
-  });
-
-  it("needs terminal access, whatever the dry run says", () => {
-    const controls = botWatcherControls(pending({ lastDryRun: run({}) }), "local", {
-      runCode: false,
-      operate: true,
-    });
-    expect(controls.approve).toEqual({ enabled: false, reason: "needs_terminal_access" });
-    expect(controls.runOnce).toEqual({ enabled: false, reason: "needs_terminal_access" });
-    expect(controls.resume).toEqual({ enabled: false, reason: "needs_terminal_access" });
-    expect(controls.reject).toEqual({ enabled: true });
-    expect(controls.pause).toEqual({ enabled: true });
-  });
-
-  it("has nothing to approve on a watcher with no waiting version", () => {
-    expect(botWatcherControls(watcher({ name: "a" }), "local", both).approve).toEqual({
-      enabled: false,
-      reason: "nothing_to_approve",
+      reason: "no_source",
     });
   });
 
-  it("cannot approve a version whose files are missing", () => {
-    const controls = botWatcherControls(
-      pending({ source: undefined, lastDryRun: run({}) }),
-      "local",
-      both,
-    );
-    expect(controls.approve).toEqual({ enabled: false, reason: "no_source" });
-    expect(controls.runOnce).toEqual({ enabled: false, reason: "no_source" });
-  });
-});
-
-describe("botWatcherControls stopping and moving", () => {
-  it("lets operate access pause, remove and reject, but not resume", () => {
-    const controls = botWatcherControls(pending(), "local", { runCode: false, operate: true });
+  it("lets operate access pause and remove, but not resume", () => {
+    const controls = botWatcherControls(revising(), "local", { runCode: false, operate: true });
     expect(controls.pause).toEqual({ enabled: true });
     expect(controls.remove).toEqual({ enabled: true });
-    expect(controls.reject).toEqual({ enabled: true });
     expect(controls.resume.enabled).toBe(false);
   });
 
-  it("closes everything but nothing-to-reject for a connection with no grants", () => {
-    const controls = botWatcherControls(pending(), "local", { runCode: false, operate: false });
+  it("closes pause and remove for a connection with no grants", () => {
+    const controls = botWatcherControls(revising(), "local", { runCode: false, operate: false });
     expect(controls.pause).toEqual({ enabled: false, reason: "needs_operate_access" });
     expect(controls.remove).toEqual({ enabled: false, reason: "needs_operate_access" });
-    expect(controls.reject).toEqual({ enabled: false, reason: "needs_operate_access" });
-  });
-
-  it("only rejects a watcher that has a version waiting", () => {
-    expect(botWatcherControls(watcher({ name: "a" }), "local", both).reject).toEqual({
-      enabled: false,
-      reason: "nothing_to_approve",
-    });
   });
 
   it("moves an approved watcher only after it has run once in the new place", () => {
@@ -219,8 +242,8 @@ describe("botWatcherControls stopping and moving", () => {
     expect(botWatcherControls(tried, LAPTOP, both).move).toEqual({ enabled: true });
   });
 
-  it("does not move a watcher while a new version waits: approval chooses the place", () => {
-    expect(botWatcherControls(pending(), LAPTOP, both).move.enabled).toBe(false);
+  it("does not move a watcher while a revision is under review", () => {
+    expect(botWatcherControls(revising(), LAPTOP, both).move.enabled).toBe(false);
   });
 });
 
@@ -281,7 +304,7 @@ describe("parseBotWatcherDiff", () => {
 
 describe("botWatcherReviseMessage", () => {
   it("names the watcher and the version and carries the user's note", () => {
-    expect(botWatcherReviseMessage(pending(), "  Only look at announcements.  ")).toBe(
+    expect(botWatcherReviseMessage(revising(), "  Only look at announcements.  ")).toBe(
       'Please revise the watcher "deadlines" (version bbbbbbbbbbbb) and propose the new version. Only look at announcements.',
     );
   });

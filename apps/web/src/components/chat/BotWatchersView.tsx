@@ -50,6 +50,7 @@ import {
   botWatcherReviseMessage,
   botWatcherState,
   groupBotWatchers,
+  latestReview,
   parseBotWatcherDiff,
   shortBotWatcherHash,
   type BotWatcherBlock,
@@ -59,8 +60,8 @@ import {
 } from "./BotWatchersView.logic";
 
 const STATE_BADGE = {
-  new: "warning",
-  changed: "warning",
+  reviewing: "info",
+  revising: "info",
   invalid: "error",
   paused: "outline",
   waiting: "warning",
@@ -70,16 +71,16 @@ const STATE_BADGE = {
 
 function StateBadge(props: { state: BotWatcherState }) {
   switch (props.state) {
-    case "new":
+    case "reviewing":
       return (
-        <Badge variant={STATE_BADGE.new}>
-          <T>needs approval</T>
+        <Badge variant={STATE_BADGE.reviewing}>
+          <T>in review</T>
         </Badge>
       );
-    case "changed":
+    case "revising":
       return (
-        <Badge variant={STATE_BADGE.changed}>
-          <T>stopped: changed</T>
+        <Badge variant={STATE_BADGE.revising}>
+          <T>new version in review</T>
         </Badge>
       );
     case "invalid":
@@ -125,8 +126,6 @@ function useBlockedReason() {
         return gt("This connection cannot change threads on this environment.");
       case "no_source":
         return gt("The files for this version are missing or were changed on disk.");
-      case "run_once_first":
-        return gt("Run it once first. Approval needs a run of exactly this version.");
       case "run_once_there_first":
         return gt("Run it once where it will run first.");
       case "nothing_to_approve":
@@ -152,6 +151,12 @@ function useIntervalLabel() {
         return gt("every {count} d", { count });
     }
   };
+}
+
+function useModeLabel() {
+  const gt = useGT();
+  return (mode: BotWatcher["mode"]): string =>
+    mode === "events" ? gt("reports news") : gt("health check");
 }
 
 function ScriptOutput(props: { label: string; text: string }) {
@@ -203,6 +208,7 @@ function WatcherCard(props: {
   const gt = useGT();
   const blockedReason = useBlockedReason();
   const intervalLabel = useIntervalLabel();
+  const modeLabel = useModeLabel();
   const { watcher } = props;
   const { environmentId, threadId } = props.threadRef;
   const thread = useThreadShell(props.threadRef);
@@ -230,6 +236,7 @@ function WatcherCard(props: {
       ? gt("This environment")
       : (props.linked.get(place as EnvironmentId) ?? gt("A linked environment"));
   const dryRunShown = botWatcherDryRunOf(watcher);
+  const verdict = latestReview(watcher);
   const runnableHash = watcher.pendingHash ?? watcher.approvedHash;
   const showsMove = controls.move.enabled || (!controls.pending && target !== watcher.runsOn);
 
@@ -341,6 +348,7 @@ function WatcherCard(props: {
         {watcher.runtime === undefined ? null : (
           <span className="text-muted-foreground text-xs">{watcher.runtime}</span>
         )}
+        <span className="text-muted-foreground text-xs">{modeLabel(watcher.mode)}</span>
         <label className="ms-auto flex items-center gap-1.5 text-muted-foreground text-xs">
           <T>Runs on</T>
           <Select<BotWatcherRunsOn, false>
@@ -364,15 +372,22 @@ function WatcherCard(props: {
         </label>
       </div>
 
-      {state === "new" ? (
+      {watcher.purpose === undefined || watcher.purpose.length === 0 ? null : (
+        <p className="text-sm break-words">{watcher.purpose}</p>
+      )}
+
+      {state === "reviewing" ? (
         <p className="text-muted-foreground text-xs">
           <T>The Bot proposed this. It runs once a reviewer model has approved it.</T>
         </p>
-      ) : state === "changed" ? (
+      ) : state === "revising" ? (
         <p className="text-muted-foreground text-xs">
-          <T>
-            The Bot saved a new version. The approved version keeps running until it is reviewed.
-          </T>
+          {gt(
+            "A new version is being reviewed. Version {hash} keeps running until it is approved.",
+            {
+              hash: shortBotWatcherHash(watcher.approvedHash ?? ""),
+            },
+          )}
         </p>
       ) : state === "invalid" ? (
         <p className="text-destructive-foreground text-xs">
@@ -405,16 +420,48 @@ function WatcherCard(props: {
         <p className="text-muted-foreground text-xs">
           <T>Paused by you. The approved version is kept and does not run.</T>
         </p>
-      ) : watcher.lastRunAt === undefined ? null : (
+      ) : null}
+      {watcher.lastRunAt === undefined ? null : (
         <p className="text-muted-foreground text-xs">
           <T>Last ran</T> <RelativeTime timestamp={new Date(watcher.lastRunAt).toISOString()} />
         </p>
       )}
 
+      {verdict === undefined ? null : (
+        <div className="flex flex-col gap-1 rounded-lg border p-2 text-xs">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="font-medium">
+              <T>Reviewer</T>
+            </span>
+            <Badge variant={verdict.review.verdict === "reject" ? "error" : "success"}>
+              {verdict.review.verdict === "reject" ? <T>rejected</T> : <T>approved</T>}
+            </Badge>
+            <span className="text-muted-foreground">
+              {gt("version {hash}", { hash: shortBotWatcherHash(verdict.review.hash) })}
+              {" · "}
+              {verdict.review.model}
+              {" · "}
+              <RelativeTime timestamp={verdict.review.at} />
+            </span>
+          </div>
+          {/* The reason is derived from a script the Bot wrote, so it is only ever plain text. */}
+          <p className="break-words whitespace-pre-wrap">{verdict.review.reason}</p>
+          {verdict.review.verdict === "reject" ? (
+            <p className="text-muted-foreground">
+              {watcher.approvedHash === undefined
+                ? gt("Nothing runs until the Bot proposes a new version.")
+                : gt("This revision was not used. Version {hash} is unchanged and keeps running.", {
+                    hash: shortBotWatcherHash(watcher.approvedHash),
+                  })}
+            </p>
+          ) : null}
+        </div>
+      )}
+
       {controls.pending && watcher.diff !== undefined ? (
         <div className="flex flex-col gap-1">
           <span className="text-muted-foreground text-xs">
-            {gt("Changed since the version you approved ({from} to {to})", {
+            {gt("Changed since the running version ({from} to {to})", {
               from: shortBotWatcherHash(watcher.approvedHash ?? ""),
               to: shortBotWatcherHash(watcher.hash),
             })}
@@ -424,7 +471,7 @@ function WatcherCard(props: {
       ) : null}
 
       {watcher.source === undefined ? null : (
-        <Collapsible defaultOpen={state === "new"}>
+        <Collapsible defaultOpen={state === "reviewing"}>
           <CollapsibleTrigger
             render={<Button variant="ghost-muted" size="xs" className="group self-start" />}
           >
@@ -471,9 +518,34 @@ function WatcherCard(props: {
         </div>
       )}
 
-      {controls.pending ? (
-        <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-1.5">
+        {showsMove ? (
           <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-muted-foreground text-xs">
+              {gt("Moving to {place} needs a run there first.", { place: placeLabel(target) })}
+            </span>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={!controls.runOnce.enabled || !idle}
+              onClick={runOnce}
+            >
+              {busy === "run" ? <T>Running…</T> : <T>Run once there</T>}
+            </Button>
+            <Button
+              size="xs"
+              disabled={!controls.move.enabled || !idle}
+              onClick={() => void moveWatcher()}
+            >
+              <T>Move</T>
+            </Button>
+            <Button size="xs" variant="ghost" disabled={!idle} onClick={() => setPicked(null)}>
+              <T>Cancel</T>
+            </Button>
+          </div>
+        ) : null}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {controls.pending ? (
             <Button
               size="xs"
               variant="outline"
@@ -482,77 +554,39 @@ function WatcherCard(props: {
             >
               {busy === "run" ? <T>Running…</T> : <T>Run once</T>}
             </Button>
-            <Button
-              size="xs"
-              variant="ghost"
-              disabled={thread === null || !idle}
-              onClick={() => setRevising((open) => !open)}
-            >
-              <T>Ask the Bot to revise</T>
-            </Button>
-          </div>
-          {runOnceReason === undefined ? null : (
-            <p className="text-muted-foreground text-xs">{runOnceReason}</p>
-          )}
-        </div>
-      ) : (
-        <div className="flex flex-col gap-1.5">
-          {showsMove ? (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-muted-foreground text-xs">
-                {gt("Moving to {place} needs a run there first.", { place: placeLabel(target) })}
-              </span>
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={!controls.runOnce.enabled || !idle}
-                onClick={runOnce}
-              >
-                {busy === "run" ? <T>Running…</T> : <T>Run once there</T>}
-              </Button>
-              <Button
-                size="xs"
-                disabled={!controls.move.enabled || !idle}
-                onClick={() => void moveWatcher()}
-              >
-                <T>Move</T>
-              </Button>
-              <Button size="xs" variant="ghost" disabled={!idle} onClick={() => setPicked(null)}>
-                <T>Cancel</T>
-              </Button>
-            </div>
           ) : null}
-          <div className="flex flex-wrap items-center gap-1.5">
-            {watcher.approvedHash === undefined ? null : watcher.paused ? (
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={!controls.resume.enabled || !idle}
-                onClick={togglePaused}
-              >
-                <T>Resume</T>
-              </Button>
-            ) : (
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={!controls.pause.enabled || !idle}
-                onClick={togglePaused}
-              >
-                <T>Pause</T>
-              </Button>
-            )}
+          {watcher.approvedHash === undefined ? null : watcher.paused ? (
             <Button
               size="xs"
-              variant="ghost"
-              disabled={thread === null || !idle}
-              onClick={() => setRevising((open) => !open)}
+              variant="outline"
+              disabled={!controls.resume.enabled || !idle}
+              onClick={togglePaused}
             >
-              <T>Ask the Bot to revise</T>
+              <T>Resume</T>
             </Button>
-          </div>
+          ) : (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={!controls.pause.enabled || !idle}
+              onClick={togglePaused}
+            >
+              <T>Pause</T>
+            </Button>
+          )}
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={thread === null || !idle}
+            onClick={() => setRevising((open) => !open)}
+          >
+            <T>Ask the Bot to revise</T>
+          </Button>
         </div>
-      )}
+        {controls.pending && runOnceReason !== undefined ? (
+          <p className="text-muted-foreground text-xs">{runOnceReason}</p>
+        ) : null}
+      </div>
 
       {revising ? (
         <form

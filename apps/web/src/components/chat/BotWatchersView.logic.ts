@@ -1,9 +1,17 @@
-import type { BotWatcher, BotWatcherRunsOn, EnvironmentId } from "@t3tools/contracts";
+import type {
+  BotWatcher,
+  BotWatcherReview,
+  BotWatcherRunsOn,
+  EnvironmentId,
+} from "@t3tools/contracts";
 
-/** What the badge says. `changed` is a needs-approval watcher that ran an older version. */
+/**
+ * What the badge says. `reviewing` is a first version the reviewer has not approved, so nothing
+ * runs. `revising` is a running watcher with a newer version under review.
+ */
 export type BotWatcherState =
-  | "new"
-  | "changed"
+  | "reviewing"
+  | "revising"
   | "invalid"
   | "paused"
   | "waiting"
@@ -13,7 +21,7 @@ export type BotWatcherState =
 export function botWatcherState(watcher: BotWatcher): BotWatcherState {
   switch (watcher.status) {
     case "needs_approval":
-      return watcher.approvedHash === undefined ? "new" : "changed";
+      return "reviewing";
     case "invalid":
       return "invalid";
     case "paused":
@@ -23,15 +31,15 @@ export function botWatcherState(watcher: BotWatcher): BotWatcherState {
     case "tripped":
       return "failing";
     case "healthy":
-      return "running";
+      return watcher.pendingHash === undefined ? "running" : "revising";
   }
 }
 
 export type BotWatcherGroup = "attention" | "running" | "paused";
 
 const GROUP_OF = {
-  new: "attention",
-  changed: "attention",
+  reviewing: "running",
+  revising: "running",
   invalid: "attention",
   failing: "attention",
   waiting: "running",
@@ -39,10 +47,7 @@ const GROUP_OF = {
   paused: "paused",
 } as const satisfies Record<BotWatcherState, BotWatcherGroup>;
 
-/**
- * What needs the user first, then what runs, then what they stopped. A paused watcher with a
- * newer version waiting still needs them, so it sorts with the first group.
- */
+/** What needs the user first, then what runs, then what they stopped. */
 export function groupBotWatchers(
   watchers: ReadonlyArray<BotWatcher>,
 ): ReadonlyArray<{ group: BotWatcherGroup; watchers: ReadonlyArray<BotWatcher> }> {
@@ -57,9 +62,29 @@ export function groupBotWatchers(
     .filter((entry) => entry.watchers.length > 0);
 }
 
-/** How many watchers sit under "Needs you", which the Bot button badge counts. */
-export const botWatchersNeedingYou = (watchers: ReadonlyArray<BotWatcher>): number =>
-  groupBotWatchers(watchers).find(({ group }) => group === "attention")?.watchers.length ?? 0;
+/**
+ * How many watchers are failing, which the Bot button badge counts. A version waiting on the
+ * reviewer asks nothing of the user, so it does not count.
+ */
+export const botWatchersTripped = (watchers: ReadonlyArray<BotWatcher>): number =>
+  watchers.filter((watcher) => watcher.status === "tripped").length;
+
+/**
+ * The reviewer's newest verdict. `pending` says it judged the version still waiting, as opposed
+ * to one that is gone (a rejected revision) or the one that runs.
+ */
+export function latestReview(
+  watcher: BotWatcher,
+): { readonly review: BotWatcherReview; readonly pending: boolean } | undefined {
+  let newest: BotWatcherReview | undefined;
+  for (const review of watcher.reviews) {
+    // `>=` so that of two saved in the same instant the later one wins.
+    if (newest === undefined || Date.parse(review.at) >= Date.parse(newest.at)) newest = review;
+  }
+  return newest === undefined
+    ? undefined
+    : { review: newest, pending: newest.hash === watcher.pendingHash };
+}
 
 /** The version `watcher.lastDryRun` describes, when it is the one on show. */
 export const botWatcherDryRunOf = (watcher: BotWatcher) =>
@@ -70,9 +95,9 @@ const botWatcherDryRunHolds = (watcher: BotWatcher, hash: string, runsOn: BotWat
   watcher.lastDryRun?.hash === hash && (watcher.lastDryRun.runsOn ?? "local") === runsOn;
 
 export type BotWatcherGrants = {
-  /** Run once, approve, move and resume run code, so they need terminal access. */
+  /** Run once, move and resume run code, so they need terminal access. */
   readonly runCode: boolean;
-  /** Reject, pause and remove run nothing, so operate access is enough. */
+  /** Pause and remove run nothing, so operate access is enough. */
   readonly operate: boolean;
 };
 
@@ -80,7 +105,6 @@ export type BotWatcherBlock =
   | "needs_terminal_access"
   | "needs_operate_access"
   | "no_source"
-  | "run_once_first"
   | "run_once_there_first"
   | "nothing_to_approve"
   | "already_there";
@@ -94,14 +118,12 @@ const blocked = (reason: BotWatcherBlock): BotWatcherControl => ({ enabled: fals
 
 export interface BotWatcherControls {
   readonly runOnce: BotWatcherControl;
-  readonly approve: BotWatcherControl;
-  readonly reject: BotWatcherControl;
   readonly pause: BotWatcherControl;
   readonly resume: BotWatcherControl;
   readonly remove: BotWatcherControl;
   /** Moving an approved watcher, which runs nothing until the move is made. */
   readonly move: BotWatcherControl;
-  /** Whether the watcher is waiting for a decision on a new version. */
+  /** Whether a version waits on the reviewer. */
   readonly pending: boolean;
 }
 
@@ -115,7 +137,7 @@ export function botWatcherControls(
   grants: BotWatcherGrants,
 ): BotWatcherControls {
   const pending = watcher.pendingHash !== undefined;
-  // A new watcher has no approved version, so its pending one is the version on show.
+  // A new watcher has no approved version yet, so its pending one is the version on show.
   const runnableHash = watcher.pendingHash ?? watcher.approvedHash;
   const needsCode = grants.runCode ? allowed : blocked("needs_terminal_access");
   const needsOperate = grants.operate ? allowed : blocked("needs_operate_access");
@@ -125,20 +147,6 @@ export function botWatcherControls(
     : watcher.source === undefined || runnableHash === undefined
       ? blocked("no_source")
       : allowed;
-
-  const approve = !grants.runCode
-    ? blocked("needs_terminal_access")
-    : watcher.pendingHash === undefined
-      ? blocked("nothing_to_approve")
-      : watcher.source === undefined
-        ? blocked("no_source")
-        : !botWatcherDryRunHolds(watcher, watcher.pendingHash, target)
-          ? blocked(
-              watcher.lastDryRun?.hash === watcher.pendingHash
-                ? "run_once_there_first"
-                : "run_once_first",
-            )
-          : allowed;
 
   const move = !grants.runCode
     ? blocked("needs_terminal_access")
@@ -152,8 +160,6 @@ export function botWatcherControls(
 
   return {
     runOnce,
-    approve,
-    reject: pending ? needsOperate : blocked("nothing_to_approve"),
     pause: needsOperate,
     resume: needsCode,
     remove: needsOperate,
