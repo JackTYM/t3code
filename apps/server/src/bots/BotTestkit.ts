@@ -210,11 +210,13 @@ export const makeOrchestration = () => {
           .pipe(Effect.andThen(Effect.succeed((threads.get(threadId) ?? null) as never))),
       getThreadRecords: (threadId, _fields, filter) =>
         Effect.succeed({
-          runs: [...runs.values()].filter((run) =>
-            filter?.runIds === undefined
-              ? run.threadId === threadId
-              : filter.runIds.includes(run.id),
-          ),
+          runs: [...runs.values()]
+            .filter((run) =>
+              filter?.runIds === undefined
+                ? run.threadId === threadId
+                : filter.runIds.includes(run.id),
+            )
+            .slice(0, filter?.earliestRunOnly === true ? 1 : undefined),
           subagents: [],
         } as never),
       getMessagesById: (_threadId, ids) =>

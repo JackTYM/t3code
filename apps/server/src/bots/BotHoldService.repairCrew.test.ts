@@ -194,3 +194,45 @@ it.effect(
     }).pipe(provide(orchestration));
   },
 );
+
+it.effect("reads each thread of a launch chain once", () => {
+  const { orchestration, bot } = fixture();
+  return Effect.gen(function* () {
+    const holds = yield* BotHoldService.BotHoldService;
+    const launchedBy = (id: string, sender: ThreadId) => {
+      const thread = orchestration.addThread(id, {
+        groupedUnderThreadId: bot.id,
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+      orchestration.startRun(thread, {
+        id: `message:${id}`,
+        createdBy: "agent",
+        senderThreadId: sender,
+      });
+      // The thread has said more since; who began it is still its first message's.
+      orchestration.startRun(thread, { id: `message:${id}:later`, createdBy: "user" });
+      return thread;
+    };
+    const first = launchedBy("thread:first", bot.id);
+    const second = launchedBy("thread:second", first.id);
+    const third = launchedBy("thread:third", second.id);
+    orchestration.startRun(bot, { id: "bot-wake:mail:home:1:1", createdBy: "system" });
+
+    const looked: Array<ThreadId> = [];
+    orchestration.hooks.beforeLookup = (threadId) => Effect.sync(() => void looked.push(threadId));
+    const verdict = yield* holds.check({
+      botThreadId: bot.id,
+      tool: "t3_thread_send",
+      readonly: false,
+      params: { threadId: third.id, message: "go" },
+      environmentId: HERE,
+    });
+    assert.isFalse(verdict.held);
+    // The Bot's own shell is read to find its active run; the chain's threads once each.
+    assert.deepStrictEqual(
+      looked.filter((id) => id !== bot.id),
+      [third.id, second.id, first.id],
+    );
+  }).pipe(provide(orchestration));
+});

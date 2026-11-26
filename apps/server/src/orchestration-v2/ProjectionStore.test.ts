@@ -761,6 +761,25 @@ it.effect("idle compaction filters keep the latest run, live work and the newest
         /^SEARCH orchestration_v2_projection_runs USING INDEX \w+ \(run_id=\?\)/,
       );
     }
+    // The first run alone, read from the head of the thread's ordinal index.
+    const firstOnly = traceSqlStatements();
+    const first = yield* store
+      .getThreadRecords(threadId, ["runs"], { earliestRunOnly: true })
+      .pipe(Effect.withTracer(firstOnly.tracer));
+    assert.deepEqual(
+      first.runs.map((run) => run.ordinal),
+      [1],
+    );
+    const firstQuery = firstOnly.statements.find((statement) =>
+      statement.includes("FROM orchestration_v2_projection_runs"),
+    );
+    assert.isDefined(firstQuery);
+    assert.match(
+      (yield* sql.unsafe<{ readonly detail: string }>(`EXPLAIN QUERY PLAN ${firstQuery}`))
+        .map((row) => row.detail)
+        .join("\n"),
+      /^SEARCH orchestration_v2_projection_runs USING INDEX \w*ordinal\w* \(thread_id=\?\)$/,
+    );
     // An id filter reads by primary key, not every row of the thread.
     const byId = traceSqlStatements();
     const found = yield* store

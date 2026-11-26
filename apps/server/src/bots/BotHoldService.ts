@@ -32,7 +32,7 @@ const REPAIR_REFUSED_MESSAGE = `${REPAIR_START_TOOL} works only in a turn that b
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const MAIL_READER_ROLE = "mail-reader";
 const MAX_HELD_PER_BOT = 20;
-/** How many launches deep a thread may be and still be traced back to the Bot that began them. */
+/** A launch chain is followed eight hops, from the thread asked about back to the Bot that began it. */
 const MAX_LAUNCH_HOPS = 8;
 const INPUT_MAX_CHARS = 8_000;
 const SUMMARY_TITLE_MAX_CHARS = 80;
@@ -246,12 +246,8 @@ const make = Effect.gen(function* () {
   const launcherOf = Effect.fn("BotHoldService.launcherOf")(function* (threadId: ThreadId) {
     const known = launchers.get(threadId);
     if (known !== undefined) return known;
-    const { runs } = yield* threads.getThreadRecords(threadId, ["runs"]);
-    const first = runs.reduce<(typeof runs)[number] | undefined>(
-      (earliest, run) =>
-        earliest === undefined || run.ordinal < earliest.ordinal ? run : earliest,
-      undefined,
-    );
+    const { runs } = yield* threads.getThreadRecords(threadId, ["runs"], { earliestRunOnly: true });
+    const first = runs[0];
     if (first === undefined) return undefined;
     const message = (yield* threads.getMessagesById(threadId, [first.userMessageId])).get(
       first.userMessageId,
@@ -275,8 +271,8 @@ const make = Effect.gen(function* () {
   )(function* (botThreadId, shell, hops) {
     if (shell.id === botThreadId) return true;
     // The id is a second recogniser, for when the registry has lost the crew.
-    if (hops > MAX_LAUNCH_HOPS || REPAIR_CREW_THREAD_ID.test(shell.id)) return false;
-    if ((yield* repair.crewOf(shell.id)) !== undefined) return false;
+    if (hops >= MAX_LAUNCH_HOPS || REPAIR_CREW_THREAD_ID.test(shell.id)) return false;
+    if ((yield* repair.crewOf(shell.id, shell)) !== undefined) return false;
     const { relationshipToParent, parentThreadId } = shell.lineage;
     if (relationshipToParent === "subagent" && parentThreadId !== null) {
       const parent = yield* threads.getThreadShell(parentThreadId);

@@ -377,6 +377,7 @@ it.effect.each(CREW_TOOL_CASES)(
           FROM_STRANGER, // started by a thread that is not in the Bot's group
           FROM_MISSING, // started by a thread that cannot be read
           LOOP_A, // started by itself, through a loop
+          CHAIN[7]!, // nine launches from the Bot, one past the eight that are followed
           CHAIN[11]!, // a chain of launches longer than anyone follows
         ];
         for (const threadId of unknown) {
@@ -417,6 +418,7 @@ it.effect.each(CREW_TOOL_CASES)(
           CREW_OF_HELPER, // a helper of the Bot's crew launched it
           USER_CREW,
           CHAIN[3]!,
+          CHAIN[6]!, // eight launches from the Bot, the most that are followed
         ];
         for (const threadId of own) {
           const verdict = yield* holds.check(call(tool, { ...params, threadId }));

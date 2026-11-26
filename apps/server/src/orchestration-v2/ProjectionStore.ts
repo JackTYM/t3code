@@ -374,6 +374,7 @@ export interface ProjectionRuntimeResponseContext {
 const PROMPT_NARROWING_BLOCKING_FILTERS = [
   "runIds",
   "runStatuses",
+  "earliestRunOnly",
   "latestRunLimit",
   "turnItemRunId",
   "turnItemRunIds",
@@ -401,6 +402,8 @@ export interface ProjectionRecordFilter {
   readonly runStatuses?: ReadonlyArray<OrchestrationV2Run["status"]>;
   /** Keeps the thread's highest-ordinal run even when `runStatuses` excludes it. */
   readonly includeLatestRun?: true;
+  /** Only the thread's lowest-ordinal run: its first message names who began the thread. */
+  readonly earliestRunOnly?: true;
   /** The thread's N highest-ordinal runs, plus any run `runStatuses` matches. Ignores `includeLatestRun`. */
   readonly latestRunLimit?: number;
   /** Keeps the run `latestExecutedRun` picks even when `runStatuses` excludes it. Ignores `includeLatestRun`. */
@@ -4208,8 +4211,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 filter?.includeLatestExecutedRun !== true &&
                 filter?.latestRunLimit === undefined)))
             ? Effect.succeed([])
-            : window === undefined
+            : window === undefined && filter?.earliestRunOnly === true
               ? sql<PayloadRow>`
+            SELECT payload_json
+            FROM orchestration_v2_projection_runs
+            WHERE thread_id = ${threadId}
+            ORDER BY ordinal ASC
+            LIMIT 1
+          `
+              : window === undefined
+                ? sql<PayloadRow>`
             SELECT payload_json
             FROM orchestration_v2_projection_runs
             WHERE ${threadColumn(
@@ -4276,7 +4287,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     ORDER BY ordinal ASC`
               }
           `
-              : sql<PayloadRow>`
+                : sql<PayloadRow>`
             SELECT payload_json FROM orchestration_v2_projection_runs
             WHERE thread_id = ${threadId}
               AND (status IN ('queued','preparing','starting','running','waiting')
