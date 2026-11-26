@@ -120,6 +120,16 @@ jobs:
       - name: Build JS bundle
         run: vp run build:desktop
 
+      # Upload only the expected hidden file, as release.yml does;
+      # release-desktop.yml restores it.
+      - name: Stage web asset manifest
+        shell: bash
+        run: |
+          manifest=apps/server/dist/client/.vite/manifest.json
+          if [[ -f "$manifest" ]]; then
+            cp "$manifest" apps/server/dist/client/vite-manifest.release.json
+          fi
+
       # Same layout as the release workflow's js-bundle, so release-desktop.yml
       # packages it unchanged.
       - name: Upload JS bundle

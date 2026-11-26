@@ -73,6 +73,18 @@ describe("appendTerminalOutput", () => {
     ).toEqual([{ text: "R", style: { color: "rgb(12,34,56)" } }]);
   });
 
+  it.each(["\u001b[3", "\u001b]0;title"])(
+    "keeps output after CAN or SUB cancels %j, wherever the chunk splits",
+    (sequence) => {
+      for (const cancel of ["\u0018", "\u001a"]) {
+        const input = `before${sequence}${cancel}Ready`;
+        for (let cut = 0; cut <= input.length; cut += 1) {
+          expect(feed([input.slice(0, cut), input.slice(cut)]).text).toBe("beforeReady");
+        }
+      }
+    },
+  );
+
   it("keeps a bounded tail that starts on a fresh line", () => {
     const lines = Array.from({ length: 2_000 }, (_, index) => `line ${index}`).join("\n");
     const state = feed([lines], 1_000);
@@ -129,6 +141,12 @@ describe("appendTerminalOutput", () => {
     expect(feed(["ok\u001b]0;title\u001b", "\u001b[31mred"]).text).toBe(
       "ok\u001b[0;31mred\u001b[0m",
     );
+    for (const input of ["a\u001b[1;\u001b[32mb\u001b[0m", "a\u001b[\u001b[32mb"]) {
+      expect(normalizeTerminalOutput(input).text).toBe("a\u001b[0;32mb\u001b[0m");
+      for (let cut = 1; cut < input.length; cut += 1) {
+        expect(feed([input.slice(0, cut), input.slice(cut)]).text).toBe("a\u001b[0;32mb\u001b[0m");
+      }
+    }
   });
 });
 
@@ -235,6 +253,18 @@ describe("appendTerminalOutput under adversarial output", () => {
     ] as const) {
       for (let cut = 0; cut < interrupted.length; cut += 1) {
         expect(feed([interrupted.slice(0, cut), interrupted.slice(cut)]).text).toBe(expected);
+      }
+    }
+  });
+
+  it("consumes an escape followed by an emoji whole, however it is split", () => {
+    for (const [input, expected] of [
+      ["a\u001b😀b", "ab"],
+      ["a\u001b\ud83dX", "aX"],
+    ] as const) {
+      expect(normalizeTerminalOutput(input).text).toBe(expected);
+      for (let cut = 1; cut < input.length; cut += 1) {
+        expect(feed([input.slice(0, cut), input.slice(cut)]).text).toBe(expected);
       }
     }
   });

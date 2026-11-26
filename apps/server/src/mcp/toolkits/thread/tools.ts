@@ -29,6 +29,7 @@ import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as BotService from "../../../bots/BotService.ts";
 import * as SessionMcpServers from "../../../mcpServers/SessionMcpServers.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -157,8 +158,6 @@ const threadConfiguration = Schema.Struct({
 });
 const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,
-  // A Bot's change to its own model is remembered, so the server can give it back.
-  dependencies: [...commandTool.dependencies, BotService.BotService],
   description:
     "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`.",
   parameters: Schema.Struct({
@@ -167,6 +166,12 @@ const ThreadConfigureTool = Tool.make("t3_thread_configure", {
     modelSelection: Schema.optional(ModelSelection),
   }),
   success: Schema.Union([threadConfiguration, OrchestrationV2DispatchCommandResult]),
+  // A Bot's change to its own model is remembered, so the server can give it back.
+  dependencies: [
+    ...commandTool.dependencies,
+    BotService.BotService,
+    ProviderRegistry.ProviderRegistry,
+  ],
 }).annotate(Tool.Destructive, true);
 
 const ThreadTransferTool = Tool.make("t3_thread_transfer", {
