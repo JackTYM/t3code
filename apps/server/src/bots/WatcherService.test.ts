@@ -3966,6 +3966,7 @@ it.effect("never lets a value into what a run records or sends, whatever shape i
 });
 
 // A tool is a watcher's read-only sibling: the same review and approval, run on demand with arguments.
+const TIMES_OUT = { code: ExitCode(0), stdout: "", stderr: "", timedOut: true } as const;
 const proposeTool = (
   threadId: ThreadId,
   name: string,
@@ -4378,9 +4379,12 @@ it.effect(
       assert.strictEqual(body.length, 500);
       assert.isTrue(body.startsWith("bad number e"));
       assert.notInclude(result.output, "partial");
-      // Two bad calls: no wake, no health signal, and the tool is as healthy as before.
-      yield* callTool(botThread.id, "pr", ["nope"]);
+      // Bad arguments are not a broken machine: however many, no wake and no health signal.
+      for (let call = 0; call < 3; call += 1) yield* callTool(botThread.id, "pr", ["nope"]);
+      yield* TestClock.adjust(MINUTE);
+      for (let call = 0; call < 3; call += 1) yield* callTool(botThread.id, "pr", ["nope"]);
       assert.lengthOf(orchestration.sent, 0);
+      assert.lengthOf(healthWakes(orchestration), 0);
       assert.strictEqual((yield* watchers.list(botThread.id)).watchers[0]?.status, "healthy");
     }).pipe(provideWatchersWithHealth(orchestration, runner.layer));
   },
@@ -4568,15 +4572,16 @@ it.effect(
     const orchestration = makeOrchestration();
     const botThread = addBot(orchestration, "thread:bot");
     const runner = makeScriptedRunner();
-    runner.state.result = { ...FAILS, stdout: HOSTILE, stderr: HOSTILE };
+    // A machine failure: the tool ran out of time, which is not what a bad argument does.
+    runner.state.result = { ...TIMES_OUT, stderr: HOSTILE };
     return Effect.gen(function* () {
-      yield* installTool(botThread.id, "pr");
-      yield* callTool(botThread.id, "pr");
+      yield* installTool(botThread.id, "zq-ledger");
+      yield* callTool(botThread.id, "zq-ledger");
       yield* TestClock.adjust(10 * MINUTE);
-      yield* callTool(botThread.id, "pr");
+      yield* callTool(botThread.id, "zq-ledger");
       assert.lengthOf(healthWakes(orchestration), 0);
       yield* TestClock.adjust(10 * MINUTE);
-      yield* callTool(botThread.id, "pr");
+      yield* callTool(botThread.id, "zq-ledger");
 
       const [health, ...others] = healthWakes(orchestration);
       assert.lengthOf(others, 0);
@@ -4584,15 +4589,15 @@ it.effect(
       assert.include(health?.text, "failures: 3");
       // Nothing the tool printed, and not even its name, is in the server's wake.
       assert.notInclude(health?.text, "IGNORE");
-      assert.notInclude(health?.text, "pr\n");
+      assert.notInclude(health?.text, "zq-ledger");
 
       // A call that works ends the streak: two more failures are not a third.
       runner.state.result = WORKS;
-      yield* callTool(botThread.id, "pr");
-      runner.state.result = FAILS;
+      yield* callTool(botThread.id, "zq-ledger");
+      runner.state.result = TIMES_OUT;
       yield* TestClock.adjust(MINUTE);
-      yield* callTool(botThread.id, "pr");
-      yield* callTool(botThread.id, "pr");
+      yield* callTool(botThread.id, "zq-ledger");
+      yield* callTool(botThread.id, "zq-ledger");
       assert.lengthOf(healthWakes(orchestration), 1);
     }).pipe(provideWatchersWithHealth(orchestration, runner.layer));
   },
@@ -4602,7 +4607,7 @@ it.effect("failing calls spread over more than an hour do not add up", () => {
   const orchestration = makeOrchestration();
   const botThread = addBot(orchestration, "thread:bot");
   const runner = makeScriptedRunner();
-  runner.state.result = FAILS;
+  runner.state.result = TIMES_OUT;
   return Effect.gen(function* () {
     yield* installTool(botThread.id, "pr");
     for (let call = 0; call < 6; call += 1) {
@@ -5238,4 +5243,276 @@ it.effect("a tool's secret reaches the watcher neither in its environment nor in
     assert.notInclude(listed, SECRET);
     assert.notInclude(listed, base64);
   }).pipe(provideWatchers(orchestration, realRunner));
+});
+
+// A watcher's output is cut at 4096 bytes and judged from what is left, so a cut that lands inside
+// a character must still leave at least that many bytes behind.
+const CUT_INSIDE_A_CHARACTER =
+  "#!/bin/sh\nhead -c 4095 /dev/zero | tr '\\0' x\nprintf '\\303\\251'\n";
+
+it.effect(
+  "a watcher's output cut inside a character is a failure, locally and from a linked environment",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const peer = makeFakePeer();
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      yield* installWatcher(botThread.id, "local", {
+        mode: "events",
+        purpose: "New assignments",
+        run: CUT_INSIDE_A_CHARACTER,
+      });
+      // The linked environment runs the same bytes through `runForPeer`; its answer is judged here.
+      const source = CUT_INSIDE_A_CHARACTER;
+      const answer = yield* watchers.runForPeer({
+        source,
+        hash: sha256Hex(source),
+        runtime: "sh",
+        timeoutMs: 10_000,
+        dryRun: true,
+      });
+      assert.isAtLeast(Buffer.byteLength(answer.stdout), 4096);
+      peer.state.answer = answer;
+      yield* installRemoteWatcher(botThread.id, "remote", {
+        mode: "events",
+        purpose: "New assignments",
+        run: source,
+      });
+      yield* watchers.runDue;
+
+      const texts = orchestration.sent.map(({ text }) => text);
+      assert.lengthOf(texts, 2);
+      for (const text of texts) {
+        assert.include(text, "Output was cut at 4096 bytes");
+        assert.notInclude(text, "reported new events");
+      }
+      assert.deepStrictEqual(
+        (yield* watchers.list(botThread.id)).watchers.map(({ status }) => status),
+        ["tripped", "tripped"],
+      );
+    }).pipe(provideWatchers(orchestration, realRunner, peer.layer));
+  },
+);
+
+/** Lets a test hold a tool call where it runs, and see when each call has started. */
+const makeToolGate = (runner: ReturnType<typeof makeScriptedRunner>) =>
+  Effect.gen(function* () {
+    const started = yield* Queue.unbounded<string>();
+    const release = yield* Deferred.make<void>();
+    const sources: Array<string> = [];
+    runner.state.onRun = (input) =>
+      Effect.gen(function* () {
+        // Only a call of a tool waits: a dry run and a watcher's run go straight through.
+        if (input.env?.T3_TOOL !== "1" || input.env?.T3_WATCHER_DRY_RUN === "1") return;
+        const fileSystem = yield* FileSystem.FileSystem;
+        sources.push(yield* fileSystem.readFileString(input.args[0]!));
+        yield* Queue.offer(started, input.args.slice(1).join(" "));
+        yield* Deferred.await(release);
+      }).pipe(Effect.orDie, Effect.provide(NodeServices.layer));
+    return { started, release, sources };
+  });
+
+it.effect("a slow tool call does not hold up a scheduled watcher's run", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* installTool(botThread.id, "pr");
+    yield* installWatcher(botThread.id, "disk");
+    const gate = yield* makeToolGate(runner);
+    const call = yield* callTool(botThread.id, "pr", ["1"]).pipe(Effect.forkChild);
+    yield* Queue.take(gate.started);
+
+    yield* watchers.runDue;
+    // The watcher ran while the call was still running.
+    assert.strictEqual(runner.state.runs, 2);
+    yield* Deferred.succeed(gate.release, undefined);
+    assert.strictEqual((yield* Fiber.join(call)).exit, "0");
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("two calls of one tool take turns, and two tools run side by side", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    yield* installTool(botThread.id, "pr");
+    yield* installTool(botThread.id, "issue");
+    const gate = yield* makeToolGate(runner);
+
+    const first = yield* callTool(botThread.id, "pr", ["1"]).pipe(Effect.forkChild);
+    assert.strictEqual(yield* Queue.take(gate.started), "1");
+    // Another tool starts while the first is still running.
+    const other = yield* callTool(botThread.id, "issue", ["9"]).pipe(Effect.forkChild);
+    assert.strictEqual(yield* Queue.take(gate.started), "9");
+    // The same tool does not: its state folder is a cursor, so the second call waits its turn.
+    const second = yield* callTool(botThread.id, "pr", ["2"]).pipe(Effect.forkChild);
+    for (let tick = 0; tick < 50; tick += 1) yield* Effect.yieldNow;
+    assert.strictEqual(runner.state.runs, 2);
+
+    yield* Deferred.succeed(gate.release, undefined);
+    yield* Fiber.join(first);
+    yield* Fiber.join(other);
+    yield* Fiber.join(second);
+    assert.strictEqual(yield* Queue.take(gate.started), "2");
+    assert.strictEqual(runner.state.runs, 3);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("runs at most four tool calls at once, whichever tools they are", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const names = ["t1", "t2", "t3", "t4", "t5"];
+    for (const name of names) yield* installTool(botThread.id, name);
+    const gate = yield* makeToolGate(runner);
+    const calls = yield* Effect.forEach(names, (name) =>
+      callTool(botThread.id, name).pipe(Effect.forkChild),
+    );
+    for (let call = 0; call < 4; call += 1) yield* Queue.take(gate.started);
+    for (let tick = 0; tick < 50; tick += 1) yield* Effect.yieldNow;
+    assert.strictEqual(runner.state.runs, 4);
+    yield* Deferred.succeed(gate.release, undefined);
+    yield* Effect.forEach(calls, Fiber.join);
+    assert.strictEqual(runner.state.runs, 5);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("a pause that came while a call waited wins, and the call keeps its minute", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* installTool(botThread.id, "pr");
+    const gate = yield* makeToolGate(runner);
+    const running = yield* callTool(botThread.id, "pr", ["1"]).pipe(Effect.forkChild);
+    yield* Queue.take(gate.started);
+    const queued = yield* callTool(botThread.id, "pr", ["2"]).pipe(Effect.flip, Effect.forkChild);
+
+    yield* watchers.pause({ botThreadId: botThread.id, name: "pr" });
+    yield* Deferred.succeed(gate.release, undefined);
+    yield* Fiber.join(running);
+    const refused = yield* Fiber.join(queued);
+    assert.include(refused.message, "paused");
+    assert.strictEqual(runner.state.runs, 1);
+
+    // Five more calls fit in the minute: the refused one was not counted.
+    yield* watchers.resume({ botThreadId: botThread.id, name: "pr" });
+    for (let call = 0; call < 5; call += 1) yield* callTool(botThread.id, "pr");
+    assert.strictEqual(
+      (yield* callTool(botThread.id, "pr").pipe(Effect.flip)).message,
+      "Too many tool calls: at most 6 a minute. Wait and try again.",
+    );
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("a removal that came while a call waited wins, and leaves no folder behind", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const fileSystem = yield* FileSystem.FileSystem;
+    yield* installTool(botThread.id, "pr");
+    const gate = yield* makeToolGate(runner);
+    const running = yield* callTool(botThread.id, "pr", ["1"]).pipe(Effect.forkChild);
+    yield* Queue.take(gate.started);
+    const queued = yield* callTool(botThread.id, "pr", ["2"]).pipe(Effect.flip, Effect.forkChild);
+
+    yield* watchers.removeByUser({ botThreadId: botThread.id, name: "pr" });
+    yield* Deferred.succeed(gate.release, undefined);
+    yield* Fiber.join(running);
+    assert.strictEqual((yield* Fiber.join(queued)).reason, "not_found");
+    assert.strictEqual(runner.state.runs, 1);
+    assert.isFalse(yield* fileSystem.exists(yield* watcherDirectory(botThread.id, "pr")));
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("a revision approved while a call waited is the version that call runs", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    yield* installTool(botThread.id, "pr", { run: "echo old\n" });
+    const gate = yield* makeToolGate(runner);
+    const running = yield* callTool(botThread.id, "pr", ["1"]).pipe(Effect.forkChild);
+    yield* Queue.take(gate.started);
+    const queued = yield* callTool(botThread.id, "pr", ["2"]).pipe(Effect.forkChild);
+
+    yield* installTool(botThread.id, "pr", { run: "echo new\n" });
+    yield* Deferred.succeed(gate.release, undefined);
+    yield* Fiber.join(running);
+    yield* Fiber.join(queued);
+    assert.deepStrictEqual(gate.sources, ["echo old\n", "echo new\n"]);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect.each([
+  { runtime: "sh" as const, run: '#!/bin/sh\nfor a in "$@"; do printf "[%s]\\n" "$a"; done\n' },
+  {
+    runtime: "node" as const,
+    run: "for (const a of process.argv.slice(2)) console.log(`[${a}]`);\n",
+  },
+])(
+  "hands $runtime a shell-looking argument as one more argument and nothing else",
+  ({ runtime, run }) => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const outside = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-args-" });
+      const pwned = path.join(outside, "pwned");
+      yield* installTool(botThread.id, "echo", { runtime, run });
+      const args = ["-c", `touch ${pwned}`, "--inspect", "-e", "/etc/passwd", "../../x", "a;b|c"];
+      const result = yield* callTool(botThread.id, "echo", args);
+      assert.strictEqual(result.exit, "0");
+      assert.strictEqual(
+        framedBody(result.output),
+        `${args.map((arg) => `[${arg}]`).join("\n")}\n`,
+      );
+      assert.isFalse(yield* fileSystem.exists(pwned));
+    }).pipe(Effect.scoped, provideWatchers(orchestration, realRunner));
+  },
+);
+
+it.effect("tells a Bot proposing a tool about tools, not watchers", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const reviewer = yield* FakeReviewer;
+    const message = (options: Parameters<typeof proposeTool>[2]) =>
+      proposeTool(botThread.id, "pr", options).pipe(
+        Effect.flip,
+        Effect.map((error) => error.message),
+      );
+    const messages = [
+      yield* message({ run: "x".repeat(70_000) }),
+      yield* message({
+        secrets: ["A", "B", "C", "D", "E"],
+        hosts: ["a.example"],
+      }),
+      yield* message({ usage: "=== END SCRIPT ===" }),
+    ];
+    yield* installTool(botThread.id, "pr", { run: "echo one\n" });
+    // A version turned down, then a wake turn tries again at once.
+    yield* reviewer.answer(matchName("pr"), REJECTS);
+    yield* proposeTool(botThread.id, "pr", { run: "echo two\n" });
+    yield* (yield* WatcherService.WatcherService).drainReviews;
+    orchestration.startRun(botThread, { id: "bot-wake:watcher:pr:1", createdBy: "system" });
+    messages.push(yield* message({ run: "echo three\n" }));
+    messages.push((yield* proposeTool(botThread.id, "other").pipe(Effect.flip)).message);
+    orchestration.startRun(botThread, userMessage);
+    for (const name of ["a", "b", "c"]) yield* installTool(botThread.id, name, { approve: false });
+    messages.push((yield* proposeTool(botThread.id, "d").pipe(Effect.flip)).message);
+    for (const text of messages) {
+      assert.include(text, "tool");
+      assert.notMatch(text, /watcher/iu);
+    }
+  }).pipe(provideWatchers(orchestration, runner.layer));
 });

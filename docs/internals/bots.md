@@ -591,10 +591,15 @@ redaction, and shares the watchers' namespace, so a name cannot be both. What di
 the scheduler skips tools by the record's kind and again by the version's, a tool runs only on
 this machine, and `t3_bot_tool_run` runs the approved hash only, with arguments as argv. A call is
 free in any turn but taints it, and returns its output framed as untrusted data, never as a wake.
-Failing calls are not a watcher failure; three in a row within an hour signal under the tool's own
-name with kind `watcher`, since the validated name has no room for a prefix and the repair crew
-looks for the folder by it. The call limits (six a minute per Bot, twelve tools) and the failure
-streaks are in memory.
+A call a Bot got wrong (any non-zero exit) is not a watcher failure and is never counted: bad
+arguments must not reach the repair path. Only the exits that say the machine failed (`timeout`,
+`spawn-error`, `secret-written`) count, and three in a row within an hour signal under the tool's
+own name with kind `watcher`, since the validated name has no room for a prefix and the repair
+crew looks for the folder by it. Calls do not take the global one-script-at-a-time gate, which a
+30 second tool would hold against every watcher: each tool has its own lock (its state folder is a
+cursor), four calls run at once overall, and the lock is held across re-reading the record, so a
+pause, removal or approved revision that came while a call waited decides what it does. The call
+limits (six a minute per Bot, twelve tools) and the failure streaks are in memory.
 
 A health wake is deduplicated per failure: a trip, or new output, wakes at once, and the same
 output wakes again after a delay that doubles up to a ceiling. Recovery clears the state silently.

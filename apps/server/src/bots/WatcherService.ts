@@ -70,8 +70,10 @@ import { redactionSlack, redactSecrets } from "./redactSecrets.ts";
 import * as RepairService from "./RepairService.ts";
 import {
   framedToolOutput,
+  isMachineFailure,
   makeToolCallLimiter,
   makeToolFailureStreaks,
+  MAX_CONCURRENT_TOOL_CALLS,
   MAX_TOOLS_PER_BOT,
   normaliseToolRefs,
   refuseToolArgs,
@@ -150,6 +152,8 @@ const RESERVED_ENV = new Set([
 ]);
 const SECRETS_STAY_HERE = "A watcher that uses secrets runs only on this machine.";
 const TOOLS_STAY_HERE = "A tool runs only on this machine.";
+const STARTED_BY_WAKE_TOOL =
+  "This turn was started by an incoming message or event, not by the user typing, so it cannot create or remove tools. Tell the user what you would build and let them ask you in a turn they start. A wake turn may still propose a revision of a tool the user has already approved.";
 const WATCHER_TOOLS_STAY_HERE = "A watcher that uses tools runs only on this machine.";
 // What each runtime executes, and what the copy of the source is called so the interpreter
 // treats it right (a `.js` file may use either module syntax on current Node).
@@ -353,7 +357,13 @@ const hideThenCut = (
   readWasCut: boolean,
   secrets: ReadonlyArray<InjectedSecret>,
   slack: number,
-  max: { readonly bytes: number } | { readonly chars: number },
+  max:
+    | {
+        readonly bytes: number;
+        /** A tool's, which is shown to the Bot: a cut inside a character drops the character. */
+        readonly wholeCharacters?: boolean;
+      }
+    | { readonly chars: number },
 ) => {
   const hidden = redactSecrets(text, secrets);
   const kept =
@@ -364,8 +374,10 @@ const hideThenCut = (
       : hidden;
   if (!("bytes" in max)) return kept.slice(0, max.chars);
   const bytes = Buffer.from(kept);
+  // A watcher's stays as it was: `judge` takes a cut from its being at least the cap, which half a
+  // character decoded as U+FFFD keeps true and a trimmed one would not.
+  if (max.wholeCharacters !== true) return bytes.subarray(0, max.bytes).toString();
   if (bytes.length <= max.bytes) return kept;
-  // A cut that lands inside a character drops the whole character, not half of it.
   let end = max.bytes;
   while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
   return bytes.subarray(0, end).toString();
@@ -682,6 +694,20 @@ const make = Effect.gen(function* () {
   const lock = (yield* Semaphore.make(1)).withPermits(1);
   // One script at a time: watchers are polls, and a runaway one must not run beside others.
   const oneRunAtATime = (yield* Semaphore.make(1)).withPermits(1);
+  // Calls of tools do not queue behind that: a tool may take 30 seconds, and a Bot may call six a
+  // minute. Only one call of a tool at a time, since its state folder is a cursor, and a few at
+  // once overall so a flood of calls cannot start processes without bound.
+  const toolLocks = new Map<string, Semaphore.Semaphore>();
+  const toolCallsAtOnce = (yield* Semaphore.make(MAX_CONCURRENT_TOOL_CALLS)).withPermits(1);
+  const withToolLock =
+    (folder: string, name: string) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+      const key = watcherKey(folder, name);
+      const lock = toolLocks.get(key) ?? Semaphore.makeUnsafe(1);
+      toolLocks.set(key, lock);
+      // The tool's own turn first, so a call waiting for it holds none of the few places.
+      return lock.withPermits(1)(toolCallsAtOnce(effect));
+    };
   // The reviews in flight, one per watcher: a newer version takes its older one's place, so what
   // the caps count is watchers waiting on the reviewer. `reviewingHash` says which version each
   // is about, and a Bot that proposes the same bytes again does not start a second.
@@ -911,6 +937,8 @@ const make = Effect.gen(function* () {
     readonly secrets?: ReadonlyArray<InjectedSecret> | undefined;
     /** A tool's run: its arguments follow the script's path as argv, and its output has a larger cap. */
     readonly tool?: { readonly args: ReadonlyArray<string> } | undefined;
+    /** The caller holds the tool's own lock (`withToolLock`), so the run does not wait for `oneRunAtATime`. */
+    readonly ownLock?: boolean | undefined;
     /** A watcher's declared tools' output, already hidden of their secrets, written as files for the script. */
     readonly toolOutputs?: ReadonlyArray<ToolOutput> | undefined;
   }) {
@@ -986,6 +1014,7 @@ const make = Effect.gen(function* () {
             exit: String(output.code),
             stdout: hideThenCut(output.stdout, output.stdoutTruncated, secrets, slack, {
               bytes: stdoutMax,
+              wholeCharacters: input.tool !== undefined,
             }),
             stderr,
           },
@@ -1007,7 +1036,7 @@ const make = Effect.gen(function* () {
           cut: false,
         }),
       ),
-      oneRunAtATime,
+      (run) => (input.ownLock === true ? run : oneRunAtATime(run)),
     );
   });
 
@@ -1138,30 +1167,46 @@ const make = Effect.gen(function* () {
     const folder = BotService.memoryFolderName(botThreadId);
     const outputs: Array<ToolOutput> = [];
     for (const { name, args } of declared) {
-      const record = yield* recordOf(folder, name);
-      const version =
-        record?.kind === "tool" && record.paused !== true && record.approvedHash !== undefined
-          ? yield* readVersion(folder, name, record.approvedHash)
-          : undefined;
-      if (version === undefined || version.config.kind !== "tool") {
-        return { _tag: "Failed", name } as const;
-      }
-      const secrets = yield* injectSecrets(botThreadId, version);
-      if (secrets._tag === "Waiting") return { _tag: "Waiting", reason: secrets.reason } as const;
-      const { raw, cut } = yield* runScript({
-        source: version.source,
-        runtime: version.config.runtime,
-        timeoutMs: BOT_TOOL_TIMEOUT_MS,
-        dryRun: false,
-        dataDir: dataDir(folder, name),
-        secrets: secrets.injected,
-        tool: { args },
-      });
-      if (raw.exit !== "0") return { _tag: "Failed", name } as const;
+      // Under the tool's own lock, and read again once it is held: a call that waited for it may
+      // find the tool paused, removed or revised.
+      const called = yield* withToolLock(
+        folder,
+        name,
+      )(
+        Effect.gen(function* () {
+          const record = yield* recordOf(folder, name);
+          const version =
+            record?.kind === "tool" && record.paused !== true && record.approvedHash !== undefined
+              ? yield* readVersion(folder, name, record.approvedHash)
+              : undefined;
+          if (version === undefined || version.config.kind !== "tool") {
+            return { _tag: "Failed" } as const;
+          }
+          const secrets = yield* injectSecrets(botThreadId, version);
+          if (secrets._tag === "Waiting") {
+            return { _tag: "Waiting", reason: secrets.reason } as const;
+          }
+          const { raw, cut } = yield* runScript({
+            source: version.source,
+            runtime: version.config.runtime,
+            timeoutMs: BOT_TOOL_TIMEOUT_MS,
+            dryRun: false,
+            dataDir: dataDir(folder, name),
+            secrets: secrets.injected,
+            tool: { args },
+            ownLock: true,
+          });
+          return raw.exit === "0"
+            ? ({ _tag: "Ran", raw, cut } as const)
+            : ({ _tag: "Failed" } as const);
+        }),
+      );
+      if (called._tag === "Waiting") return called;
+      if (called._tag === "Failed") return { _tag: "Failed", name } as const;
       outputs.push({
         name,
-        exit: raw.exit,
-        output: cut ? `${raw.stdout}\n${TOOL_CUT_LINE}` : raw.stdout,
+        exit: called.raw.exit,
+        output: called.cut ? `${called.raw.stdout}\n${TOOL_CUT_LINE}` : called.raw.stdout,
       });
     }
     return { _tag: "Ready", outputs } as const;
@@ -1593,12 +1638,18 @@ const make = Effect.gen(function* () {
   const requireUserStartedBot = Effect.fn("WatcherService.requireUserStartedBot")(function* (
     botThreadId: ThreadId,
     name: string,
+    tool = false,
   ) {
     if (!(yield* bots.isBot(botThreadId))) {
       return yield* failure(botThreadId, name, "not_a_bot");
     }
     if (yield* bots.startedByWake(botThreadId)) {
-      return yield* failure(botThreadId, name, "started_by_wake");
+      return yield* failure(
+        botThreadId,
+        name,
+        "started_by_wake",
+        tool ? STARTED_BY_WAKE_TOOL : undefined,
+      );
     }
   });
 
@@ -1609,6 +1660,8 @@ const make = Effect.gen(function* () {
       const existing = yield* recordOf(folder, name);
       const invalid = (detail: string) => failure(botThreadId, name, "invalid", detail);
       const isTool = input.kind === "tool";
+      // The Bot reads these refusals, so a tool is called a tool in them.
+      const noun = isTool ? "tool" : "watcher";
       // One namespace: a name is a watcher or a tool for good, and keeps its approval history.
       if (existing !== undefined && (existing.kind === "tool") !== isTool) {
         return yield* invalid(
@@ -1623,7 +1676,7 @@ const make = Effect.gen(function* () {
         if (!(yield* bots.isBot(botThreadId)))
           return yield* failure(botThreadId, name, "not_a_bot");
       } else {
-        yield* requireUserStartedBot(botThreadId, name);
+        yield* requireUserStartedBot(botThreadId, name, isTool);
       }
       // A wake turn is the one hostile text can steer, so it is held to less than a typed one.
       const fromWake =
@@ -1631,17 +1684,17 @@ const make = Effect.gen(function* () {
       // No new version straight after one was dropped: that answers the wake with another review.
       if (fromWake && recentlyDropped(folder, yield* Clock.currentTimeMillis)) {
         return yield* invalid(
-          "A version of one of your watchers was turned down a moment ago. Tell the user why, and revise it in a turn they start; a turn that began with a wake has to wait 15 minutes.",
+          `${isTool ? "A tool version you proposed" : "A version of one of your watchers"} was turned down a moment ago. Tell the user why, and revise it in a turn they start; a turn that began with a wake has to wait 15 minutes.`,
         );
       }
       if (!isWatcherName(name)) {
         return yield* invalid(
-          "A watcher name is letters, digits, - and _, starts with a letter or digit, and has at most 64 characters.",
+          `A ${noun} name is letters, digits, - and _, starts with a letter or digit, and has at most 64 characters.`,
         );
       }
       const source = new TextEncoder().encode(input.source);
       if (source.byteLength === 0 || source.byteLength > BOT_WATCHER_SOURCE_MAX_BYTES) {
-        return yield* invalid(`A watcher's source is 1 to ${BOT_WATCHER_SOURCE_MAX_BYTES} bytes.`);
+        return yield* invalid(`A ${noun}'s source is 1 to ${BOT_WATCHER_SOURCE_MAX_BYTES} bytes.`);
       }
       if (isTool) {
         if (
@@ -1701,7 +1754,7 @@ const make = Effect.gen(function* () {
         )
       ) {
         return yield* invalid(
-          "A watcher's source, purpose, usage, expect and tool arguments cannot contain the reviewer's marker text (SCRIPT UNDER REVIEW, === END SCRIPT).",
+          `A ${noun}'s source, purpose, usage, expect and tool arguments cannot contain the reviewer's marker text (SCRIPT UNDER REVIEW, === END SCRIPT).`,
         );
       }
       const secrets = [...new Set(input.secrets ?? [])].toSorted(byCodeUnit);
@@ -1721,7 +1774,7 @@ const make = Effect.gen(function* () {
       }
       if (secrets.length > BOT_WATCHER_MAX_SECRETS || hosts.length > BOT_SECRET_GRANT_MAX_HOSTS) {
         return yield* invalid(
-          `A watcher declares at most ${BOT_WATCHER_MAX_SECRETS} secrets and ${BOT_SECRET_GRANT_MAX_HOSTS} hosts.`,
+          `A ${noun} declares at most ${BOT_WATCHER_MAX_SECRETS} secrets and ${BOT_SECRET_GRANT_MAX_HOSTS} hosts.`,
         );
       }
       if (secrets.length > 0 && hosts.length === 0) {
@@ -1765,7 +1818,7 @@ const make = Effect.gen(function* () {
           !sameToolRefs(tools, approved?.config.tools)
         ) {
           return yield* invalid(
-            "Changing a watcher's secrets, hosts or tools needs a turn the user starts. Tell the user what you would change.",
+            `Changing a ${noun}'s secrets, hosts${isTool ? "" : " or tools"} needs a turn the user starts. Tell the user what you would change.`,
           );
         }
       }
@@ -1807,7 +1860,7 @@ const make = Effect.gen(function* () {
       }
       if (reviewsFull(folder, name, fromWake)) {
         return yield* invalid(
-          "Reviews are busy: too many watchers are waiting on the reviewer. Try again in a few minutes.",
+          `Reviews are busy: too many ${noun}s are waiting on the reviewer. Try again in a few minutes.`,
         );
       }
       if (existing?.pendingHash === hash) {
@@ -1885,7 +1938,7 @@ const make = Effect.gen(function* () {
 
   const remove: WatcherService["Service"]["remove"] = Effect.fn("WatcherService.remove")(
     function* ({ botThreadId, name, kind }) {
-      yield* requireUserStartedBot(botThreadId, name);
+      yield* requireUserStartedBot(botThreadId, name, kind === "tool");
       if (kind !== undefined) {
         const { record } = yield* requireRecord(botThreadId, name);
         if ((record.kind === "tool") !== (kind === "tool")) {
@@ -2531,54 +2584,80 @@ const make = Effect.gen(function* () {
       const invalid = (detail: string) => failure(botThreadId, name, "invalid", detail);
       if (!(yield* bots.isBot(botThreadId))) return yield* failure(botThreadId, name, "not_a_bot");
       const folder = BotService.memoryFolderName(botThreadId);
-      const record = yield* recordOf(folder, name);
-      if (record === undefined) {
+      // Only a name that is a tool gets a lock; the rest is checked again once it is held.
+      const known = yield* recordOf(folder, name);
+      if (known === undefined) {
         return yield* failure(botThreadId, name, "not_found", `There is no tool named ${name}.`);
       }
-      if (record.kind !== "tool") return yield* invalid(`${name} is a watcher, not a tool.`);
-      // Only the approved bytes: a revision under review is never called.
-      if (record.approvedHash === undefined) {
-        return yield* invalid(`Tool ${name} has no approved version yet.`);
-      }
-      if (record.paused === true) return yield* invalid(`Tool ${name} is paused by the user.`);
+      if (known.kind !== "tool") return yield* invalid(`${name} is a watcher, not a tool.`);
       const refused = refuseToolArgs(args);
       if (refused !== undefined) return yield* invalid(refused);
-      const version = yield* readVersion(folder, name, record.approvedHash);
-      if (version === undefined || version.config.kind !== "tool") {
-        return yield* invalid("The stored files for this tool were changed or are missing.");
-      }
-      // Before reading a grant, which may ask a password manager: that is what a loop would cost.
-      if (!toolCalls.take(folder, yield* Clock.currentTimeMillis)) {
-        return yield* invalid(TOOL_CALL_LIMIT_MESSAGE);
-      }
-      const secrets = yield* injectSecrets(botThreadId, version);
-      if (secrets._tag === "Waiting") {
-        return yield* failure(botThreadId, name, "unreachable", secrets.reason);
-      }
-      // The same persistent folder a watcher gets. Runs go one at a time (`runScript`), which also
-      // keeps two calls of one tool from reading and writing its cursor together.
-      const { raw, cut } = yield* runScript({
-        source: version.source,
-        runtime: version.config.runtime,
-        timeoutMs: BOT_TOOL_TIMEOUT_MS,
-        dryRun: false,
-        dataDir: dataDir(folder, name),
-        secrets: secrets.injected,
-        tool: { args },
-      });
+      // Before waiting and before reading a grant, which may ask a password manager: that is what
+      // a loop would cost.
+      const takenAt = yield* Clock.currentTimeMillis;
+      if (!toolCalls.take(folder, takenAt)) return yield* invalid(TOOL_CALL_LIMIT_MESSAGE);
+      // A call that does not run gives its place back.
+      const turnedAway = (reason: "invalid" | "not_found", detail: string) =>
+        Effect.sync(() => toolCalls.release(folder, takenAt)).pipe(
+          Effect.andThen(failure(botThreadId, name, reason, detail)),
+        );
+
+      // The same persistent folder a watcher gets, one call of this tool at a time.
+      const called = yield* withToolLock(
+        folder,
+        name,
+      )(
+        Effect.gen(function* () {
+          // Read again: the user may have paused or removed the tool, or a revision may have been
+          // approved, while this call waited.
+          const record = yield* recordOf(folder, name);
+          if (record?.kind !== "tool")
+            return yield* turnedAway("not_found", `There is no tool named ${name}.`);
+          // Only the approved bytes: a revision under review is never called.
+          if (record.approvedHash === undefined) {
+            return yield* turnedAway("invalid", `Tool ${name} has no approved version yet.`);
+          }
+          if (record.paused === true)
+            return yield* turnedAway("invalid", `Tool ${name} is paused by the user.`);
+          const version = yield* readVersion(folder, name, record.approvedHash);
+          if (version === undefined || version.config.kind !== "tool") {
+            return yield* turnedAway(
+              "invalid",
+              "The stored files for this tool were changed or are missing.",
+            );
+          }
+          const secrets = yield* injectSecrets(botThreadId, version);
+          if (secrets._tag === "Waiting") {
+            return yield* failure(botThreadId, name, "unreachable", secrets.reason);
+          }
+          const run = yield* runScript({
+            source: version.source,
+            runtime: version.config.runtime,
+            timeoutMs: BOT_TOOL_TIMEOUT_MS,
+            dryRun: false,
+            dataDir: dataDir(folder, name),
+            secrets: secrets.injected,
+            tool: { args },
+            ownLock: true,
+          });
+          return { ...run, approvedHash: record.approvedHash };
+        }),
+      );
+      const { raw, cut, approvedHash } = called;
 
       const failed = raw.exit !== "0";
       const finishedAt = yield* Clock.currentTimeMillis;
       // Keyed by version: a revision starts clean, as a watcher's streak does.
-      const streak = `${folder}/${name}/${record.approvedHash}`;
+      const streak = `${folder}/${name}/${approvedHash}`;
       if (!failed) {
         if (toolFailures.succeeded(streak) >= TOOL_FAILURES_TO_SIGNAL) {
           yield* repair.clear({ kind: "watcher", botThreadId, name });
         }
-      } else {
+      } else if (isMachineFailure(raw.exit)) {
         const { count, firstAt } = toolFailures.failed(streak, finishedAt);
-        // A tool called with bad arguments is not a broken machine; the same tool failing again
-        // and again is. It reports through the watcher health path, which holds the same name.
+        // A call the Bot got wrong exits non-zero by itself and is not counted. A tool that times
+        // out, cannot start or writes a secret is broken, and says so through the watcher health
+        // path, which holds the same name.
         if (count >= TOOL_FAILURES_TO_SIGNAL) {
           yield* repair.signal({
             kind: "watcher",

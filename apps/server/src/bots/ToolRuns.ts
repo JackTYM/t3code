@@ -14,6 +14,8 @@ export const BOT_TOOL_RUN_TOOL = "t3_bot_tool_run";
 // minute for the whole Bot, whichever of its tools they are to.
 export const MAX_TOOLS_PER_BOT = 12;
 const TOOL_CALLS_PER_MINUTE = 6;
+// Calls running at once, of all Bots and all tools.
+export const MAX_CONCURRENT_TOOL_CALLS = 4;
 const MINUTE_MS = 60_000;
 export const TOOL_CALL_LIMIT_MESSAGE = `Too many tool calls: at most ${TOOL_CALLS_PER_MINUTE} a minute. Wait and try again.`;
 export const TOOL_STDERR_MAX_CHARS = 500;
@@ -22,17 +24,20 @@ export const TOOL_CUT_LINE = `[output cut at ${BOT_TOOL_OUTPUT_MAX_BYTES} bytes]
 export const TOOL_FAILURES_TO_SIGNAL = 3;
 const TOOL_FAILURE_WINDOW_MS = 60 * MINUTE_MS;
 
+/** The rule for a call's arguments, in one place for the refusal and for what the Bot is told. */
+export const TOOL_ARGS_RULE = `at most ${BOT_TOOL_MAX_ARGS} arguments of at most ${BOT_TOOL_ARG_MAX_CHARS} characters each, none with a NUL`;
+
 /** Why a call's arguments are refused, or nothing when they are fine. Passed as argv, never to a shell. */
-export const refuseToolArgs = (args: ReadonlyArray<string>): string | undefined => {
-  if (args.length > BOT_TOOL_MAX_ARGS) {
-    return `A tool call takes at most ${BOT_TOOL_MAX_ARGS} arguments.`;
-  }
-  if (args.some((arg) => arg.length > BOT_TOOL_ARG_MAX_CHARS)) {
-    return `A tool argument is at most ${BOT_TOOL_ARG_MAX_CHARS} characters.`;
-  }
-  if (args.some((arg) => arg.includes("\u0000"))) return "A tool argument cannot contain NUL.";
-  return undefined;
-};
+export const refuseToolArgs = (args: ReadonlyArray<string>): string | undefined =>
+  args.length > BOT_TOOL_MAX_ARGS ||
+  args.some((arg) => arg.length > BOT_TOOL_ARG_MAX_CHARS || arg.includes("\u0000"))
+    ? `A tool call takes ${TOOL_ARGS_RULE}.`
+    : undefined;
+
+// The exits that say the machine failed, not that the call was wrong: a call with bad arguments
+// exits non-zero by itself, and the Bot is not told to repair anything over that.
+const MACHINE_FAILURES = new Set(["timeout", "spawn-error", "secret-written"]);
+export const isMachineFailure = (exit: string) => MACHINE_FAILURES.has(exit);
 
 /** The calls each Bot made in the last minute, kept in memory: a restart forgets them, and a minute is short. */
 export const makeToolCallLimiter = () => {
@@ -47,6 +52,12 @@ export const makeToolCallLimiter = () => {
       }
       calls.set(bot, [...recent, now]);
       return true;
+    },
+    /** Gives back the place `take` made at `now`, for a call that turned out not to run. */
+    release: (bot: string, now: number) => {
+      const held = calls.get(bot) ?? [];
+      const at = held.indexOf(now);
+      if (at >= 0) calls.set(bot, held.toSpliced(at, 1));
     },
   };
 };

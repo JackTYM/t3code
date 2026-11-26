@@ -241,7 +241,10 @@ export class BotWatcherError extends Schema.TaggedError<BotWatcherError>()("BotW
       case "not_a_bot":
         return `Thread ${this.threadId} is not a Bot.`;
       case "started_by_wake":
-        return "This turn was started by an incoming message or event, not by the user typing, so it cannot create or remove watchers. Tell the user what you would watch and let them ask you in a turn they start. A wake turn may still propose a revision of a watcher the user has already approved.";
+        return (
+          this.detail ??
+          "This turn was started by an incoming message or event, not by the user typing, so it cannot create or remove watchers. Tell the user what you would watch and let them ask you in a turn they start. A wake turn may still propose a revision of a watcher the user has already approved."
+        );
       case "invalid":
         return this.detail ?? "That watcher is not valid.";
       case "not_found":

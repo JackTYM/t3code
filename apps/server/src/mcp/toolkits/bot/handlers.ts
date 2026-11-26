@@ -201,7 +201,7 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
       const { threadId } = yield* callerBot;
       const watchers = yield* WatcherService.WatcherService;
       return yield* watchers
-        .propose({ botThreadId: threadId, kind: "tool", ...input })
+        .propose({ botThreadId: threadId, ...input, kind: "tool" })
         .pipe(Effect.mapError(watcherFailure));
     }),
   ),
