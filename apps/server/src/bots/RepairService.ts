@@ -15,6 +15,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import * as PayloadSigner from "../auth/PayloadSigner.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -40,6 +41,8 @@ const MAX_MERGE_RESULTS = 8;
 const FIRST_BACKOFF_MS = 60 * 60_000;
 const MAX_BACKOFF_MS = 24 * 60 * 60_000;
 const MAX_EPISODES = 100;
+// Where the newest state version is kept apart from the state file (see `State`).
+const STATE_VERSION_SECRET = "repair-state-version";
 // What a name may be, by kind. No whitespace, quotes, brackets or newlines: a name cannot carry a
 // sentence. A watcher's name is validated the same way when it is proposed; a run id is
 // `run:thread:<encoded thread id>:ordinal:<n>`.
@@ -111,9 +114,9 @@ const Kind = Schema.Literals(["watcher", "reviewer", "run"]);
 type Kind = typeof Kind.Type;
 
 /**
- * One failure of one thing, from its first report until it recovers. `pending` is the wake saved
- * before it is queued and removed after, so a restart resends it under the same key. The file is
- * signed with a key a Bot and a script cannot read.
+ * One failure of one thing, from its first report until it recovers. `pending` marks the wake saved
+ * before it is queued and removed after, so a restart resends it under the same key. The wake's
+ * words are never saved: they are made again from these fields when it is sent.
  */
 const Episode = Schema.Struct({
   /** What a repair names, and part of every wake key of the episode. */
@@ -128,10 +131,39 @@ const Episode = Schema.Struct({
   /** Doublings of the backoff so far. */
   step: Schema.Int,
   nextWakeAt: Schema.Number,
-  pending: Schema.optional(Schema.Struct({ key: Schema.String, text: Schema.String })),
+  pending: Schema.optional(Schema.Struct({ key: Schema.String })),
 });
 type Episode = typeof Episode.Type;
 type Episodes = Readonly<Record<string, Episode>>;
+
+/**
+ * Why `RepairMergeGuard` refused a repair crew's merge, one code for each thing it checks. The
+ * words go to the crew, who can act on them; the Bot is told the code and nothing more.
+ */
+export const MergeRefusalReason = Schema.Literals([
+  "bad_arguments",
+  "pull_request_unreadable",
+  "not_open",
+  "wrong_branch",
+  "fork_pull_request",
+  "wrong_target",
+  "target_unreadable",
+  "head_moved",
+  "no_checks",
+  "checks_pending",
+  "checks_failed",
+  "required_check_skipped",
+  "checks_unreadable",
+  "protected_path",
+  "files_unreadable",
+  "changes_requested",
+  "reviews_unreadable",
+]);
+export type MergeRefusalReason = typeof MergeRefusalReason.Type;
+
+/** What a crew's merge came to: refused for a reason, refused by the host after the guard said yes, or done. */
+const MergeReason = Schema.Literals([...MergeRefusalReason.literals, "merge_failed", "merged"]);
+type MergeReason = typeof MergeReason.Type;
 
 /** One crew thread a repair started. Written before the launch, so a crash cannot lose it. */
 const Attempt = Schema.Struct({
@@ -156,14 +188,21 @@ const Repair = Schema.Struct({
   told: Schema.optional(Schema.Boolean),
   /**
    * What the Bot was told of the crew's merge calls, by pull request and result
-   * (`<number>:merged` or `<number>:open`). `pending` is a wake saved before it is queued, so a
-   * restart resends it under the same key.
+   * (`<number>:merged` or `<number>:open`). `pending` is a result saved before its wake is queued,
+   * so a restart resends it under the same key; the words are made again from these fields. A
+   * file an older version wrote has none of them, and such a result is dropped, not sent.
    */
   merges: Schema.optional(
     Schema.Record(
       Schema.String,
       Schema.Struct({
-        pending: Schema.optional(Schema.Struct({ key: Schema.String, text: Schema.String })),
+        pending: Schema.optional(
+          Schema.Struct({
+            number: Schema.optional(Schema.NullOr(Schema.Int)),
+            merged: Schema.optional(Schema.Boolean),
+            reason: Schema.optional(MergeReason),
+          }),
+        ),
       }),
     ),
   ),
@@ -174,10 +213,16 @@ type Repairs = Readonly<Record<string, Repair>>;
 const State = Schema.Struct({
   episodes: Schema.Record(Schema.String, Episode),
   repairs: Schema.optional(Schema.Record(Schema.String, Repair)),
+  /**
+   * Counts saves, so a copy of the file older than the last save is noticed when the service
+   * starts: the newest count is also kept in the secret store, outside this file.
+   */
+  version: Schema.optional(Schema.Int),
 });
 interface State {
   readonly episodes: Episodes;
   readonly repairs: Repairs;
+  readonly version: number;
 }
 const isState = Schema.is(State);
 
@@ -223,6 +268,30 @@ const healthText = (episode: Episode) =>
     `wake: ${episode.wakes}`,
     "This message was written by the server from fixed fields. It holds no output from any script, reviewer or outside source.",
   ].join("\n");
+
+const healthKey = (episode: Episode) => `health:${episode.id}:${episode.wakes}`;
+const MERGE_SLOT = /^(none|[1-9][0-9]*):(merged|open)$/u;
+
+/**
+ * Whether every field `healthText` prints is plain. The wake is made from the saved episode when it
+ * is sent, and a script that can read the signing key can write that file, so nothing saved is
+ * printed on trust.
+ */
+const isPlainEpisode = (episode: Episode) =>
+  SIGNAL_ID.test(episode.id) &&
+  isPlainName(episode.kind, episode.name) &&
+  Number.isSafeInteger(episode.count) &&
+  episode.count >= 1 &&
+  Number.isSafeInteger(episode.wakes) &&
+  episode.wakes >= 1 &&
+  isTime(episode.firstAt) &&
+  isTime(episode.lastAt);
+
+/** The wake a saved episode owes, made from its validated fields; nothing if it does not hold up. */
+const healthWake = (episode: Episode) =>
+  isPlainEpisode(episode) && episode.pending?.key === healthKey(episode)
+    ? { key: healthKey(episode), text: healthText(episode) }
+    : undefined;
 
 /** A failure's identity. A reviewer's is the Bot's, whatever watcher it last failed on. */
 const subjectKey = (subject: {
@@ -285,34 +354,6 @@ export class RepairError extends Schema.TaggedError<RepairError>()("RepairError"
   }
 }
 
-/**
- * Why `RepairMergeGuard` refused a repair crew's merge, one code for each thing it checks. The
- * words go to the crew, who can act on them; the Bot is told the code and nothing more.
- */
-export const MergeRefusalReason = Schema.Literals([
-  "bad_arguments",
-  "pull_request_unreadable",
-  "not_open",
-  "wrong_branch",
-  "fork_pull_request",
-  "wrong_target",
-  "target_unreadable",
-  "head_moved",
-  "no_checks",
-  "checks_pending",
-  "checks_failed",
-  "required_check_skipped",
-  "checks_unreadable",
-  "protected_path",
-  "files_unreadable",
-  "changes_requested",
-  "reviews_unreadable",
-]);
-export type MergeRefusalReason = typeof MergeRefusalReason.Type;
-
-/** What the crew's merge came to: refused for a reason, refused by the host after the guard said yes, or done. */
-type MergeReason = MergeRefusalReason | "merge_failed" | "merged";
-
 export const MERGE_REFUSAL_MESSAGES = {
   bad_arguments:
     "The merge was refused: the server cannot check this call. A repair crew merges one pull request, its own, and names it: pass `number`, pass the head commit you checked as `expectedHeadSha`, and leave out `repository`, `auto`, `stack`, `method` and another machine's `environmentId`. Leave the pull request open if you cannot.",
@@ -366,6 +407,34 @@ const mergeText = (
     `reason: ${result.reason}`,
     "This message was written by the server from fixed fields. It holds no title, text or file name from the pull request or the crew.",
   ].join("\n");
+
+/** The wake a saved merge result owes, if its fields agree with the slot it is saved under. */
+const mergeWake = (
+  signalId: string,
+  slot: string,
+  pending: {
+    readonly number?: number | null | undefined;
+    readonly merged?: boolean | undefined;
+    readonly reason?: MergeReason | undefined;
+  },
+) => {
+  const match = MERGE_SLOT.exec(slot);
+  const number = match === null || match[1] === "none" ? null : Number(match[1]);
+  if (
+    !SIGNAL_ID.test(signalId) ||
+    match === null ||
+    (number !== null && !Number.isSafeInteger(number)) ||
+    pending.number !== number ||
+    pending.merged !== (match[2] === "merged") ||
+    pending.reason === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    key: `health:${signalId}:merge:${slot}`,
+    text: mergeText(signalId, { number, merged: pending.merged, reason: pending.reason }),
+  };
+};
 
 const KIND_MEANINGS = {
   watcher: "a watcher's scheduled runs keep failing",
@@ -520,6 +589,7 @@ const make = Effect.gen(function* () {
   const git = yield* GitWorkflow.GitWorkflowService;
   const random = yield* SecureRandom.SecureRandom;
   const signer = yield* PayloadSigner.make("repair-state-key");
+  const secrets = yield* ServerSecretStore.ServerSecretStore;
   const statePath = path.join(config.stateDir, "repair-state.json");
   const lock = yield* Semaphore.make(1);
   const locked = lock.withPermits(1);
@@ -528,6 +598,18 @@ const make = Effect.gen(function* () {
     Effect.orDie,
   );
 
+  // The newest version this server saved, kept outside the state file: an older copy of the file
+  // (a restored backup) is signed correctly and would otherwise be believed.
+  const lastVersion = yield* secrets.get(STATE_VERSION_SECRET).pipe(
+    Effect.map((bytes) =>
+      Option.match(bytes, {
+        onNone: () => 0,
+        onSome: (value) => Number.parseInt(new TextDecoder().decode(value), 10),
+      }),
+    ),
+    Effect.map((version) => (Number.isSafeInteger(version) && version >= 0 ? version : 0)),
+    Effect.orElseSucceed(() => 0),
+  );
   // Read once at start, like the watchers' approvals: every change is saved before it is used.
   const initial = yield* fileSystem.readFileString(statePath).pipe(
     Effect.flatMap(decodeSignedFile),
@@ -542,16 +624,25 @@ const make = Effect.gen(function* () {
     ),
     Effect.map((decoded): State =>
       isState(decoded)
-        ? { episodes: decoded.episodes, repairs: decoded.repairs ?? {} }
-        : { episodes: decoded, repairs: {} },
+        ? {
+            episodes: decoded.episodes,
+            repairs: decoded.repairs ?? {},
+            version: decoded.version ?? 0,
+          }
+        : { episodes: decoded, repairs: {}, version: 0 },
     ),
-    // No file yet is the usual first run. A file that cannot be vouched for is dropped whole.
+    Effect.filterOrFail(
+      (decoded) => decoded.version >= lastVersion,
+      () => "older" as const,
+    ),
+    // No file yet is the usual first run. A file that cannot be vouched for, or is older than the
+    // last save, is dropped whole; the count goes on from the newest one, so later saves are newer.
     Effect.catch((cause): Effect.Effect<State> => {
-      const empty: State = { episodes: {}, repairs: {} };
+      const empty: State = { episodes: {}, repairs: {}, version: lastVersion };
       return Predicate.isTagged(cause, "PlatformError") && cause.reason._tag === "NotFound"
         ? Effect.succeed(empty)
         : Effect.logWarning(
-            "Repair state failed verification or could not be read; starting without it.",
+            "Repair state failed verification, is older than the last save, or could not be read; starting without it.",
             {
               cause,
             },
@@ -564,7 +655,8 @@ const make = Effect.gen(function* () {
   /** Saves `next` and makes it the state; false when it could not be saved. */
   const save = Effect.fn("RepairService.save")(
     function* (next: State) {
-      const data = yield* encodeState(next);
+      const stamped: State = { ...next, version: next.version + 1 };
+      const data = yield* encodeState(stamped);
       const signature = yield* signer.sign(data);
       const text = yield* encodeSignedFile({ data, signature });
       // Renamed into place, so a crash cannot leave a half-written file that reads as no state.
@@ -572,7 +664,15 @@ const make = Effect.gen(function* () {
       yield* fileSystem.makeDirectory(config.stateDir, { recursive: true });
       yield* fileSystem.writeFileString(temporary, text, { mode: 0o600 });
       yield* fileSystem.rename(temporary, statePath);
-      yield* Ref.set(state, next);
+      yield* Ref.set(state, stamped);
+      // After the file, so a crash between them leaves the file newer than the count, never older.
+      yield* secrets
+        .set(STATE_VERSION_SECRET, new TextEncoder().encode(String(stamped.version)))
+        .pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Repair state version could not be kept.", { cause }),
+          ),
+        );
       return true;
     },
     // Uninterruptible: a stop between the rename and the Ref must not leave the file ahead of memory.
@@ -606,15 +706,21 @@ const make = Effect.gen(function* () {
         .slice(-MAX_REPAIRS_KEPT),
     );
 
-  /** Queues the saved wake; once the Bot has it, the episode no longer owes it. */
-  const send = Effect.fn("RepairService.send")(function* (
-    key: string,
-    episode: Episode,
-    botThreadId: ThreadId,
-  ) {
+  /**
+   * Queues the wake an episode owes, made from its fields; once the Bot has it, the episode no
+   * longer owes it. A saved wake that does not match its episode is dropped, never sent.
+   */
+  const send = Effect.fn("RepairService.send")(function* (key: string, episode: Episode) {
     if (episode.pending === undefined) return;
-    if (!(yield* bots.wakeWith({ botThreadId, ...episode.pending }))) return;
-    const { pending: _queued, ...settled } = episode;
+    const wake = healthWake(episode);
+    if (wake === undefined) {
+      yield* Effect.logWarning("A saved health wake does not match its episode and was dropped.", {
+        kind: episode.kind,
+      });
+    } else if (!(yield* bots.wakeHealth({ botThreadId: episode.botThreadId, ...wake }))) {
+      return;
+    }
+    const { pending: _settled, ...settled } = episode;
     yield* saveEpisodes({ ...(yield* readEpisodes), [key]: settled });
   });
 
@@ -639,7 +745,7 @@ const make = Effect.gen(function* () {
     const all = yield* readEpisodes;
     const previous = Object.hasOwn(all, key) ? all[key] : undefined;
     // A wake that was never confirmed goes out again under the same key, whatever the clock says.
-    if (previous?.pending !== undefined) return yield* send(key, previous, botThreadId);
+    if (previous?.pending !== undefined) return yield* send(key, previous);
     if (previous !== undefined && now < previous.nextWakeAt) return;
     const step = previous === undefined ? 0 : previous.step + 1;
     const wakes = (previous?.wakes ?? 0) + 1;
@@ -656,11 +762,11 @@ const make = Effect.gen(function* () {
       step,
       nextWakeAt: now + backoff(step),
     };
-    const pending = { key: `health:${id}:${wakes}`, text: healthText(episode) };
+    const pending = { key: healthKey(episode) };
     // Saved before the send: a wake that is not on disk could be lost by a crash, and one that
     // is gets resent under this key, which the Bot's idempotent command replays.
     if (!(yield* saveEpisodes(sweep({ ...all, [key]: { ...episode, pending } }, now)))) return;
-    yield* send(key, { ...episode, pending }, botThreadId);
+    yield* send(key, { ...episode, pending });
   }, locked);
 
   const clear: RepairService["Service"]["clear"] = Effect.fn("RepairService.clear")(
@@ -721,7 +827,7 @@ const make = Effect.gen(function* () {
     const repairs = (yield* Ref.get(state)).repairs;
     const repair = Object.hasOwn(repairs, signalId) ? repairs[signalId] : undefined;
     if (repair?.gaveUp !== true || repair.told === true) return;
-    const woken = yield* bots.wakeWith({
+    const woken = yield* bots.wakeHealth({
       botThreadId: repair.botThreadId,
       key: `health:${signalId}:gaveup`,
       text: gaveUpText(signalId, repair),
@@ -741,7 +847,12 @@ const make = Effect.gen(function* () {
         ? repair.merges[slot]
         : undefined;
     if (repair === undefined || note?.pending === undefined) return;
-    if (!(yield* bots.wakeWith({ botThreadId: repair.botThreadId, ...note.pending }))) return;
+    const wake = mergeWake(signalId, slot, note.pending);
+    if (wake === undefined) {
+      yield* Effect.logWarning("A saved merge result does not match its slot and was dropped.");
+    } else if (!(yield* bots.wakeHealth({ botThreadId: repair.botThreadId, ...wake }))) {
+      return;
+    }
     yield* saveRepairs({
       ...repairs,
       [signalId]: { ...repair, merges: { ...repair.merges, [slot]: {} } },
@@ -766,10 +877,7 @@ const make = Effect.gen(function* () {
         signalId,
       });
     }
-    const pending = {
-      key: `health:${signalId}:merge:${which}:${merged ? "merged" : "open"}`,
-      text: mergeText(signalId, { number, merged, reason }),
-    };
+    const pending = { number, merged, reason };
     // Saved before the send, as every wake is: a crash then resends it under the same key.
     const repairs = (yield* Ref.get(state)).repairs;
     if (
@@ -887,15 +995,9 @@ const make = Effect.gen(function* () {
           .pipe(Effect.orElseSucceed(() => null));
         if (shell === null) return yield* fail("unknown_signal");
 
-        const plain =
-          SIGNAL_ID.test(episode.id) &&
-          isPlainName(episode.kind, episode.name) &&
-          THREAD_ID.test(episode.botThreadId) &&
-          Number.isSafeInteger(episode.count) &&
-          episode.count >= 1 &&
-          isTime(episode.firstAt) &&
-          isTime(episode.lastAt);
-        if (!plain) return yield* fail("unsafe_field");
+        if (!isPlainEpisode(episode) || !THREAD_ID.test(episode.botThreadId)) {
+          return yield* fail("unsafe_field");
+        }
 
         const attempt = (repair?.attempts.length ?? 0) + 1;
         const branch = `repair/${signalId}${attempt === 1 ? "" : `-${attempt}`}`;
@@ -1003,7 +1105,7 @@ const make = Effect.gen(function* () {
     const current = yield* Ref.get(state);
     yield* Effect.forEach(
       Object.entries(current.episodes),
-      ([key, episode]) => send(key, episode, episode.botThreadId),
+      ([key, episode]) => send(key, episode),
       { discard: true },
     );
     yield* Effect.forEach(Object.keys(current.repairs), tellGaveUp, { discard: true });

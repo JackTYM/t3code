@@ -118,6 +118,16 @@ export class BotService extends Context.Service<
       readonly text: string;
     }) => Effect.Effect<boolean>;
     /**
+     * Queues a health wake, which `RepairService` alone sends: its key starts `health:`, and
+     * `wakeWith` refuses that prefix. A Bot turn treats such a wake as the server's own words, so
+     * nothing a script or a Bot could name a key for may be able to make one.
+     */
+    readonly wakeHealth: (input: {
+      readonly botThreadId: ThreadId;
+      readonly key: string;
+      readonly text: string;
+    }) => Effect.Effect<boolean>;
+    /**
      * Whether the thread's active run began with anything but a message the user typed: a wake
      * (`bot-wake:`), another agent's message, or a scheduled task's prompt. Those carry content
      * the user did not write, so what such a turn reads may be hostile. True also when the run
@@ -174,6 +184,8 @@ export const memoryFolderThreadId = (folder: string): ThreadId | undefined => {
 };
 
 const WAKE_MESSAGE_PREFIX = "bot-wake:";
+/** A key that makes a health wake (`RepairService`): `wakeWith` refuses it, `wakeHealth` requires it. */
+const HEALTH_WAKE_KEY_PREFIX = "health:";
 
 const sameModel = Schema.toEquivalence(ModelSelection);
 
@@ -539,9 +551,21 @@ const make = Effect.gen(function* () {
     key,
     text,
   }) {
+    if (key.startsWith(HEALTH_WAKE_KEY_PREFIX)) {
+      yield* Effect.logWarning("A wake named a health key and was refused.", { botThreadId });
+      return false;
+    }
     if (!(yield* wakeable(botThreadId))) return false;
     return yield* queueWake(botThreadId, key, text);
   });
+
+  const wakeHealth: BotService["Service"]["wakeHealth"] = Effect.fn("BotService.wakeHealth")(
+    function* ({ botThreadId, key, text }) {
+      if (!key.startsWith(HEALTH_WAKE_KEY_PREFIX)) return false;
+      if (!(yield* wakeable(botThreadId))) return false;
+      return yield* queueWake(botThreadId, key, text);
+    },
+  );
 
   const startedByWake: BotService["Service"]["startedByWake"] = Effect.fn(
     "BotService.startedByWake",
@@ -739,6 +763,7 @@ const make = Effect.gen(function* () {
     clearWatches,
     moveCrew,
     wakeWith,
+    wakeHealth,
     startedByWake,
     noteOwnModelChange,
     handleMilestone,

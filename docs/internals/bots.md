@@ -92,11 +92,23 @@ episode. The wake id is `bot-wake:health:<signalId>:<n>`.
 - **A watcher's "in a row" counts scheduled runs that failed.** A run where a linked environment
   did not answer is neither failed nor healthy; any healthy run, including an `events` run with
   news, starts over, and a new approved version or a move starts clean.
-- **State** is `<stateDir>/repair-state.json`, signed like the watchers' approvals with a key a Bot
-  and a script cannot read, because a later step trusts it to say which signals the server wrote
-  and which threads are repair crews. A wake is saved before it is queued and settled after, so a
-  restart resends the same key instead of waking twice. A file that fails its signature is dropped
-  whole.
+- **State** is `<stateDir>/repair-state.json`, signed with an HMAC key kept in the server's secret
+  store, because a later step trusts it to say which signals the server wrote and which threads are
+  repair crews. The key stops a Bot and anything that cannot read the user's files. It does **not**
+  stop a script or a repair crew running as the user: those can read the key, so a valid signature
+  proves the file was not changed by accident, not who wrote it. What is saved is therefore never a
+  wake's words. A wake is saved as a marker before it is queued and settled after, so a restart
+  resends the same key instead of waking twice, and the words are made again from the validated
+  fields (`healthText`, `mergeText`) when it is sent; a saved wake whose fields are not plain, or
+  whose key is not the episode's own, is dropped. A file that fails its signature is dropped whole.
+  Each save raises a version in the file, and the newest version is also kept in the secret store,
+  so a copy of the file older than the last save (a restored backup) is not believed and the service
+  starts empty. That check is outside the file but inside the user's reach: a process that can read
+  the key can also rewrite the counter, so a deliberate replay by a local script is not stopped.
+  Starting empty fails closed: no repair is known, so no crew merge is allowed.
+- **Only `RepairService` can send a health wake.** `BotService.wakeWith` refuses a key that starts
+  `health:`; `wakeHealth` takes only those. A Bot turn treats such a wake as the server's own words,
+  so a caller that could name its key (a watcher's saved event, say) must not be able to make one.
 
 ### Repair start
 
@@ -374,7 +386,11 @@ with the `Scheduler`.
   watcher removed from the box leaves its folder on the laptop; neither is handled.
 - **Event delivery is crash-safe.** The event is saved as `pendingEvent` before it is sent, and a
   pending event blocks the next run: the script's cursor may already be past what it printed, so
-  the same wake key is resent until the Bot has it, and only then does the script run again.
+  the same wake key is resent until the Bot has it, and only then does the script run again. What
+  is saved is the run's time and the output, not a wake: `state.json` is a file the script can
+  write (`$T3_WATCHER_STATE_DIR/../state.json`), so the key (this watcher's own `:event:<time>`) and
+  the untrusted-data framing, with a fresh tag, are made again when it is sent, and a saved event
+  with a time that is not a time is ignored.
 - **Revisions keep the old version running.** A change to an approved watcher becomes the pending
   version while the live one keeps running, and replaces it only after a verdict and a first run.
   Proposing the live bytes again drops the pending version.
