@@ -14,6 +14,7 @@ import * as BotHoldService from "./bots/BotHoldService.ts";
 import * as BotMailService from "./bots/BotMailService.ts";
 import * as BotService from "./bots/BotService.ts";
 import * as BotWakeReactor from "./bots/BotWakeReactor.ts";
+import * as RepairMergeGuard from "./bots/RepairMergeGuard.ts";
 import * as RepairService from "./bots/RepairService.ts";
 import * as WatcherService from "./bots/WatcherService.ts";
 import * as HomeService from "./home/HomeService.ts";
@@ -1001,6 +1002,8 @@ const layerMakeRoutes = Layer.mergeAll(
     speechStreamRouteLayer,
   ),
   McpHttpServer.layer.pipe(
+    // Checks a repair crew's merge; reads through the pull request service provided below.
+    Layer.provide(RepairMergeGuard.layer),
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
     Layer.provide(ProjectionStoreV2.layer),

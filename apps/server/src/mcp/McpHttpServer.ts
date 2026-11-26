@@ -6,6 +6,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -96,6 +97,7 @@ import * as PullRequestsHandlers from "./toolkits/pullRequests/handlers.ts";
 import * as ToolSearchHandlers from "./toolkits/toolSearch/handlers.ts";
 import { ToolSearchToolkit } from "./toolkits/toolSearch/tools.ts";
 import * as BotHoldService from "../bots/BotHoldService.ts";
+import * as RepairMergeGuard from "../bots/RepairMergeGuard.ts";
 import { BOT_MAIL_READ_TOOL, BOT_TOOL_PREFIX, BotToolkit } from "./toolkits/bot/tools.ts";
 import * as BotHandlers from "./toolkits/bot/handlers.ts";
 import { WatcherPeerToolkit } from "./toolkits/watcher/tools.ts";
@@ -1624,6 +1626,59 @@ const layerBotMailHold = McpServer.middleware(
   { global: true },
 );
 
+/**
+ * A repair crew's `pull_request_merge` waits on `RepairMergeGuard`. It wraps every `tools/call` so
+ * the merge is guarded whichever toolkit serves it, and acts on that tool by name for threads
+ * only. It does not bind a crew's shell.
+ */
+export const layerRepairMergeGuard = McpServer.middleware(
+  Effect.gen(function* () {
+    const guard = yield* RepairMergeGuard.RepairMergeGuard;
+    return (effect, { method, target, payload }) =>
+      method !== "tools/call" || target !== "pull_request_merge"
+        ? effect
+        : Effect.gen(function* () {
+            const scope = Option.getOrUndefined(
+              yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext),
+            );
+            if (scope?.thread === undefined) return yield* effect;
+            const verdict = yield* guard.check({
+              threadId: scope.thread.threadId,
+              environmentId: scope.environmentId,
+              arguments: Predicate.hasProperty(payload, "arguments")
+                ? payload.arguments
+                : undefined,
+            });
+            if (verdict.kind === "unguarded") return yield* effect;
+            if (verdict.kind === "refused") {
+              // The middleware's success type is opaque; a tool call's is this result.
+              return new McpSchema.CallToolResult({
+                content: [{ type: "text", text: verdict.message }],
+                isError: true,
+              }) as never;
+            }
+            const exit = yield* Effect.exit(effect);
+            // A call cut short may have merged or not; nobody is told what is not known.
+            if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return yield* exit;
+            // A merge the host took but left open, as a queue does, is not merged yet.
+            const result = Exit.isSuccess(exit) ? exit.value : undefined;
+            const failed = Predicate.hasProperty(result, "isError") && result.isError === true;
+            const state =
+              Predicate.hasProperty(result, "structuredContent") &&
+              Predicate.hasProperty(result.structuredContent, "state")
+                ? result.structuredContent.state
+                : undefined;
+            yield* guard.settle({
+              crewThreadId: verdict.crewThreadId,
+              number: verdict.number,
+              merged: !failed && state === "merged",
+            });
+            return yield* exit;
+          });
+  }),
+  { global: true },
+);
+
 /** Outside layerTools: only Bot threads list these, so ordinary threads pay nothing for them. */
 export const layerBotTools = Layer.mergeAll(
   toolkitRegistration(BotToolkit, BotHandlers.layer),
@@ -1705,6 +1760,7 @@ export const layer = layerMcpTransport(
     layerTools,
     layerToolSearch,
     layerBotTools,
+    layerRepairMergeGuard,
     layerWatcherPeerTools,
     layerMailPeerTools,
     layerMilestoneEvents,

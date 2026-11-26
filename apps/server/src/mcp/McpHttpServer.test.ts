@@ -62,6 +62,7 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as BotService from "../bots/BotService.ts";
 import * as BotHoldService from "../bots/BotHoldService.ts";
 import * as BotMailService from "../bots/BotMailService.ts";
+import * as RepairMergeGuard from "../bots/RepairMergeGuard.ts";
 import * as RepairService from "../bots/RepairService.ts";
 import * as WatcherService from "../bots/WatcherService.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
@@ -2537,4 +2538,234 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
       });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "puts a repair crew's pull_request_merge behind the guard, and no other call or caller",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const CREW = ThreadId.make("repair-crew:0123456789ab:1");
+        const threadFor = (token: string) =>
+          token === "crew" ? CREW : ThreadId.make(`thread-${token}`);
+        const scopeFor = (token: string): McpInvocationContext.McpThreadInvocationScope => ({
+          environmentId,
+          requestNamespace: token,
+          thread: {
+            threadId: threadFor(token),
+            providerSessionId: token,
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          },
+          client: undefined,
+          capabilities: new Set(["orchestration"]),
+          issuedAt: 1,
+        });
+        const tokens = ["crew", "plain"];
+        const scopes = new Map(tokens.map((token) => [token, scopeFor(token)]));
+        // An outside client names no thread, so there is no crew to ask about.
+        const clientScope: McpInvocationContext.McpInvocationScope = {
+          environmentId,
+          requestNamespace: "client:outside",
+          thread: undefined,
+          client: { sessionId: "outside", label: "Hosted agent", access: "full-access" },
+          capabilities: new Set(["orchestration"]),
+          issuedAt: 1,
+        };
+
+        const handled: Array<string> = [];
+        const asked: Array<{ threadId: ThreadId; arguments: unknown; environmentId: string }> = [];
+        const settled: Array<{ crewThreadId: ThreadId; number: number; merged: boolean }> = [];
+        const tool = (name: string) =>
+          Tool.make(name, {
+            description: name,
+            parameters: Schema.Struct({
+              number: Schema.optional(Schema.Int),
+              expectedHeadSha: Schema.optional(Schema.String),
+            }),
+            success: Schema.Struct({ state: Schema.String }),
+            failure: OrchestratorMcpFailure,
+            failureMode: "return",
+          });
+        const PullRequestToolkit = Toolkit.make(
+          tool("pull_request_merge"),
+          tool("pull_request_read"),
+        );
+        const handler = (name: string) =>
+          McpToolAccess.reads((input: { readonly number?: number | undefined }) =>
+            Effect.suspend(() => {
+              handled.push(`${name}:${input.number}`);
+              return input.number === 9
+                ? Effect.fail(
+                    new OrchestratorMcpFailure({
+                      code: "orchestration_error",
+                      message: "The host said no.",
+                    }),
+                  )
+                : Effect.succeed({ state: input.number === 10 ? "open" : "merged" });
+            }),
+          );
+        const serverLayer = McpHttpServer.layerMcpTransport(
+          Layer.mergeAll(
+            McpHttpServer.toolkitRegistration(
+              PullRequestToolkit,
+              McpToolAccess.toLayer(PullRequestToolkit, {
+                pull_request_merge: handler("merge"),
+                pull_request_read: handler("read"),
+              }),
+            ),
+            McpHttpServer.layerRepairMergeGuard,
+          ),
+        ).pipe(
+          Layer.provide(
+            Layer.mock(RepairMergeGuard.RepairMergeGuard)({
+              check: (call) =>
+                Effect.sync(() => {
+                  asked.push(call);
+                  const number = (call.arguments as { number?: number } | undefined)?.number;
+                  if (call.threadId !== CREW) return { kind: "unguarded" as const };
+                  return number === 8
+                    ? {
+                        kind: "refused" as const,
+                        reason: "no_checks" as const,
+                        message: RepairService.MERGE_REFUSAL_MESSAGES.no_checks,
+                      }
+                    : { kind: "allowed" as const, crewThreadId: CREW, number: number ?? 0 };
+                }),
+              settle: (result) =>
+                Effect.sync(() => {
+                  settled.push(result);
+                }),
+            }),
+          ),
+          Layer.provide(ServerSettings.layerTest()),
+          Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+          Layer.provide(
+            Layer.mock(McpSessionRegistry.McpSessionRegistry)({
+              resolve: (token) => Effect.succeed(scopes.get(token)),
+            }),
+          ),
+          Layer.provide(
+            Layer.succeed(McpHttpServer.McpClientAuthenticator)({
+              authenticate: (request) =>
+                Effect.succeed(
+                  request.headers.authorization === "Bearer client" ? clientScope : undefined,
+                ),
+            }),
+          ),
+        );
+        yield* HttpRouter.serve(serverLayer, { disableListenLog: true, disableLogger: true }).pipe(
+          Layer.build,
+        );
+        const httpClient = yield* HttpClient.HttpClient;
+        const session = (token: string) =>
+          Effect.gen(function* () {
+            const headers = {
+              accept: "application/json, text/event-stream",
+              authorization: `Bearer ${token}`,
+            };
+            const initialize = yield* httpClient.post("/mcp", {
+              headers,
+              body: HttpBody.text(
+                `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1.0.0"}}}`,
+                "application/json",
+              ),
+            });
+            return (name: string, args: object) =>
+              httpClient
+                .post("/mcp", {
+                  headers: {
+                    ...headers,
+                    "mcp-session-id": initialize.headers["mcp-session-id"]!,
+                    "mcp-protocol-version": "2025-06-18",
+                  },
+                  body: HttpBody.text(
+                    JSON.stringify({
+                      jsonrpc: "2.0",
+                      id: 2,
+                      method: "tools/call",
+                      params: { name, arguments: args },
+                    }),
+                    "application/json",
+                  ),
+                })
+                .pipe(
+                  Effect.flatMap((response) => response.text),
+                  Effect.map(
+                    (text) =>
+                      text
+                        .split("\n")
+                        .filter((line) => line.startsWith("data: ") || line.startsWith("{"))
+                        .map(
+                          (line) =>
+                            JSON.parse(line.replace(/^data: /u, "")) as {
+                              id?: number;
+                              result?: {
+                                isError?: boolean;
+                                content?: ReadonlyArray<{ text: string }>;
+                              };
+                            },
+                        )
+                        .find((message) => message.id === 2)!.result!,
+                  ),
+                );
+          });
+        const crew = yield* session("crew");
+        const plain = yield* session("plain");
+        const client = yield* session("client");
+
+        // The crew's merge the guard allows runs, and the Bot hears it merged.
+        const head = "a".repeat(40);
+        const merged = yield* crew("pull_request_merge", { number: 7, expectedHeadSha: head });
+        expect(merged.isError).not.toBe(true);
+        expect(asked).toEqual([
+          {
+            threadId: CREW,
+            environmentId,
+            arguments: { number: 7, expectedHeadSha: head },
+          },
+        ]);
+        expect(handled).toEqual(["merge:7"]);
+        expect(settled).toEqual([{ crewThreadId: CREW, number: 7, merged: true }]);
+
+        // One the guard refuses never reaches the tool, and the crew reads why. Refusing is the
+        // guard's to report, so the middleware reports nothing more.
+        const refused = yield* crew("pull_request_merge", { number: 8, expectedHeadSha: head });
+        expect(refused).toMatchObject({
+          isError: true,
+          content: [{ text: RepairService.MERGE_REFUSAL_MESSAGES.no_checks }],
+        });
+        expect(handled).toEqual(["merge:7"]);
+        expect(settled).toHaveLength(1);
+
+        // The host refusing an allowed merge is a merge that did not happen, and the crew sees its error.
+        const hostRefused = yield* crew("pull_request_merge", { number: 9, expectedHeadSha: head });
+        expect(hostRefused.isError).toBe(true);
+        expect(hostRefused.content?.[0]?.text).toContain("The host said no.");
+        expect(settled.at(-1)).toEqual({ crewThreadId: CREW, number: 9, merged: false });
+
+        // A merge the host accepted but left open (a queue) is not merged either.
+        yield* crew("pull_request_merge", { number: 10, expectedHeadSha: head });
+        expect(settled.at(-1)).toEqual({ crewThreadId: CREW, number: 10, merged: false });
+        expect(handled).toEqual(["merge:7", "merge:9", "merge:10"]);
+
+        // No other tool is asked about, from the crew or anyone.
+        const askedBefore = asked.length;
+        yield* crew("pull_request_read", { number: 7 });
+        yield* plain("pull_request_read", { number: 7 });
+        expect(asked).toHaveLength(askedBefore);
+
+        // A thread that is not a crew's merge goes on as before, and settles nothing.
+        const settledBefore = settled.length;
+        const ordinary = yield* plain("pull_request_merge", { number: 8, expectedHeadSha: head });
+        expect(ordinary.isError).not.toBe(true);
+        expect(handled.at(-1)).toBe("merge:8");
+        expect(settled).toHaveLength(settledBefore);
+
+        // An outside client names no thread, so there is no crew to ask about.
+        const askedForClient = asked.length;
+        yield* client("pull_request_merge", { number: 8, expectedHeadSha: head });
+        expect(asked).toHaveLength(askedForClient);
+        expect(handled.at(-1)).toBe("merge:8");
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

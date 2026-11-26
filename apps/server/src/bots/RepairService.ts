@@ -35,6 +35,8 @@ const DAY_MS = 24 * 60 * 60_000;
 const MAX_REPAIRS_PER_DAY = 3;
 const MAX_FAILED_ATTEMPTS = 2;
 const MAX_REPAIRS_KEPT = 500;
+// One repair can be asked about a handful of pull requests, no more: past this the Bot is not woken.
+const MAX_MERGE_RESULTS = 8;
 const FIRST_BACKOFF_MS = 60 * 60_000;
 const MAX_BACKOFF_MS = 24 * 60 * 60_000;
 const MAX_EPISODES = 100;
@@ -48,27 +50,61 @@ const THREAD_ID = RUN_NAME;
 const LATEST_TIME_MS = Date.UTC(9999, 11, 31);
 
 /**
- * What a repair crew must not change, and what a merge by one must be refused over (Task R3 reads
- * this): the code that holds and permits a Bot's actions, reviews its watchers, signs in, keeps
- * secrets, serves its tools, releases and updates T3 Code, and this service. Globs: `*` stays inside
- * one path segment, `**` crosses them. A repair never weakens its own safety boundary unattended.
+ * What a crew's merge is refused over (`RepairMergeGuard`), matched without regard to case: `*`
+ * stays in one path segment, `**` crosses them. The groups are in docs/internals/bots.md. A repair
+ * never weakens its own safety boundary unattended.
  */
 export const PROTECTED_PATHS = [
+  // The Bot's own hold, repair and review machinery, and what it is woken and told over.
   "apps/server/src/bots/BotHoldService*",
   "apps/server/src/bots/RepairService*",
+  "apps/server/src/bots/RepairMergeGuard*",
   "apps/server/src/bots/WatcherService*",
+  "apps/server/src/bots/BotService*",
+  "apps/server/src/bots/BotWakeReactor*",
   "packages/provider-core/src/server/textGenerationPrompts*",
-  "apps/server/src/auth/**",
-  "apps/server/src/secrets/**",
+  "packages/contracts/src/botHolds*",
+  "packages/contracts/src/botWatchers*",
+  "packages/contracts/src/home*",
+  "apps/server/src/home/**",
+  // What a Bot, a watcher and a crew reach their tools through, and what the guard reads and
+  // runs on: the server's wiring, who a call is from, and the pull request and forge reads.
+  "apps/server/src/server.ts",
   "apps/server/src/mcp/McpHttpServer*",
   "apps/server/src/mcp/McpToolAccess*",
+  "apps/server/src/mcp/McpInvocationContext*",
+  "apps/server/src/mcp/toolkits/bot/**",
+  "apps/server/src/mcp/toolkits/watcher/**",
+  "apps/server/src/mcp/toolkits/pullRequests/**",
+  "apps/server/src/pullRequest/**",
+  "apps/server/src/sourceControl/**",
+  "packages/source-control-core/**",
+  "packages/source-control-github/**",
+  "apps/server/src/auth/**",
+  "apps/server/src/secrets/**",
+  // CI, scripts, hooks and setup, which run on this machine or release from it.
   ".github/**",
-  "scripts/**/*release*",
-  "scripts/**/*sign*",
-  "scripts/**/*update*",
+  "scripts/**",
+  ".vite-hooks/**",
+  "t3.json",
+  "packaging/**",
+  // Dependency changes need the user: what installs, and what is patched into it.
+  "package.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  ".pnpmfile.cjs",
+  "patches/**",
+  "packages/*/package.json",
+  "packages/*/pnpm-lock.yaml",
+  "apps/*/package.json",
+  "apps/*/pnpm-lock.yaml",
+  // The desktop app's updater, installer and signing.
+  "apps/desktop/src/updates/**",
+  "apps/desktop/src/electron/ElectronUpdater*",
+  "apps/desktop/src/ipc/methods/updates*",
+  "apps/desktop/resources/**",
   "apps/desktop/**/*updat*",
   "apps/desktop/**/*sign*",
-  "packages/contracts/src/botHolds*",
 ] as const;
 
 const Kind = Schema.Literals(["watcher", "reviewer", "run"]);
@@ -118,6 +154,19 @@ const Repair = Schema.Struct({
   gaveUp: Schema.optional(Schema.Boolean),
   /** The give-up wake reached the Bot. */
   told: Schema.optional(Schema.Boolean),
+  /**
+   * What the Bot was told of the crew's merge calls, by pull request and result
+   * (`<number>:merged` or `<number>:open`). `pending` is a wake saved before it is queued, so a
+   * restart resends it under the same key.
+   */
+  merges: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        pending: Schema.optional(Schema.Struct({ key: Schema.String, text: Schema.String })),
+      }),
+    ),
+  ),
 });
 type Repair = typeof Repair.Type;
 type Repairs = Readonly<Record<string, Repair>>;
@@ -236,6 +285,88 @@ export class RepairError extends Schema.TaggedError<RepairError>()("RepairError"
   }
 }
 
+/**
+ * Why `RepairMergeGuard` refused a repair crew's merge, one code for each thing it checks. The
+ * words go to the crew, who can act on them; the Bot is told the code and nothing more.
+ */
+export const MergeRefusalReason = Schema.Literals([
+  "bad_arguments",
+  "pull_request_unreadable",
+  "not_open",
+  "wrong_branch",
+  "fork_pull_request",
+  "wrong_target",
+  "target_unreadable",
+  "head_moved",
+  "no_checks",
+  "checks_pending",
+  "checks_failed",
+  "required_check_skipped",
+  "checks_unreadable",
+  "protected_path",
+  "files_unreadable",
+  "changes_requested",
+  "reviews_unreadable",
+]);
+export type MergeRefusalReason = typeof MergeRefusalReason.Type;
+
+/** What the crew's merge came to: refused for a reason, refused by the host after the guard said yes, or done. */
+type MergeReason = MergeRefusalReason | "merge_failed" | "merged";
+
+export const MERGE_REFUSAL_MESSAGES = {
+  bad_arguments:
+    "The merge was refused: the server cannot check this call. A repair crew merges one pull request, its own, and names it: pass `number`, pass the head commit you checked as `expectedHeadSha`, and leave out `repository`, `auto`, `stack`, `method` and another machine's `environmentId`. Leave the pull request open if you cannot.",
+  pull_request_unreadable:
+    "The merge was refused: the server could not read this pull request. Leave it open and say so in your report.",
+  not_open:
+    "The merge was refused: this pull request is closed, already merged or still a draft. There is nothing to merge.",
+  wrong_branch:
+    "The merge was refused: a repair crew may merge only the pull request from its own branch, the one the brief named, and this one is from another. Do not merge it.",
+  fork_pull_request:
+    "The merge was refused: this pull request's branch is in another repository. A repair crew merges only a branch pushed to the repository itself.",
+  wrong_target:
+    "The merge was refused: a repair crew merges only into the repository's default branch, and this pull request targets another branch.",
+  target_unreadable:
+    "The merge was refused: the server could not tell which branch is the repository's default. Leave the pull request open and say so in your report.",
+  head_moved:
+    "The merge was refused: `expectedHeadSha` is not the pull request's current head commit. Read the pull request again, wait for its checks on that commit, then merge with the head you read.",
+  no_checks:
+    "The merge was refused: no check has run and passed on this pull request's head commit, so nothing says it is safe. A repair crew never merges a pull request without checks. Leave it open and say in your report that it has none.",
+  checks_pending:
+    "The merge was refused: some checks on this pull request have not finished, or wait for approval. Wait for them to finish and ask again. Do not merge another way.",
+  checks_failed:
+    "The merge was refused: a check on this pull request failed or was cancelled. Fix the cause and push, or leave the pull request open and say why in your report.",
+  required_check_skipped:
+    "The merge was refused: a required check on this pull request was skipped, which counts as missing. Leave it open and say so in your report.",
+  checks_unreadable:
+    "The merge was refused: the server could not read all of this pull request's checks. Leave it open and say so in your report.",
+  protected_path:
+    "The merge was refused: this pull request changes a protected path, one the brief lists, and only the user may merge that. Leave it open, and say in your report which change needs the user.",
+  files_unreadable:
+    "The merge was refused: the server could not read the whole list of files this pull request changes. Leave it open and say so in your report.",
+  changes_requested:
+    "The merge was refused: a reviewer asked for changes on this pull request and has not withdrawn it. Leave it open and say so in your report.",
+  reviews_unreadable:
+    "The merge was refused: the server could not read this pull request's reviews. Leave it open and say so in your report.",
+} as const satisfies Record<MergeRefusalReason, string>;
+
+/** The wake that tells the Bot what became of a crew's merge. As fixed as `healthText`. */
+const mergeText = (
+  signalId: string,
+  result: {
+    readonly number: number | null;
+    readonly merged: boolean;
+    readonly reason: MergeReason;
+  },
+) =>
+  [
+    `Health signal ${signalId}: a repair crew asked to merge a pull request.`,
+    `pull request: ${result.number === null ? "none named" : `#${result.number}`}`,
+    `result: ${result.merged ? "merged" : "left open"}`,
+    `reason: ${result.reason}`,
+    "This message was written by the server from fixed fields. It holds no title, text or file name from the pull request or the crew.",
+  ].join("\n");
+
 const KIND_MEANINGS = {
   watcher: "a watcher's scheduled runs keep failing",
   reviewer: "the model that reviews watchers keeps failing to run",
@@ -277,9 +408,10 @@ const briefText = (fields: {
     "3. Make the smallest change that fixes it.",
     "4. Run `vp run check:changed` and fix what it reports. Do not run repository-wide checks.",
     `5. Commit, push the branch ${branch}, and open a pull request.`,
-    "6. Report in a few lines: the cause, the fix and the pull request.",
+    "6. Wait for the pull request's checks to finish. Merge it with the pull_request_merge tool, and only once every check has passed. Pass number and expectedHeadSha, and nothing else but method. The server refuses the merge when a check is missing, pending or failed, when the pull request changes a protected path, or when it is not your branch into the default branch. If it refuses, leave the pull request open and say why in your report.",
+    "7. Report in a few lines: the cause, the fix, the pull request, and whether it merged.",
     "",
-    "Do not merge the pull request. Leave it open.",
+    "Merge only with the pull_request_merge tool: never with `gh pr merge` or another command, never push to main or to the default branch, and never force-push.",
     "",
     "Do not touch these paths. They guard the Bot's own safety, so a change to one is the user's to make. If the fix needs one, leave that part out and say in your report what the user must change:",
     ...PROTECTED_PATHS.map((path) => `- ${path}`),
@@ -340,15 +472,29 @@ export class RepairService extends Context.Service<
       { readonly threadId: ThreadId; readonly branch: string; readonly attempt: number },
       RepairError
     >;
-    /** The repair a crew thread was started for, if it is one. Task R3 guards their merges. */
+    /** The repair a crew thread was started for, if it is one. `RepairMergeGuard` guards their merges. */
     readonly repairOf: (threadId: ThreadId) => Effect.Effect<
       | {
           readonly signalId: string;
           readonly botThreadId: ThreadId;
           readonly attempt: number;
+          /** The branch this crew was told to push, which is the only one it may merge. */
+          readonly branch: string;
         }
       | undefined
     >;
+    /**
+     * Tells the Bot what became of a repair crew's merge call, once for each pull request and
+     * result, from fixed fields: the pull request's number, merged or left open, and the reason
+     * code. Nothing is said for a thread that is not a repair crew, and no more than eight
+     * results of one repair are ever sent.
+     */
+    readonly reportMerge: (input: {
+      readonly crewThreadId: ThreadId;
+      readonly number: number | null;
+      readonly merged: boolean;
+      readonly reason: MergeReason;
+    }) => Effect.Effect<void>;
     /** Signals a failed run of a Bot, one per run, and counts a failed repair crew. */
     readonly handleMilestone: (event: MilestoneEvent) => Effect.Effect<void>;
     /** Sends the wakes that were saved but never queued when the server last stopped. */
@@ -543,12 +689,14 @@ const make = Effect.gen(function* () {
     Ref.get(state).pipe(
       Effect.map((current) => {
         const crew = crewOf(current.repairs, threadId);
-        return crew === undefined
+        const branch = crew?.repair.attempts[crew.attempt - 1]?.branch;
+        return crew === undefined || branch === undefined
           ? undefined
           : {
               signalId: crew.signalId,
               botThreadId: crew.repair.botThreadId,
               attempt: crew.attempt,
+              branch,
             };
       }),
     );
@@ -565,6 +713,60 @@ const make = Effect.gen(function* () {
     });
     if (woken) yield* saveRepairs({ ...repairs, [signalId]: { ...repair, told: true } });
   });
+
+  /** Queues a saved merge result; once the Bot has it, the repair no longer owes it. Under the lock. */
+  const sendMerge = Effect.fn("RepairService.sendMerge")(function* (
+    signalId: string,
+    slot: string,
+  ) {
+    const repairs = (yield* Ref.get(state)).repairs;
+    const repair = Object.hasOwn(repairs, signalId) ? repairs[signalId] : undefined;
+    const note =
+      repair?.merges !== undefined && Object.hasOwn(repair.merges, slot)
+        ? repair.merges[slot]
+        : undefined;
+    if (repair === undefined || note?.pending === undefined) return;
+    if (!(yield* bots.wakeWith({ botThreadId: repair.botThreadId, ...note.pending }))) return;
+    yield* saveRepairs({
+      ...repairs,
+      [signalId]: { ...repair, merges: { ...repair.merges, [slot]: {} } },
+    });
+  });
+
+  const reportMerge: RepairService["Service"]["reportMerge"] = Effect.fn(
+    "RepairService.reportMerge",
+  )(function* ({ crewThreadId, number, merged, reason }) {
+    const crew = crewOf((yield* Ref.get(state)).repairs, crewThreadId);
+    if (crew === undefined) return;
+    const { signalId, repair } = crew;
+    const which = number === null ? "none" : String(number);
+    const slot = `${which}:${merged ? "merged" : "open"}`;
+    const merges = repair.merges ?? {};
+    // Merged ends a pull request's story: a later call on it is refused as not open, and not news.
+    if (Object.hasOwn(merges, slot) || Object.hasOwn(merges, `${which}:merged`)) {
+      return yield* sendMerge(signalId, slot);
+    }
+    if (Object.keys(merges).length >= MAX_MERGE_RESULTS) {
+      return yield* Effect.logWarning("A repair's merge result was not sent: too many already.", {
+        signalId,
+      });
+    }
+    const pending = {
+      key: `health:${signalId}:merge:${which}:${merged ? "merged" : "open"}`,
+      text: mergeText(signalId, { number, merged, reason }),
+    };
+    // Saved before the send, as every wake is: a crash then resends it under the same key.
+    const repairs = (yield* Ref.get(state)).repairs;
+    if (
+      !(yield* saveRepairs({
+        ...repairs,
+        [signalId]: { ...repair, merges: { ...merges, [slot]: { pending } } },
+      }))
+    ) {
+      return;
+    }
+    yield* sendMerge(signalId, slot);
+  }, locked);
 
   /** One crew's attempt is over in failure: the second one ends the tries. Under the lock. */
   const failAttempt = Effect.fn("RepairService.failAttempt")(function* (
@@ -790,6 +992,13 @@ const make = Effect.gen(function* () {
       { discard: true },
     );
     yield* Effect.forEach(Object.keys(current.repairs), tellGaveUp, { discard: true });
+    yield* Effect.forEach(
+      Object.entries(current.repairs).flatMap(([signalId, repair]) =>
+        Object.keys(repair.merges ?? {}).map((slot) => [signalId, slot] as const),
+      ),
+      ([signalId, slot]) => sendMerge(signalId, slot),
+      { discard: true },
+    );
   }, locked);
 
   return RepairService.of({
@@ -798,6 +1007,7 @@ const make = Effect.gen(function* () {
     find,
     startRepair,
     repairOf,
+    reportMerge,
     handleMilestone,
     start,
   });

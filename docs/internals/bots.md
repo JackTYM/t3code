@@ -126,7 +126,72 @@ than the Bot.
   That id does not match the health pattern, so the turn it starts cannot start a repair.
 - **Crew thread ids are written before the launch** (`repair-crew:<signalId>:<n>`, also the launch's
   command id, so a retry replays), and rolled back if the launch is refused. `repairOf(threadId)`
-  says which repair a thread belongs to.
+  says which repair a thread belongs to, and the branch that crew was told to push.
+
+### Merge guard
+
+A crew merges its own pull request with `pull_request_merge`, after its checks pass, and the server
+decides whether that call goes ahead. `layerRepairMergeGuard` (a global MCP middleware, like the
+mail hold) gives every `pull_request_merge` to
+[`RepairMergeGuard`](../../apps/server/src/bots/RepairMergeGuard.ts), which lets a thread through
+untouched unless it is a repair crew or a subagent of one (by lineage root). For a crew it allows the
+merge only if all of this holds, and each refusal is its own `MergeRefusalReason` with fixed words
+the crew can act on:
+
+- **The call is one the server can check.** `number` and `expectedHeadSha`, and no `repository`,
+  `auto`, `stack`, other machine's `environmentId` or unknown argument. It is read raw, before the
+  tool decodes it, and resolved to a pull request the way `pull_request_merge`'s `locate` does
+  (calling thread's project, plus the number): keep the two in step. Auto-merge and stack merges
+  would merge something this check never saw.
+- **Its own branch, into the default branch.** The head is exactly the branch `repairOf` names
+  (`repair/<signalId>`, `-2` for the retry), in the same repository, and the base is the
+  repository's default branch as the provider reports it. `expectedHeadSha` is the current head;
+  the host pins the merge to it, so what was checked is what merges.
+- **Every check passed, and there is at least one.** Zero checks is `no_checks` and refused: the
+  fork's `CI` workflow can be off, and a pull request nothing checked must never look green. All
+  skipped counts as none. Pending or awaiting approval, failed or cancelled, a required check
+  skipped, and a check the host could not list are each refused. Check runs and
+  commit statuses are both read from the head commit's rollup in `detail.checks`. The GitHub provider
+  pages it ten times (a thousand contexts) and does not tell the service when it stops there, so a
+  rollup longer than that is read short.
+- **No protected path.** The pull request's whole changed-file list is read page by page, both
+  sides of a rename, and matched against `PROTECTED_PATHS` without regard to case. A list that
+  cannot be read, does not end in 100 pages, or has a different count from the pull request's
+  `changedFiles` is refused, since the host's files API stops at 3000 and the provider skips
+  entries it cannot parse. The patch parser is reused rather than a new read, so a host that lists
+  no paths is refused, not guessed at.
+- **No review asking for changes**, by each reviewer's latest verdict and the host's decision;
+  reviews cut short are refused.
+- **Fresh and closed.** The pull request's caches are invalidated and read with `allowStale: false`,
+  and any failure or defect while checking is a refusal, never a merge.
+
+`PROTECTED_PATHS` is the one list, in the brief and the guard. A test lists every entry, so a change
+to it is deliberate. It covers this machinery and what the guard reads (so a crew cannot make it say
+yes), what runs here or releases without a build (CI, `scripts/**`, git hooks, `t3.json` worktree
+setup), dependencies, and the desktop app's updater, installer and signing. The updater and signing
+code is not all named for it: `FullUpdate.ts`, `DesktopUpdates.ts`, `ElectronUpdater.ts` and
+`electron-updater@*.patch` have a capital `U`, and desktop signing lives in `scripts/` and the
+workflows, so the list names `apps/desktop/src/updates/**`, the updater and IPC files, `patches/**`
+and the installer resources, and the name patterns are matched case-blind.
+
+**What the guard tells the Bot.** After a merge or a refusal the Bot gets one
+`bot-wake:health:<signalId>:merge:<number>:<merged|open>`: the pull request's number, merged or left
+open, and the reason code, and no title, body or file name. It is saved before it is queued and
+resent at start like the other wakes, once for each pull request and result, at most 8 for a repair,
+and a merged pull request is not told of again. It does not match the health pattern, so the turn it
+starts cannot start a repair.
+
+**What it does not stop.** A crew is an ordinary full-access thread: a shell as the user, with the
+user's `gh` login and git credentials, and nothing here sees what that shell runs. A crew can still
+`gh pr merge` any pull request, `git push origin HEAD:main` (or `--force`) with no pull request,
+post a passing commit status with `gh api`, dismiss a review, or start another thread whose merges
+are not a crew's. Nothing in the codebase can refuse those before they run: the only command
+classifier, `changeRequestsClosedBy`, runs after the fact over a thread's finished work items to
+refresh pull request state and knows neither a push nor `gh api`, and no provider adapter asks a
+full-access thread whether a command may run. So the brief and the guard bind a crew that follows
+them. What would hold is on the host: branch protection on the default branch requiring a pull
+request and the check, code owners for `PROTECTED_PATHS`, and a crew login that is not an
+administrator. That also stops the user's own direct pushes to the default branch.
 
 ## Model
 
