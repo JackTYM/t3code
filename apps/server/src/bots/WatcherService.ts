@@ -2159,20 +2159,24 @@ const make = Effect.gen(function* () {
     reason: string,
     cause: DropCause,
     removed: boolean,
+    isTool: boolean,
   ) {
     const tag = `watcher-data-${yield* random.uuidV4().pipe(Effect.orDie)}`;
+    // The Bot reads this, so a tool is called a tool.
+    const noun = isTool ? "tool" : "watcher";
+    const label = `${noun === "tool" ? "Tool" : "Watcher"} ${name}`;
     const headline =
       cause === "rejected"
         ? removed
-          ? `Watcher ${name}: rejected by the reviewer, so the watcher was removed.`
-          : `Watcher ${name}: revision rejected by the reviewer. The approved version keeps running.`
+          ? `${label}: rejected by the reviewer, so the ${noun} was removed.`
+          : `${label}: revision rejected by the reviewer. The approved version keeps running.`
         : cause === "unreviewed"
           ? removed
-            ? `Watcher ${name}: the reviewer could not run, so the watcher was removed.`
-            : `Watcher ${name}: the reviewer could not run, so the revision was discarded. The approved version keeps running.`
+            ? `${label}: the reviewer could not run, so the ${noun} was removed.`
+            : `${label}: the reviewer could not run, so the revision was discarded. The approved version keeps running.`
           : removed
-            ? `Watcher ${name}: its first run could not complete, so the watcher was removed.`
-            : `Watcher ${name}: revision discarded. The approved version keeps running.`;
+            ? `${label}: its first run could not complete, so the ${noun} was removed.`
+            : `${label}: revision discarded. The approved version keeps running.`;
     const whose =
       cause === "rejected"
         ? "the reviewer's reason"
@@ -2208,7 +2212,13 @@ const make = Effect.gen(function* () {
     const queued = yield* bots.wakeWith({
       botThreadId,
       key: `watcher-review:${folder}:${name}:${hash}:${at}`,
-      text: yield* discardText(name, reason, cause, record.approvedHash === undefined),
+      text: yield* discardText(
+        name,
+        reason,
+        cause,
+        record.approvedHash === undefined,
+        record.kind === "tool",
+      ),
     });
     if (!queued) {
       yield* Effect.logWarning("Watcher rejection could not be sent to the Bot.", {

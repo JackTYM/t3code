@@ -246,15 +246,15 @@ export class BotWatcherError extends Schema.TaggedError<BotWatcherError>()("BotW
           "This turn was started by an incoming message or event, not by the user typing, so it cannot create or remove watchers. Tell the user what you would watch and let them ask you in a turn they start. A wake turn may still propose a revision of a watcher the user has already approved."
         );
       case "invalid":
-        return this.detail ?? "That watcher is not valid.";
+        return this.detail ?? "That watcher or tool is not valid.";
       case "not_found":
-        return this.detail ?? `There is no watcher named ${this.watcher ?? ""}.`;
+        return this.detail ?? `There is no watcher or tool named ${this.watcher ?? ""}.`;
       case "no_pending":
-        return `Watcher ${this.watcher ?? ""} has no version under review.`;
+        return `${this.watcher ?? ""} has no version under review.`;
       case "stale_hash":
-        return `Watcher ${this.watcher ?? ""} changed since that version was shown. Review the new version first.`;
+        return `${this.watcher ?? ""} changed since that version was shown. Review the new version first.`;
       case "dry_run_required":
-        return `Run watcher ${this.watcher ?? ""} once, where it will run, first: the server makes a version live, or moves a watcher, only after a dry run has completed there.`;
+        return `Run ${this.watcher ?? ""} once, where it will run, first: the server makes a version live, or moves it, only after a dry run has completed there.`;
       case "unreachable":
         return this.detail ?? "The environment did not answer.";
       case "io":

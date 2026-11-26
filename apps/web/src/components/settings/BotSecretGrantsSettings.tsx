@@ -200,8 +200,8 @@ function GrantDialog(props: {
             <DialogDescription>
               {editing.mode === "add" ? (
                 <T>
-                  The Bot's watchers can use this secret for requests to these hosts only. The Bot
-                  never sees the value.
+                  Scripts that declare this secret get it as an environment variable. The reviewer
+                  is told the hosts; nothing blocks other requests yet.
                 </T>
               ) : grantIsReference ? (
                 <T>
@@ -252,7 +252,10 @@ function GrantDialog(props: {
                   onChange={(event) => setHostsText(event.target.value)}
                 />
                 <span className="block text-muted-foreground text-xs">
-                  <T>One per line, up to 8. Requests to any other host get no secret.</T>
+                  <T>
+                    One per line, up to 8. Do not grant credentials whose misuse you could not
+                    accept until scripts run isolated and requests are limited to these hosts.
+                  </T>
                 </span>
               </label>
             )}

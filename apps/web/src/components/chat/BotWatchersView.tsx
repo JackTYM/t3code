@@ -488,7 +488,7 @@ function WatcherCard(props: {
           </div>
           {watcher.hosts === undefined || watcher.hosts.length === 0 ? null : (
             <p className="text-muted-foreground text-xs break-all">
-              {gt("Sent only to {hosts}", { hosts: watcher.hosts.join(", ") })}
+              {gt("Declared hosts: {hosts}", { hosts: watcher.hosts.join(", ") })}
             </p>
           )}
         </div>

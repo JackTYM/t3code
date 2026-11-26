@@ -2054,6 +2054,26 @@ it.effect("a reviewer's rejection of a new watcher removes it", () => {
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
 
+it.effect("tells the Bot a rejected tool is a tool and a rejected watcher is a watcher", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const reviewer = yield* FakeReviewer;
+    yield* reviewer.answer(matchName("header-check"), REJECTS);
+    yield* proposeTool(botThread.id, "header-check");
+    yield* reviewer.answer(matchName("draft"), REJECTS);
+    yield* proposeWatcher(botThread.id, "draft");
+    yield* watchers.drainReviews;
+    const texts = reviewWakes(orchestration).map(({ text }) => text.split("\n")[0]);
+    assert.sameMembers(texts, [
+      "Tool header-check: rejected by the reviewer, so the tool was removed.",
+      "Watcher draft: rejected by the reviewer, so the watcher was removed.",
+    ]);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
 it.effect.each([
   [
     "fails",

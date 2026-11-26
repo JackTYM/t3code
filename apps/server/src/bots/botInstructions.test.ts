@@ -21,5 +21,7 @@ describe("withBotInstructions", () => {
       expect(instructions).toContain(name);
     }
     expect(instructions).toContain("after you call a tool");
+    // The Bot once denied that a watcher has a field for declaring tools.
+    expect(instructions).toContain("`tools` parameter of t3_bot_watcher_propose");
   });
 });
