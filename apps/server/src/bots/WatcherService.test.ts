@@ -216,7 +216,7 @@ const statuses = (threadId: ThreadId) =>
   });
 
 it.effect(
-  "runs a watcher only as the approved version, and a change stops it until approved",
+  "runs a watcher only as the approved version, and a change waits without stopping it",
   () => {
     const orchestration = makeOrchestration();
     const botThread = addBot(orchestration, "thread:bot");
@@ -240,16 +240,16 @@ it.effect(
         ["unapproved", "needs_approval"],
       ]);
 
-      // A changed proposal does not replace the approved version: both stop until the user decides.
+      // A changed proposal does not replace the approved version: that keeps running meanwhile.
       const proposed = yield* proposeWatcher(botThread.id, "disk", { run: "#!/bin/sh\nexit 0\n" });
       assert.notStrictEqual(proposed.hash, approvedHash);
       yield* TestClock.adjust(EVERY_MS);
       yield* watchers.runDue;
-      assert.strictEqual(runner.state.runs, 1);
+      assert.strictEqual(runner.state.runs, 2);
       const listed = (yield* watchers.list(botThread.id)).watchers.find(
         ({ name }) => name === "disk",
       );
-      assert.strictEqual(listed?.status, "needs_approval");
+      assert.strictEqual(listed?.status, "tripped");
       assert.strictEqual(listed?.approvedHash, approvedHash);
       assert.strictEqual(listed?.pendingHash, proposed.hash);
 
@@ -257,7 +257,7 @@ it.effect(
       yield* watchers.reject({ botThreadId: botThread.id, name: "disk" });
       yield* TestClock.adjust(EVERY_MS);
       yield* watchers.runDue;
-      assert.strictEqual(runner.state.runs, 2);
+      assert.strictEqual(runner.state.runs, 3);
       assert.strictEqual((yield* statuses(botThread.id))[0]?.[1], "tripped");
       assert.isFalse(
         yield* fileSystem.exists(yield* versionDirectory(botThread.id, "disk", proposed.hash)),
@@ -268,7 +268,7 @@ it.effect(
       yield* fileSystem.writeFileString(path.join(stored, "run"), "#!/bin/sh\nexit 0\n");
       yield* TestClock.adjust(EVERY_MS);
       yield* watchers.runDue;
-      assert.strictEqual(runner.state.runs, 2);
+      assert.strictEqual(runner.state.runs, 3);
       assert.strictEqual((yield* statuses(botThread.id))[0]?.[1], "invalid");
     }).pipe(provideWatchers(orchestration, runner.layer));
   },
@@ -491,6 +491,64 @@ const installRemoteWatcher = Effect.fn("installRemoteWatcher")(function* (
     approvedBy: "owner",
   });
   return hash;
+});
+
+it.effect("lets a wake turn revise an approved watcher, but not create or remove one", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const approvedHash = yield* installWatcher(botThread.id, "disk");
+    yield* installWatcher(botThread.id, "draft", { approve: false });
+    orchestration.startRun(botThread, { id: "bot-wake:watcher:disk:1", createdBy: "system" });
+
+    const revised = yield* proposeWatcher(botThread.id, "disk", { run: "#!/bin/sh\nexit 0\n" });
+    assert.deepStrictEqual(revised.pending, true);
+    assert.notStrictEqual(revised.hash, approvedHash);
+    // Never approved, so the user has yet to accept it at all: not a revision.
+    const draft = yield* proposeWatcher(botThread.id, "draft", { run: "#!/bin/sh\nexit 0\n" }).pipe(
+      Effect.flip,
+    );
+    const brandNew = yield* proposeWatcher(botThread.id, "brand-new").pipe(Effect.flip);
+    const removal = yield* watchers
+      .remove({ botThreadId: botThread.id, name: "disk" })
+      .pipe(Effect.flip);
+    assert.deepStrictEqual(
+      [draft.reason, brandNew.reason, removal.reason],
+      ["started_by_wake", "started_by_wake", "started_by_wake"],
+    );
+    assert.deepStrictEqual(yield* statuses(botThread.id), [
+      ["disk", "healthy"],
+      ["draft", "needs_approval"],
+    ]);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+it.effect("events mode: an undelivered event is still offered while a revision waits", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  runner.state.result = { code: ExitCode(0), stdout: "new assignment", timedOut: false };
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* installWatcher(botThread.id, "inbox", { mode: "events", purpose: "New assignments" });
+    botThread.settledOverride = "settled";
+    yield* watchers.runDue;
+    assert.strictEqual(runner.state.runs, 1);
+
+    const revised = yield* proposeWatcher(botThread.id, "inbox", {
+      mode: "events",
+      purpose: "New assignments",
+      run: "echo two\n",
+    });
+    botThread.settledOverride = null;
+    yield* watchers.runDue;
+    assert.strictEqual(orchestration.sent.length, 1);
+    assert.include(orchestration.sent[0]?.text, "new assignment");
+    const [listed] = (yield* watchers.list(botThread.id)).watchers;
+    assert.deepStrictEqual([listed?.status, listed?.pendingHash], ["healthy", revised.hash]);
+  }).pipe(provideWatchers(orchestration, runner.layer));
 });
 
 it.effect(
@@ -1015,10 +1073,9 @@ it.effect("lets the user pause, resume and remove a watcher whatever woke the Bo
     assert.strictEqual(runner.state.runs, 0);
 
     // A newer version needs approval as usual, and approving it does not undo the user's pause.
-    const next = yield* proposeWatcher(botThread.id, "api", { run: "#!/bin/sh\nexit 2\n" }).pipe(
-      Effect.flip,
-    );
-    assert.strictEqual(next.reason, "started_by_wake");
+    // A wake turn may propose it; the user's own turn then replaces that proposal.
+    const fromWake = yield* proposeWatcher(botThread.id, "api", { run: "#!/bin/sh\nexit 3\n" });
+    assert.isTrue(fromWake.pending);
     orchestration.startRun(botThread, userMessage);
     const proposed = yield* proposeWatcher(botThread.id, "api", { run: "#!/bin/sh\nexit 2\n" });
     yield* watchers.dryRun({ ...target, hash: proposed.hash });

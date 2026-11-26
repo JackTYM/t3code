@@ -272,9 +272,10 @@ export class WatcherService extends Context.Service<
       readonly approvals: "ok" | "unverified";
     }>;
     /**
-     * A Bot proposes a version. It waits for the user, and the approved version stops running
-     * until the user decides. Refused to a turn the user did not start: such a turn may be
-     * acting on hostile content.
+     * A Bot proposes a version. It waits for review while the approved version, if any, keeps
+     * running. A new watcher is refused to a turn the user did not start: such a turn may be
+     * acting on hostile content. A revision of an already approved watcher is not, since nothing
+     * runs until it has been reviewed.
      */
     readonly propose: (input: {
       readonly botThreadId: ThreadId;
@@ -287,7 +288,7 @@ export class WatcherService extends Context.Service<
       readonly mode?: BotWatcherMode | undefined;
       readonly purpose?: string | undefined;
     }) => Effect.Effect<{ readonly hash: string; readonly pending: boolean }, BotWatcherError>;
-    /** Deletes a watcher and every version of it. Refused like `propose`. */
+    /** Deletes a watcher and every version of it. Refused to a turn the user did not start. */
     readonly remove: (input: {
       readonly botThreadId: ThreadId;
       readonly name: string;
@@ -828,11 +829,9 @@ const make = Effect.gen(function* () {
     Effect.orElseSucceed(() => undefined),
   );
 
-  /** The record's approved version, when it is the one that runs: nothing pending, not paused. */
+  /** The record's approved version, when it is the one that runs: a pending revision does not stop it. */
   const runnable = (record: WatcherRecord) =>
-    record.approvedHash !== undefined && record.pendingHash === undefined && record.paused !== true
-      ? record.approvedHash
-      : undefined;
+    record.approvedHash !== undefined && record.paused !== true ? record.approvedHash : undefined;
 
   const runFolder = Effect.fn("WatcherService.runFolder")(function* (
     folder: string,
@@ -910,7 +909,7 @@ const make = Effect.gen(function* () {
     const status: BotWatcher["status"] =
       shown === undefined
         ? "invalid"
-        : record.pendingHash !== undefined || record.approvedHash === undefined
+        : record.approvedHash === undefined
           ? "needs_approval"
           : record.paused === true
             ? "paused"
@@ -1039,7 +1038,15 @@ const make = Effect.gen(function* () {
   const propose: WatcherService["Service"]["propose"] = Effect.fn("WatcherService.propose")(
     function* (input) {
       const { botThreadId, name } = input;
-      yield* requireUserStartedBot(botThreadId, name);
+      const existing = yield* recordOf(BotService.memoryFolderName(botThreadId), name);
+      if (existing?.approvedHash !== undefined) {
+        // A revision to a watcher the user already has: the running version is untouched and the
+        // reviewer judges the new one, so a wake turn may repair a script.
+        if (!(yield* bots.isBot(botThreadId)))
+          return yield* failure(botThreadId, name, "not_a_bot");
+      } else {
+        yield* requireUserStartedBot(botThreadId, name);
+      }
       const invalid = (detail: string) => failure(botThreadId, name, "invalid", detail);
       if (!isWatcherName(name)) {
         return yield* invalid(
@@ -1084,7 +1091,6 @@ const make = Effect.gen(function* () {
       } satisfies typeof VersionConfig.Type;
       const hash = computeHash({ run: source, config: versionConfig });
       const folder = BotService.memoryFolderName(botThreadId);
-      const existing = yield* recordOf(folder, name);
       const siblings = Object.keys((yield* Ref.get(approvals))[folder] ?? {});
       if (existing === undefined && siblings.length >= MAX_WATCHERS_PER_BOT) {
         return yield* invalid(`A Bot has at most ${MAX_WATCHERS_PER_BOT} watchers.`);

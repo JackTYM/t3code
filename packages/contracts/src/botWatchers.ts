@@ -29,10 +29,9 @@ export const BotWatcherRunsOn = Schema.Union([Schema.Literal("local"), Environme
 export type BotWatcherRunsOn = typeof BotWatcherRunsOn.Type;
 
 /**
- * `needs_approval`: the newest version is not approved, so nothing of the watcher runs.
- * `paused`: the user stopped its runs; the approval is kept.
- * `waiting`: it runs on another environment that did not answer. That is not a failure: it
- * runs again when the environment does, and nothing is counted against it meanwhile.
+ * `needs_approval`: no version is approved, so nothing runs; a revision beside an approved one
+ * does not set it. `paused`: the user stopped it, approval kept. `waiting`: its environment did
+ * not answer, which counts as no failure.
  */
 export const BotWatcherStatus = Schema.Literals([
   "needs_approval",
@@ -168,7 +167,7 @@ export class BotWatcherError extends Schema.TaggedError<BotWatcherError>()("BotW
       case "not_a_bot":
         return `Thread ${this.threadId} is not a Bot.`;
       case "started_by_wake":
-        return "This turn was started by an incoming message or event, not by the user typing, so it cannot create, change or remove watchers. Tell the user what you would watch and let them ask you in a turn they start.";
+        return "This turn was started by an incoming message or event, not by the user typing, so it cannot create or remove watchers. Tell the user what you would watch and let them ask you in a turn they start. A wake turn may still propose a revision of a watcher the user has already approved.";
       case "invalid":
         return this.detail ?? "That watcher is not valid.";
       case "not_found":
