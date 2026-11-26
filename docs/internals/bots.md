@@ -155,7 +155,11 @@ with fixed words the crew can act on:
   auto-merge and stack merges would merge something this check never saw. The call is read raw and
   resolved to a pull request the way `pull_request_merge`'s `locate` does, so keep the two in step.
 - **Its own branch, into the default branch**, in the same repository. `expectedHeadSha` is the
-  current head and the host pins the merge to it, so what was checked is what merges.
+  current head and the host pins the merge to it. The files, though, are a separate read from the
+  head, so the head is read again last, after the files and reviews, and must be the one every
+  read above was about (`head_changed`). That narrows a force-push race but does not close it: a
+  crew that shows a clean head to the file read alone, and the real head to the reads on either side
+  of it, is not caught.
 - **Every check passed, and there is at least one.** Zero checks is refused: a repository whose CI
   does not run on pull requests would otherwise show a pull request nothing checked as green. All
   skipped counts as none. Pending, failed, cancelled, a required check skipped, or a check the host

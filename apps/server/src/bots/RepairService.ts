@@ -149,6 +149,7 @@ export const MergeRefusalReason = Schema.Literals([
   "wrong_target",
   "target_unreadable",
   "head_moved",
+  "head_changed",
   "no_checks",
   "checks_pending",
   "checks_failed",
@@ -367,6 +368,8 @@ export const MERGE_REFUSAL_MESSAGES = {
     "The merge was refused: the server could not tell which branch is the repository's default. Leave the pull request open and say so in your report.",
   head_moved:
     "The merge was refused: `expectedHeadSha` is not the pull request's current head commit. Read the pull request again, wait for its checks on that commit, then merge with the head you read.",
+  head_changed:
+    "The merge was refused: the pull request's head commit changed while the server was checking it, so what was checked may not be what would merge. Do not push while a merge is being asked for. Read the pull request again, wait for its checks, then merge with the head you read.",
   no_checks:
     "The merge was refused: no check has run and passed on this pull request's head commit, so nothing says it is safe. A repair crew never merges a pull request without checks. Leave it open and say in your report that it has none.",
   checks_pending:

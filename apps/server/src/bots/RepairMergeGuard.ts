@@ -322,7 +322,19 @@ const make = Effect.gen(function* () {
     if (paths.some((path) => protectedPatternOf(path) !== undefined)) {
       return "protected_path" as const;
     }
-    return yield* reviewsReason(ref);
+    const reviews = yield* reviewsReason(ref);
+    if (reviews !== undefined) return reviews;
+
+    // The file list is read apart from the head, and the host pins the merge only to the head: a
+    // crew could show a clean head to the files and put the other back. So the head is read once
+    // more, last, and must be the one every read above was about. This narrows the window; it does
+    // not close it, since a push can still land between this read and the merge's own.
+    yield* pullRequests.invalidate({ reference: ref });
+    const last = yield* pullRequests.detail({ ...ref, allowStale: false }).pipe(Effect.option);
+    if (Option.isNone(last)) return "pull_request_unreadable" as const;
+    return last.value.headSha?.toLowerCase() === detail.headSha.toLowerCase()
+      ? undefined
+      : ("head_changed" as const);
   });
 
   const check: RepairMergeGuard["Service"]["check"] = Effect.fn("RepairMergeGuard.check")(

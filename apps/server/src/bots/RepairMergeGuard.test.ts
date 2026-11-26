@@ -93,6 +93,11 @@ interface Scenario {
   readonly failPage: number | null;
   /** The headers for page n, in place of the files', for a host that cannot be read. */
   readonly pageCount: number | null;
+  /**
+   * The head commit the host reports on its nth read of the pull request, the last one staying:
+   * `undefined` when it reports none, `"fails"` when the read cannot be made.
+   */
+  readonly heads: ReadonlyArray<string | undefined | "fails">;
 }
 
 const scenarioDefaults = {
@@ -105,6 +110,7 @@ const scenarioDefaults = {
   failing: [],
   failPage: null,
   pageCount: null,
+  heads: [],
 } satisfies Scenario;
 
 const makeScenario = (overrides: Partial<Scenario> = {}) => {
@@ -146,6 +152,7 @@ const makeScenario = (overrides: Partial<Scenario> = {}) => {
     [BOT, shell(BOT, BOT, null)],
   ]);
   const unavailable = Effect.fail({ _tag: "PullRequestUnavailableError" } as never);
+  let detailReads = 0;
 
   const layer = RepairMergeGuard.layer.pipe(
     Layer.provide(
@@ -190,7 +197,14 @@ const makeScenario = (overrides: Partial<Scenario> = {}) => {
             Effect.suspend(() => {
               log.push("detail");
               if (scenario.failing.includes("defect")) return Effect.die("a bug in the read");
-              return scenario.failing.includes("detail") ? unavailable : Effect.succeed(detail);
+              if (scenario.failing.includes("detail")) return unavailable;
+              const read = detailReads;
+              detailReads += 1;
+              if (scenario.heads.length === 0) return Effect.succeed(detail);
+              const headSha = scenario.heads[Math.min(read, scenario.heads.length - 1)];
+              return headSha === "fails"
+                ? unavailable
+                : Effect.succeed({ ...detail, headSha } as PullRequestDetail);
             }),
           summary: () =>
             Effect.suspend(() => {
@@ -295,6 +309,49 @@ it.effect("allows a green pull request from the crew's own branch, read fresh", 
     assert.deepInclude(scenario.log, "diff:0");
     assert.deepInclude(scenario.log, "activity");
     assert.deepStrictEqual(scenario.reports, []);
+  });
+});
+
+const OTHER_HEAD = "0f1e2d3c4b5a69788796a5b4c3d2e1f001122334";
+
+// The merge is pinned to the head the crew names, but the file list is a separate read: a crew could
+// show a clean head to that read and put the other one back before the merge. The head is read
+// once more after everything else, and has to be the one every earlier read was about.
+it.effect("refuses a pull request whose head changed while it was being checked", () => {
+  const scenario = makeScenario({ heads: [HEAD, OTHER_HEAD] });
+  return Effect.gen(function* () {
+    assert.strictEqual(refusedWith(yield* askFor(scenario)), "head_changed");
+    assert.deepStrictEqual(scenario.reports, [
+      { crewThreadId: CREW, number: 7, merged: false, reason: "head_changed" },
+    ]);
+    // The head was read last: after the files and the reviews, not before them.
+    const reads = scenario.log.flatMap((entry, at) => (entry === "detail" ? [at] : []));
+    assert.lengthOf(reads, 2);
+    assert.isAbove(reads[1]!, scenario.log.lastIndexOf("diff:0"));
+    assert.isAbove(reads[1]!, scenario.log.lastIndexOf("activity"));
+  });
+});
+
+it.effect.each([
+  ["reports no head", undefined],
+  ["cannot be read", "fails"],
+] as const)("refuses a pull request whose last read %s", ([, last]) => {
+  // The first read is the good one: no merge on the strength of it alone.
+  const scenario = makeScenario({ heads: [HEAD, last] });
+  return Effect.gen(function* () {
+    const reason = refusedWith(yield* askFor(scenario));
+    assert.strictEqual(reason, last === "fails" ? "pull_request_unreadable" : "head_changed");
+  });
+});
+
+it.effect("allows a pull request whose head is the same on every read", () => {
+  const scenario = makeScenario({ heads: [HEAD, HEAD, HEAD] });
+  return Effect.gen(function* () {
+    assert.strictEqual((yield* askFor(scenario)).kind, "allowed");
+    assert.lengthOf(
+      scenario.log.filter((entry) => entry === "detail"),
+      2,
+    );
   });
 });
 
@@ -495,6 +552,7 @@ const refusals: ReadonlyArray<
     { reviewDecision: "changes-requested" },
     "changes_requested",
   ],
+  ["the head changed while it was being checked", { heads: [HEAD, OTHER_HEAD] }, "head_changed"],
   ["the reviews cannot be read", { failing: ["activity"] }, "reviews_unreadable"],
   ["the review decision cannot be read", { failing: ["summary"] }, "reviews_unreadable"],
   ["the reviews were cut short", { activity: { commentsTruncated: true } }, "reviews_unreadable"],
