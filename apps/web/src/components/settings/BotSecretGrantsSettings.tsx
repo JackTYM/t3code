@@ -6,6 +6,7 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  BOT_SECRET_GRANT_MIN_VALUE_LENGTH,
   type BotSecretGrant,
   type EnvironmentId,
   type SecretReference,
@@ -50,8 +51,12 @@ import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import {
   botGrantTargets,
+  botSecretGrantValueIssue,
+  replacesBotSecretGrant,
+  resolveBotGrantTarget,
   validateBotSecretGrantDraft,
   type BotSecretGrantDraftResult,
+  type BotSecretGrantValueIssue,
 } from "./BotSecretGrantsSettings.logic";
 import { SecretSourceInput, useSecretSources } from "./SecretSourceInput";
 import { useSearchableSetting } from "./settingsSearch";
@@ -82,6 +87,7 @@ function GrantDialog(props: {
   environmentId: EnvironmentId;
   threadId: ThreadId;
   editing: Editing;
+  existing: ReadonlyArray<BotSecretGrant>;
   onClose: () => void;
 }) {
   const gt = useGT();
@@ -97,7 +103,9 @@ function GrantDialog(props: {
   const [name, setName] = useState(grant?.name ?? "");
   const [hostsText, setHostsText] = useState(grant?.hosts.join("\n") ?? "");
   const [value, setValue] = useState<string | SecretReference>("");
-  const [valueValid, setValueValid] = useState(true);
+  // A reference grant stays one: its provider text is not shown, so a typed value would replace it.
+  const grantIsReference = grant?.source === "reference";
+  const [valueValid, setValueValid] = useState(!grantIsReference);
   const [attempted, setAttempted] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -106,7 +114,7 @@ function GrantDialog(props: {
     // Replacing the value keeps the hosts the grant already has.
     hostsText: editing.mode === "value" ? editing.grant.hosts.join(" ") : hostsText,
   });
-  const valueReady = typeof value === "string" ? value.trim() !== "" : true;
+  const valueIssue = botSecretGrantValueIssue(value, grantIsReference);
   const allowed = typeof value === "string" ? canStore : canReference;
   const problem = (result: BotSecretGrantDraftResult) => {
     if (result.ok) return null;
@@ -124,9 +132,26 @@ function GrantDialog(props: {
     }
   };
 
+  const valueProblem = (issue: BotSecretGrantValueIssue | null) => {
+    switch (issue) {
+      case null:
+        return null;
+      case "empty":
+        return gt("Enter the secret value.");
+      case "too_short":
+        return gt("A secret value needs at least {count} characters.", {
+          count: BOT_SECRET_GRANT_MIN_VALUE_LENGTH,
+        });
+      case "reference_required":
+        return gt(
+          "This grant reads its value from a provider. Pick the provider and enter the reference again.",
+        );
+    }
+  };
+
   const save = async () => {
     setAttempted(true);
-    if (!draft.ok || !valueReady || !valueValid || !allowed || busy) return;
+    if (!draft.ok || valueIssue !== null || !valueValid || !allowed || busy) return;
     setBusy(true);
     const result = await set({
       environmentId,
@@ -178,6 +203,12 @@ function GrantDialog(props: {
                   The Bot's watchers can use this secret for requests to these hosts only. The Bot
                   never sees the value.
                 </T>
+              ) : grantIsReference ? (
+                <T>
+                  This grant is a reference: its value is read from a provider. The reference is
+                  never shown again, so saving asks for it once more. Hosts and reference are saved
+                  together.
+                </T>
               ) : (
                 <T>
                   The value is never shown again, so saving asks for it once more. Hosts and value
@@ -199,6 +230,11 @@ function GrantDialog(props: {
                 spellCheck={false}
                 onChange={(event) => setName(event.target.value)}
               />
+              {editing.mode === "add" && replacesBotSecretGrant(name, props.existing) ? (
+                <span className="block text-warning-foreground text-xs" role="status">
+                  <T>This replaces the existing grant.</T>
+                </span>
+              ) : null}
             </label>
             {editing.mode === "value" ? null : (
               <label className="block space-y-1.5 text-sm">
@@ -210,6 +246,7 @@ function GrantDialog(props: {
                   rows={3}
                   value={hostsText}
                   disabled={busy}
+                  autoFocus={editing.mode === "hosts"}
                   placeholder="api.github.com"
                   spellCheck={false}
                   onChange={(event) => setHostsText(event.target.value)}
@@ -229,23 +266,24 @@ function GrantDialog(props: {
                 value={value}
                 // A reference needs the permission to manage providers, so without it only a value is offered.
                 sources={canReference ? sources : []}
+                initialProvider={grantIsReference && canReference ? sources[0]?.id : undefined}
                 environmentId={environmentId}
                 disabled={busy}
-                autoFocus={editing.mode !== "add"}
+                autoFocus={editing.mode === "value"}
                 placeholder={gt("Paste the secret")}
                 onChange={(event) => setValue(event.target.value)}
                 onSecretChange={(secret) => setValue(secret ?? "")}
                 onValidityChange={setValueValid}
               />
-              {!canReference && sources.length > 0 ? (
+              {!canReference && (sources.length > 0 || grantIsReference) ? (
                 <p className="text-muted-foreground text-xs">
                   <T>Reading the secret from a provider needs permission to manage providers.</T>
                 </p>
               ) : null}
             </div>
-            {attempted && problem(draft) !== null ? (
+            {attempted && (problem(draft) ?? valueProblem(valueIssue)) !== null ? (
               <p className="text-destructive text-xs" role="alert">
-                {problem(draft)}
+                {problem(draft) ?? valueProblem(valueIssue)}
               </p>
             ) : null}
           </DialogPanel>
@@ -253,7 +291,7 @@ function GrantDialog(props: {
             <Button type="button" variant="ghost" disabled={busy} onClick={props.onClose}>
               <T>Cancel</T>
             </Button>
-            <Button type="submit" disabled={busy || !valueReady || !valueValid || !allowed}>
+            <Button type="submit" disabled={busy || !allowed}>
               {busy ? <Spinner size="xs" /> : null} <T>Save</T>
             </Button>
           </DialogFooter>
@@ -341,11 +379,13 @@ function BotGrants(props: { environmentId: EnvironmentId; threadId: ThreadId }) 
   const remove = useAtomCommand(botFilesEnvironment.secretGrantRemove, { reportFailure: false });
   const reportFailure = useFailureToast();
   const [editing, setEditing] = useState<Editing | null>(null);
+  // Closing keeps the grant, so the title still has its name while the dialog animates out.
   const [removing, setRemoving] = useState<BotSecretGrant | null>(null);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const removeGrant = async (grant: BotSecretGrant) => {
-    setRemoving(null);
+    setConfirmingRemove(false);
     setBusy(true);
     const result = await remove({ environmentId, input: { threadId, name: grant.name } });
     setBusy(false);
@@ -409,7 +449,10 @@ function BotGrants(props: { environmentId: EnvironmentId; threadId: ThreadId }) 
                   canRemove={canRemove}
                   busy={busy}
                   onEdit={setEditing}
-                  onRemove={() => setRemoving(grant)}
+                  onRemove={() => {
+                    setRemoving(grant);
+                    setConfirmingRemove(true);
+                  }}
                 />
               ))}
               <SettingsRow
@@ -434,10 +477,11 @@ function BotGrants(props: { environmentId: EnvironmentId; threadId: ThreadId }) 
           environmentId={environmentId}
           threadId={threadId}
           editing={editing}
+          existing={grants.data?.grants ?? []}
           onClose={() => setEditing(null)}
         />
       )}
-      <AlertDialog open={removing !== null} onOpenChange={(open) => !open && setRemoving(null)}>
+      <AlertDialog open={confirmingRemove} onOpenChange={setConfirmingRemove}>
         <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>
@@ -484,29 +528,37 @@ export function BotSecretGrantsSettings(props: {
   const [picked, setPicked] = useState<ThreadId | null>(
     requested === undefined ? null : ThreadId.make(requested),
   );
-  const target = targets.find((candidate) => candidate.threadId === picked) ?? targets[0];
-  if (target === undefined) return null;
+  // Nothing is known until the Bot threads load, so a Bot asked for is not called missing yet.
+  if (targets.length === 0) return null;
+  const resolved = resolveBotGrantTarget(targets, picked);
+  const target = resolved.kind === "found" ? resolved.target : null;
   const nameOf = (candidate: (typeof targets)[number]) =>
     candidate.isHome ? gt("Home") : (candidate.title ?? gt("Bot"));
 
   return (
     <SettingsSection {...setting("bot-secret-grants")}>
-      {targets.length > 1 ? (
+      {targets.length > 1 || target === null ? (
         <SettingsRow
           title={<T>Bot</T>}
-          description={<T>Each Bot has its own grants.</T>}
+          description={
+            resolved.kind === "missing" ? (
+              <T>The Bot you came from is not listed for this environment. Choose a Bot.</T>
+            ) : (
+              <T>Each Bot has its own grants.</T>
+            )
+          }
           control={
             <Select<ThreadId, false>
-              value={target.threadId}
+              value={target?.threadId ?? null}
               onValueChange={(value) => {
                 if (value !== null) setPicked(value);
               }}
             >
               <SelectTrigger size="sm" className="w-full min-w-0 sm:w-56" aria-label={gt("Bot")}>
                 <SelectValue>
-                  {(value: ThreadId) => {
+                  {(value: ThreadId | null) => {
                     const chosen = targets.find((candidate) => candidate.threadId === value);
-                    return chosen === undefined ? value : nameOf(chosen);
+                    return chosen === undefined ? gt("Choose a Bot") : nameOf(chosen);
                   }}
                 </SelectValue>
               </SelectTrigger>
@@ -521,11 +573,13 @@ export function BotSecretGrantsSettings(props: {
           }
         />
       ) : null}
-      <BotGrants
-        key={target.threadId}
-        environmentId={props.environmentId}
-        threadId={target.threadId}
-      />
+      {target === null ? null : (
+        <BotGrants
+          key={target.threadId}
+          environmentId={props.environmentId}
+          threadId={target.threadId}
+        />
+      )}
     </SettingsSection>
   );
 }

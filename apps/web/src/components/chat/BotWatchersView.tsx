@@ -404,6 +404,8 @@ function WatcherCard(props: {
                   <Link
                     to="/settings/home"
                     hash="bot-secret-grants"
+                    // The settings page opens on this environment, whose Bot the grants belong to.
+                    search={{ machine: environmentId }}
                     state={{ settingsTargetHighlight: true, botSecretGrantsThreadId: threadId }}
                   />
                 }

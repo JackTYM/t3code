@@ -213,6 +213,8 @@ type SecretSourceInputProps = Omit<ComponentProps<typeof SecretInput>, "value" |
   /** Offers a check of the committed reference on this environment. */
   readonly environmentId?: EnvironmentId | undefined;
   readonly sources: ReadonlyArray<SecretSource>;
+  /** A provider the field starts on while no reference is committed yet. */
+  readonly initialProvider?: SecretProviderId | undefined;
   readonly onSecretChange: (secret: SecretReference | undefined) => void;
   /** Whether the selected source and committed field can be saved or used. */
   readonly onValidityChange?: (valid: boolean) => void;
@@ -228,6 +230,7 @@ export function SecretSourceInput({
   value,
   environmentId,
   sources,
+  initialProvider,
   onSecretChange,
   onValidityChange,
   children,
@@ -236,7 +239,9 @@ export function SecretSourceInput({
   // A provider picked here applies once a reference for it is committed.
   const gt = useGT();
   const messages = useMessages();
-  const [pendingProvider, setPendingProvider] = useState<SecretProviderId | null>(null);
+  const [pendingProvider, setPendingProvider] = useState<SecretProviderId | null>(
+    initialProvider ?? null,
+  );
   const [rejectedReference, setRejectedReference] = useState<string | null>(null);
   const secret = typeof value === "string" ? undefined : value;
   const input = { ...rest, value: typeof value === "string" ? value : "" };
