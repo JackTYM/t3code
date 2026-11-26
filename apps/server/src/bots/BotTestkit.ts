@@ -79,7 +79,11 @@ export const makeOrchestration = () => {
   >();
   /** Projects a launch can name, by id: their folders and the branch each is on. */
   const projects = new Map<ProjectId, { readonly title: string; readonly workspaceRoot: string }>();
-  const git: { branch: string | null } = { branch: "main" };
+  /** The checkout's own branch, and the branch its remote names as the default (none, or unreadable). */
+  const git: { branch: string | null; defaultBranch: string | null } = {
+    branch: "main",
+    defaultBranch: "main",
+  };
 
   /** Runs before each message is sent, so a test can hold a send where a server could stop. */
   const hooks: {
@@ -221,6 +225,8 @@ export const makeOrchestration = () => {
     }),
     Layer.mock(GitWorkflow.GitWorkflowService)({
       currentBranch: () => Effect.succeed(git.branch),
+      resolvePrimaryRemoteName: () => Effect.succeed("origin"),
+      resolveDefaultBranchName: () => Effect.succeed(git.defaultBranch),
     }),
     Layer.mock(ServerEnvironment.ServerEnvironment)({
       getEnvironmentId: Effect.succeed(EnvironmentId.make("env:here")),

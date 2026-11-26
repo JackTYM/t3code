@@ -389,7 +389,7 @@ const REPAIR_ERROR_MESSAGES = {
   not_configured:
     "No repair project is set, so no repair was started. The user chooses one in Settings → Home. Tell the user.",
   project_unavailable:
-    "The repair project cannot be used: it is gone, is not a Git repository, or is not on a branch. The user can choose it again in Settings → Home. Tell the user.",
+    "The repair project cannot be used: it is gone, is not a Git repository, or its remote names no default branch. The user can choose it again in Settings → Home. Tell the user.",
   no_model:
     "No default model is set, so the repair crew has none to run on. The user sets one in Settings. Tell the user.",
   unsafe_field:
@@ -1110,14 +1110,36 @@ const make = Effect.gen(function* () {
 
   const fail = (reason: RepairError["reason"]) => new RepairError({ reason });
 
+  /** Crew threads claimed whose launch has not ended. Their threads may not exist yet. */
+  const launching = new Set<ThreadId>();
+
+  /** Takes back one attempt's claim, and the repair if that was its only attempt. Under the lock. */
+  const unclaim = Effect.fn("RepairService.unclaim")(function* (
+    signalId: string,
+    threadId: ThreadId,
+  ) {
+    const repairs = (yield* Ref.get(state)).repairs;
+    const repair = Object.hasOwn(repairs, signalId) ? repairs[signalId] : undefined;
+    if (repair === undefined) return;
+    const attempts = repair.attempts.filter((attempt) => attempt.threadId !== threadId);
+    if (attempts.length === repair.attempts.length) return;
+    if (attempts.length > 0) {
+      yield* saveRepairs({ ...repairs, [signalId]: { ...repair, attempts } });
+      return;
+    }
+    const { [signalId]: _unclaimed, ...rest } = repairs;
+    yield* saveRepairs(rest);
+  });
+
   const startRepair: RepairService["Service"]["startRepair"] = Effect.fn(
     "RepairService.startRepair",
   )(function* ({ botThreadId, signalId }) {
     const wakeSignal = yield* wakeSignalOf(botThreadId);
     if (wakeSignal === undefined) return yield* fail("not_health_turn");
     if (wakeSignal !== signalId) return yield* fail("wrong_signal");
-    // One at a time: the claim below must see every earlier one, and a launch can take a moment.
-    return yield* locked(
+    // One at a time: the claim below must see every earlier one. The launch itself is outside the
+    // lock, since it can take a while and every signal and merge result waits on the same lock.
+    const claim = yield* locked(
       Effect.gen(function* () {
         const episode = findEpisode(yield* readEpisodes, signalId);
         // Another Bot's is as good as none: a Bot is not told what the others have.
@@ -1130,6 +1152,8 @@ const make = Effect.gen(function* () {
         const earlier = (yield* Ref.get(state)).repairs[signalId];
         for (const attempt of earlier?.attempts ?? []) {
           if (attempt.failed === true) continue;
+          // Claimed and still being launched: its thread is not there yet, and it is not lost.
+          if (launching.has(attempt.threadId)) return yield* fail("already_started");
           const shell = yield* threads
             .getThreadShell(attempt.threadId)
             .pipe(Effect.orElseSucceed(() => undefined));
@@ -1158,9 +1182,12 @@ const make = Effect.gen(function* () {
           yield* projects.getById(projectId).pipe(Effect.orElseSucceed(() => Option.none())),
         );
         if (project === undefined) return yield* fail("project_unavailable");
-        const baseRef = yield* git
-          .currentBranch(project.workspaceRoot)
-          .pipe(Effect.orElseSucceed(() => null));
+        // The fix merges into the default branch, so the crew starts from the remote's, whatever
+        // the checkout is on.
+        const baseRef = yield* git.resolvePrimaryRemoteName(project.workspaceRoot).pipe(
+          Effect.flatMap((remote) => git.resolveDefaultBranchName(project.workspaceRoot, remote)),
+          Effect.orElseSucceed(() => null),
+        );
         if (baseRef === null) return yield* fail("project_unavailable");
         const modelSelection = resolveProjectSettings(current, projectId, project).settings
           .defaultModelSelection;
@@ -1204,8 +1231,13 @@ const make = Effect.gen(function* () {
         if (!(yield* saveRepairs(newest({ ...repairs, [signalId]: claimed })))) {
           return yield* fail("launch_failed");
         }
-        yield* launches
-          .launch({
+        launching.add(threadId);
+        return {
+          threadId,
+          branch,
+          attempt,
+          bad,
+          input: {
             commandId: CommandId.make(threadId),
             threadId,
             projectId,
@@ -1215,7 +1247,7 @@ const make = Effect.gen(function* () {
             modelSelection,
             // No higher than the Bot itself, which already passed whatever limit the user set.
             runtimeMode: shell.runtimeMode,
-            interactionMode: "default",
+            interactionMode: "default" as const,
             workspaceStrategy,
             initialMessage: {
               text: briefText({
@@ -1230,20 +1262,22 @@ const make = Effect.gen(function* () {
               attachments: [],
               senderThreadId: botThreadId,
             },
-            createdBy: "agent",
-            creationSource: "mcp",
+            createdBy: "agent" as const,
+            creationSource: "mcp" as const,
             groupedUnderThreadId: botThreadId,
-          })
-          .pipe(
-            Effect.catch((cause) => {
-              // Not started, so it costs the Bot nothing and the next try is the same crew thread.
-              const rolledBack =
-                repair === undefined ? repairs : { ...repairs, [signalId]: repair };
-              return saveRepairs(rolledBack).pipe(Effect.andThen(bad(cause)));
-            }),
-          );
-        return { threadId, branch, attempt };
+          },
+        };
       }),
+    );
+    const { threadId, branch, attempt, bad, input } = claim;
+    return yield* launches.launch(input).pipe(
+      Effect.as({ threadId, branch, attempt }),
+      Effect.catch((cause) =>
+        // Not started, so it costs the Bot nothing and the next try is the same crew thread. Only
+        // this claim is taken back: other repairs may have been recorded while it was launching.
+        locked(unclaim(signalId, threadId)).pipe(Effect.andThen(bad(cause))),
+      ),
+      Effect.ensuring(Effect.sync(() => launching.delete(threadId))),
     );
   });
 

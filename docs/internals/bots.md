@@ -143,9 +143,14 @@ thread in a worktree, grouped under the Bot, no higher in runtime mode than the 
   episode map, which goes when the failure recovers, so a failure that recovers and returns cannot
   reset them. The give-up and merge wakes (`bot-wake:health:<id>:gaveup`, `...:merge:...`) do not
   match the health pattern, so the turns they start cannot start another repair.
+- **The crew starts from the remote's default branch**, whatever the project's checkout is on,
+  since its fix merges into that branch.
 - **Crew thread ids are written before the launch** and rolled back if it is refused, so a retry
   replays the same launch and `crewOf(threadId)` always says which repair a thread belongs to and
-  the branch that crew was told to push.
+  the branch that crew was told to push. The claim is made under the service lock and the launch
+  runs outside it, since a launch can be slow and every signal and merge result waits on the lock;
+  a claim whose thread does not exist yet is "launching", not lost, and a refused launch takes back
+  only its own claim.
 
 ### Merge guard
 

@@ -5,6 +5,7 @@ import { type MilestoneEvent, MilestoneId, ProjectId, RunId, ThreadId } from "@t
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -975,7 +976,7 @@ it.effect(
       assert.strictEqual(started.attempt, 1);
       assert.strictEqual(started.threadId, input.threadId);
       assert.strictEqual(input.projectId, REPAIR_PROJECT);
-      // From the checkout's own branch as the remote has it, onto a branch the server names.
+      // From the remote's default branch, onto a branch the server names.
       assert.deepStrictEqual(input.workspaceStrategy, {
         type: "worktree",
         baseRef: "main",
@@ -1236,10 +1237,31 @@ it.effect("says so when the repair project is gone, and it costs nothing", () =>
   );
 });
 
-it.effect("says so when the repair project's checkout is not on a branch", () => {
+// The crew's fix merges into the default branch, so it has to start from there: a checkout that is
+// on someone's work in progress, or on an old branch, is not what the pull request is made against.
+it.effect("starts the crew from the remote's default branch, not the checkout's own", () => {
   const fixture = repairFixture();
   const { orchestration, botThread } = fixture;
-  orchestration.git.branch = null;
+  orchestration.git.branch = "feature/wip";
+  orchestration.git.defaultBranch = "trunk";
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    const signalId = yield* wakeBot(fixture);
+    yield* start(botThread, signalId);
+    const { input } = orchestration.launched[0]!;
+    assert.deepStrictEqual(input.workspaceStrategy, {
+      type: "worktree",
+      baseRef: "trunk",
+      branch: `repair/${signalId}`,
+      startFromOrigin: true,
+    });
+  }).pipe(provideRepair(orchestration));
+});
+
+it.effect("says so when the repair project's remote names no default branch", () => {
+  const fixture = repairFixture();
+  const { orchestration, botThread } = fixture;
+  orchestration.git.defaultBranch = null;
   return Effect.gen(function* () {
     yield* TestClock.setTime(START);
     const signalId = yield* wakeBot(fixture);
@@ -1417,6 +1439,112 @@ it.effect("a launch that fails costs nothing, and the retry is the same crew thr
     assert.strictEqual(orchestration.launched.length, 1);
   }).pipe(provideRepair(orchestration));
 });
+
+/** Holds every launch until `release` is succeeded, and says when one has begun. */
+const gateLaunches = (orchestration: ReturnType<typeof makeOrchestration>) =>
+  Effect.gen(function* () {
+    const begun = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    orchestration.hooks.beforeLaunch = () =>
+      Deferred.succeed(begun, undefined).pipe(Effect.andThen(Deferred.await(release)));
+    return { begun, release };
+  });
+
+// A launch can take a while (a worktree, a setup script), and the service's one lock is what every
+// health signal, merge result and start waits on.
+it.effect("does not hold the service's lock while a crew is being launched", () => {
+  const fixture = repairFixture();
+  const { orchestration, botThread } = fixture;
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    const repair = yield* RepairService.RepairService;
+    const signalId = yield* wakeBot(fixture);
+    const gate = yield* gateLaunches(orchestration);
+    const starting = yield* Effect.forkChild(start(botThread, signalId));
+    yield* Deferred.await(gate.begun);
+
+    // Another failure is told to the Bot while the first crew's worktree is still being made.
+    const before = orchestration.sent.length;
+    yield* repair.signal(watcherSignal(botThread.id, { name: "mail" }));
+    assert.strictEqual(orchestration.sent.length, before + 1);
+
+    yield* Deferred.succeed(gate.release, undefined);
+    const started = yield* Fiber.join(starting);
+    assert.strictEqual(started.attempt, 1);
+    assert.strictEqual((yield* repair.crewOf(started.threadId))?.signalId, signalId);
+  }).pipe(provideRepair(orchestration));
+});
+
+it.effect(
+  "a second start for a signal whose crew is still launching is refused, not run again",
+  () => {
+    const fixture = repairFixture();
+    const { orchestration, botThread } = fixture;
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(START);
+      const signalId = yield* wakeBot(fixture);
+      const gate = yield* gateLaunches(orchestration);
+      const starting = yield* Effect.forkChild(start(botThread, signalId));
+      yield* Deferred.await(gate.begun);
+
+      // Its thread does not exist yet, which is not a crew that was lost.
+      assert.strictEqual((yield* refusal(botThread, signalId)).reason, "already_started");
+
+      yield* Deferred.succeed(gate.release, undefined);
+      yield* Fiber.join(starting);
+      assert.strictEqual(orchestration.launched.length, 1);
+      assert.strictEqual((yield* refusal(botThread, signalId)).reason, "already_started");
+    }).pipe(provideRepair(orchestration));
+  },
+);
+
+it.effect(
+  "a launch that fails takes back only its own claim, not what others recorded meanwhile",
+  () => {
+    const fixture = repairFixture();
+    const { orchestration, botThread } = fixture;
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(START);
+      const repair = yield* RepairService.RepairService;
+      const first = yield* wakeBot(fixture, { name: "disk" });
+      const second = yield* wakeBot(fixture, { name: "mail" });
+      // The turn is the second wake's, so the second signal is the one the Bot may start: start it
+      // while the first signal's launch (begun earlier, from its own turn) is held and then fails.
+      const failing = yield* Deferred.make<void>();
+      const begun = yield* Deferred.make<void>();
+      orchestration.hooks.beforeLaunch = (input) =>
+        Deferred.succeed(begun, undefined).pipe(
+          Effect.andThen(Deferred.await(failing)),
+          Effect.andThen(
+            Effect.fail(
+              new ThreadLaunchError({
+                operation: "provision-worktree",
+                commandId: input.commandId,
+                projectId: input.projectId,
+                cause: "no worktree",
+              }),
+            ),
+          ),
+        );
+      const starting = yield* Effect.forkChild(start(botThread, second).pipe(Effect.flip));
+      yield* Deferred.await(begun);
+      // A different repair's record is written meanwhile (the other launch is not held).
+      orchestration.hooks.beforeLaunch = () => Effect.void;
+      orchestration.startRun(botThread, {
+        id: orchestration.sent.find(({ commandId }) => commandId.includes(first))!.commandId,
+        createdBy: "system",
+      });
+      const other = yield* start(botThread, first);
+
+      yield* Deferred.succeed(failing, undefined);
+      assert.strictEqual((yield* Fiber.join(starting)).reason, "launch_failed");
+
+      // The held launch's claim is gone, and the other repair's is still there.
+      assert.isUndefined(yield* repair.crewOf(ThreadId.make(`repair-crew:${second}:1`)));
+      assert.strictEqual((yield* repair.crewOf(other.threadId))?.signalId, first);
+    }).pipe(provideRepair(orchestration));
+  },
+);
 
 it.effect("allows three repairs a day for one Bot, and the day is counted by the clock", () => {
   const fixture = repairFixture();
