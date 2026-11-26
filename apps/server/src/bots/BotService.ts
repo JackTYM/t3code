@@ -536,8 +536,17 @@ const make = Effect.gen(function* () {
       );
   });
 
+  /** A health key is `RepairService`'s alone: any other wake that names one is refused. */
+  const refusesHealthKey = (botThreadId: ThreadId, key: string) =>
+    key.startsWith(HEALTH_WAKE_KEY_PREFIX)
+      ? Effect.logWarning("A wake named a health key and was refused.", { botThreadId }).pipe(
+          Effect.as(true),
+        )
+      : Effect.succeed(false);
+
   // Under the lock, so ending watches cannot race a Bot adding or removing one.
   const wake = Effect.fn("BotService.wake")(function* (input: BotWake) {
+    if (yield* refusesHealthKey(input.botThreadId, input.key)) return;
     yield* queueWake(input.botThreadId, input.key, input.text);
     if (input.ends.length === 0) return;
     // Delivered already, so a failed save must not fail the wake and invite a second one.
@@ -551,10 +560,7 @@ const make = Effect.gen(function* () {
     key,
     text,
   }) {
-    if (key.startsWith(HEALTH_WAKE_KEY_PREFIX)) {
-      yield* Effect.logWarning("A wake named a health key and was refused.", { botThreadId });
-      return false;
-    }
+    if (yield* refusesHealthKey(botThreadId, key)) return false;
     if (!(yield* wakeable(botThreadId))) return false;
     return yield* queueWake(botThreadId, key, text);
   });

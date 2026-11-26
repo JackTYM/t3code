@@ -279,6 +279,87 @@ it.effect("wakes a Bot for at most twelve failures a day, however slowly they co
   }).pipe(provideRepair(orchestration));
 });
 
+/** A run of the Bot that ended in failure, named as the server names one. */
+const runSignal = (botThreadId: ThreadId, ordinal: number) => ({
+  kind: "run" as const,
+  botThreadId,
+  name: `run:thread:${botThreadId}:ordinal:${ordinal}`,
+  count: 1,
+  firstAt: START,
+  lastAt: START,
+});
+
+// A watcher that keeps failing and recovering can use up the Bot's wakes, and a run that failed
+// once has nothing to be told again with: its one wake is the only chance anyone has to fix it.
+it.effect("a noisy watcher cannot use up the hour's wakes so a failed run is never heard", () => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    const repair = yield* RepairService.RepairService;
+    yield* TestClock.setTime(START);
+    for (let flaps = 0; flaps < 6; flaps += 1) yield* flap(botThread.id);
+    assert.lengthOf(episodeWakes(orchestration), 4);
+
+    // Each kind has one wake of its own in the window, whatever the others have used.
+    yield* repair.signal(runSignal(botThread.id, 1));
+    assert.lengthOf(episodeWakes(orchestration), 5);
+    yield* repair.signal({ ...watcherSignal(botThread.id), kind: "reviewer" });
+    assert.lengthOf(episodeWakes(orchestration), 6);
+
+    // Not two: a second run failure while the hour is full is dropped like any other.
+    yield* repair.signal(runSignal(botThread.id, 2));
+    assert.lengthOf(episodeWakes(orchestration), 6);
+  }).pipe(provideRepair(orchestration));
+});
+
+it.effect("a noisy watcher cannot use up the day's wakes so a failed run is never heard", () => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    const repair = yield* RepairService.RepairService;
+    yield* TestClock.setTime(START);
+    for (let flaps = 0; flaps < 12; flaps += 1) {
+      yield* flap(botThread.id);
+      yield* TestClock.adjust(90 * MINUTE);
+    }
+    yield* flap(botThread.id);
+    assert.lengthOf(episodeWakes(orchestration), 12);
+
+    yield* repair.signal(runSignal(botThread.id, 1));
+    assert.lengthOf(episodeWakes(orchestration), 13);
+    yield* repair.signal(runSignal(botThread.id, 2));
+    assert.lengthOf(episodeWakes(orchestration), 13);
+  }).pipe(provideRepair(orchestration));
+});
+
+it.effect("counts the wakes an older version saved, with no kind, without failing to start", () => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    const restarts = yield* makeRestarts(orchestration);
+    yield* TestClock.setTime(START);
+    const first = yield* restarts.boot;
+    yield* Effect.gen(function* () {
+      yield* (yield* RepairService.RepairService).signal(watcherSignal(botThread.id));
+    }).pipe(first);
+    // An older version saved each wake as a bare time.
+    yield* rewriteState(restarts, (state) => {
+      for (const limit of Object.values<{ wakes: Array<unknown> }>(state.limits)) {
+        limit.wakes = limit.wakes.map((wake) => (wake as { at: number }).at);
+      }
+    });
+    const second = yield* restarts.boot;
+    yield* Effect.gen(function* () {
+      const repair = yield* RepairService.RepairService;
+      // The file was believed: the episode saved with those wakes is still there.
+      const earlier = wakeId(orchestration.sent[0]!.commandId)![1]!;
+      assert.strictEqual((yield* repair.find(earlier))?.name, "disk");
+      yield* repair.signal(runSignal(botThread.id, 1));
+      assert.lengthOf(episodeWakes(orchestration), 2);
+    }).pipe(second);
+  }).pipe(Effect.provide(NodeServices.layer));
+});
+
 it.effect("tells the Bot once a day, in fixed words, that signals are being dropped", () => {
   const orchestration = makeOrchestration();
   const botThread = orchestration.addThread("thread:bot", { botConfig: bot });

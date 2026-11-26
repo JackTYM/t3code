@@ -95,10 +95,13 @@ episode. The wake id is `bot-wake:health:<signalId>:<n>`.
   have the health shape.
 - **A Bot hears a bounded number of them.** Backoff quiets one failure, but a watcher that fails
   three times, works once and fails again is a new episode each time. So each Bot gets a fixed cap
-  of health wakes an hour and a day across all its episodes, counted in the signed state. Over it,
-  a signal is recorded and dropped with a log line, and the Bot is told once a day, in fixed words
-  (`bot-wake:health:limit:<id>:<day>`, not a signal id, so no repair starts from it), to tell the
-  user. The give-up and merge wakes are bounded separately, by repair.
+  of health wakes an hour and a day across all its episodes, counted in the signed state. Each kind
+  of failure (a watcher, the reviewer, a run) is still let through once in a window, so a noisy
+  watcher cannot drop a run that failed once and will not be reported again; that is the one way
+  the cap is exceeded, by at most two. Over it, a signal is recorded and dropped with a log line,
+  and the Bot is told once a day, in fixed words (`bot-wake:health:limit:<id>:<day>`, not a signal
+  id, so no repair starts from it), to tell the user. The give-up and merge wakes are bounded
+  separately, by repair.
 - **A health turn's own failure is not a signal.** A failed run that began with a health wake would
   wake the Bot into the same failure again, so `handleMilestone` skips it, and a failed run it
   cannot find.
@@ -134,8 +137,9 @@ episode. The wake id is `bot-wake:health:<signalId>:<n>`.
   so a client that creates such an id can only make a thread the Bot must ask about. What an empty
   registry does lose is the day's repair count and the give-up, which start again.
 
-- **Only `RepairService` can send a health wake.** `BotService.wakeWith` refuses a key that starts
-  `health:`; `wakeHealth` takes only those. A Bot turn treats such a wake as the server's own words,
+- **Only `RepairService` can send a health wake.** `BotService.wakeWith` and the milestone wake
+  path refuse a key that starts `health:`; `wakeHealth` takes only those. A milestone wake's key is
+  its id and the Bot's thread id, which a client chose, so they could otherwise spell one. A Bot turn treats such a wake as the server's own words,
   so a caller that could name its key (a watcher's saved event, say) must not be able to make one.
 
 ### Repair start

@@ -207,6 +207,25 @@ it.effect(
   },
 );
 
+// A milestone wake's key is its id and the Bot's thread id, and a thread id is whatever its creator
+// chose. Together they can spell the id of a health wake, which a Bot treats as the server's words.
+it.effect("a milestone wake never takes the id of a health wake", () => {
+  const orchestration = makeOrchestration();
+  const leader = orchestration.addThread("1", { botConfig: bot });
+  orchestration.addThread("thread:crew", { groupedUnderThreadId: leader.id });
+  return Effect.gen(function* () {
+    const bots = yield* BotService.BotService;
+    yield* bots.handleMilestone(milestone("health:0123456789ab", { threadId: "thread:crew" }));
+    assert.deepStrictEqual(orchestration.sent, []);
+
+    yield* bots.handleMilestone(milestone("done", { threadId: "thread:crew" }));
+    assert.deepStrictEqual(
+      orchestration.sent.map((message) => message.commandId),
+      ["bot-wake:done:1"],
+    );
+  }).pipe(provideBots(orchestration));
+});
+
 it.effect(
   "starts a Bot from a thread with a handoff, taking the thread and its crew as crew",
   () => {

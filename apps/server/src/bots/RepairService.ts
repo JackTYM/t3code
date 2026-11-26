@@ -44,7 +44,9 @@ const FIRST_BACKOFF_MS = 60 * 60_000;
 const MAX_BACKOFF_MS = 24 * 60 * 60_000;
 const MAX_EPISODES = 100;
 // A Bot hears at most this many health wakes, over all its episodes: a watcher that fails three
-// times, works once and fails again is a new episode each time, which no backoff would quiet.
+// times, works once and fails again is a new episode each time, which no backoff would quiet. Each
+// kind of failure is still let through once in a window, so that noise cannot drop a run that
+// failed once, which nothing would say again.
 const MAX_HEALTH_WAKES_PER_HOUR = 4;
 const MAX_HEALTH_WAKES_PER_DAY = 12;
 const HOUR_MS = 60 * 60_000;
@@ -231,8 +233,10 @@ type MergeReason = typeof MergeReason.Type;
 const Limit = Schema.Struct({
   /** Names this Bot in the key of its "too many" wake, which a thread id could not do plainly. */
   id: Schema.String,
-  /** When its health wakes went out in the last day. */
-  wakes: Schema.Array(Schema.Number),
+  /** When its health wakes went out in the last day, and for what; a bare time is an older version's. */
+  wakes: Schema.Array(
+    Schema.Union([Schema.Number, Schema.Struct({ at: Schema.Number, kind: Kind })]),
+  ),
   /** The UTC day (days since 1970) its "too many" wake last went out. */
   toldDay: Schema.optional(Schema.Int),
 });
@@ -850,11 +854,15 @@ const make = Effect.gen(function* () {
     yield* saveEpisodes({ ...(yield* readEpisodes), [key]: settled });
   });
 
+  const wakeAt = (wake: Limit["wakes"][number]) => (typeof wake === "number" ? wake : wake.at);
+  const wakeKind = (wake: Limit["wakes"][number]) =>
+    typeof wake === "number" ? undefined : wake.kind;
+
   /** Without a Bot's wakes older than a day, and without a Bot with none left to count. */
   const sweepLimits = (all: Limits, now: number): Limits =>
     Object.fromEntries(
       Object.entries(all).flatMap(([botThreadId, limit]) => {
-        const wakes = limit.wakes.filter((at) => at > now - DAY_MS);
+        const wakes = limit.wakes.filter((wake) => wakeAt(wake) > now - DAY_MS);
         const today = Math.floor(now / DAY_MS);
         return wakes.length === 0 && (limit.toldDay === undefined || limit.toldDay < today - 1)
           ? []
@@ -909,10 +917,11 @@ const make = Effect.gen(function* () {
     const step = previous === undefined ? 0 : previous.step + 1;
     const limits = (yield* Ref.get(state)).limits;
     const held = Object.hasOwn(limits, botThreadId) ? limits[botThreadId] : undefined;
-    const recent = (held?.wakes ?? []).filter((at) => at > now - DAY_MS);
+    const recent = (held?.wakes ?? []).filter((wake) => wakeAt(wake) > now - DAY_MS);
+    const lastHour = recent.filter((wake) => wakeAt(wake) > now - HOUR_MS);
     const limited =
-      recent.length >= MAX_HEALTH_WAKES_PER_DAY ||
-      recent.filter((at) => at > now - HOUR_MS).length >= MAX_HEALTH_WAKES_PER_HOUR;
+      (recent.length >= MAX_HEALTH_WAKES_PER_DAY && recent.some((w) => wakeKind(w) === kind)) ||
+      (lastHour.length >= MAX_HEALTH_WAKES_PER_HOUR && lastHour.some((w) => wakeKind(w) === kind));
     const wakes = (previous?.wakes ?? 0) + (limited ? 0 : 1);
     const id = previous?.id ?? (yield* newId);
     const episode: Episode = {
@@ -938,7 +947,7 @@ const make = Effect.gen(function* () {
     const pending = { key: healthKey(episode) };
     const counted: Limit = {
       id: held?.id ?? (yield* newId),
-      wakes: [...recent, now],
+      wakes: [...recent, { at: now, kind }],
       ...(held?.toldDay === undefined ? {} : { toldDay: held.toldDay }),
     };
     // Saved before the send: a wake that is not on disk could be lost by a crash, and one that

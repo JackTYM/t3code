@@ -540,7 +540,7 @@ export const layer = Layer.effect(
             const detail = yield* pullRequests
               .detail({ ...ref, allowStale: false })
               .pipe(Effect.mapError(failed("Could not read the pull request before merging it")));
-            if (isRepairBranch(detail.headBranch ?? "")) {
+            if (isRepairBranch(detail.headBranch)) {
               return yield* new WorkflowForgeError({
                 reason:
                   "This pull request is from a repair branch. A repair's pull request merges through the repair crew's checked merge or by the user, not from a workflow.",
