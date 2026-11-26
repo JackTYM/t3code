@@ -14,6 +14,7 @@ import * as BotHoldService from "./bots/BotHoldService.ts";
 import * as BotMailService from "./bots/BotMailService.ts";
 import * as BotService from "./bots/BotService.ts";
 import * as BotWakeReactor from "./bots/BotWakeReactor.ts";
+import * as RepairService from "./bots/RepairService.ts";
 import * as WatcherService from "./bots/WatcherService.ts";
 import * as HomeService from "./home/HomeService.ts";
 import * as MilestoneHub from "./milestones/MilestoneHub.ts";
@@ -812,6 +813,12 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.effectDiscard(
     WatcherService.WatcherService.pipe(Effect.flatMap((watchers) => watchers.start())),
   ),
+  // Health signals saved but not yet queued when the server last stopped go out once it is up.
+  Layer.effectDiscard(
+    RepairService.RepairService.pipe(
+      Effect.flatMap((repair) => ServerActivation.forkParked(repair.start())),
+    ),
+  ),
   // Mail forwarded to the Bot's webhook lands in its mail store, and the digest wakes it.
   Layer.effectDiscard(
     Effect.gen(function* () {
@@ -845,6 +852,8 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
           Layer.provide(PeerMcpClient.layer.pipe(Layer.provide(PeerLinks.layer))),
         ),
       ),
+      // Tells a Bot when its own machinery fails; the watchers and the wake reactor report to it.
+      Layer.provideMerge(RepairService.layer),
       // Holds a Bot's consequential calls while email influences its turn; WebSocket lists them.
       Layer.provideMerge(BotHoldService.layer),
       Layer.provideMerge(BotService.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),

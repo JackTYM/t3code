@@ -64,6 +64,34 @@ which `workflow.run_ended` reports for the run. A thread watch ends when the thr
 and a run watch when the run ends; crew are never unwatched. Milestones are local, so wakes cover
 this environment's threads and runs only.
 
+### Health wakes
+
+[`RepairService`](../../apps/server/src/bots/RepairService.ts) tells a Bot when the machinery
+around it keeps failing: a watcher whose last 3 scheduled runs all failed, a reviewer that failed
+to run 3 times for one Bot in an hour, or a Bot run that ended `failed`. A failure is an episode.
+The first report wakes the Bot at once, and a later report wakes it again after 1 hour, then 2, up
+to 24, for as long as reports keep coming; recovery clears the episode. The wake id is
+`bot-wake:health:<id>:<n>`.
+
+- **Not influenced, so it carries no outside text.** A health wake is the one wake
+  `BotHoldService` does not treat like mail or a watcher: its prefix matches neither check, so a
+  turn it starts is as free as one the user typed. That only holds because the text is built from a
+  number, ISO times, a hex id and a name that passed a no-whitespace pattern, never from script
+  output, a reviewer's reason or a purpose. A signal whose name does not pass is refused, not
+  cleaned. Do not add a field to it that a stranger could have written.
+- **A health turn's own failure is not a signal.** A failed run that began with a health wake would
+  wake the Bot into the same failure again, so `handleMilestone` skips it, and a failed run it
+  cannot find.
+- **"In a row" for a watcher** counts scheduled runs that failed (a non-zero exit, a timeout, a
+  spawn error, a refusal, output cut in `events` mode, or output `expect` rejects), kept as
+  `failing.runs` in the watcher's `state.json`. Any healthy run, including an `events` run with
+  news, starts over. A run where the linked environment did not answer is neither: `waiting` leaves
+  the count as it was. A new approved version or a move starts clean.
+- **State** is `<stateDir>/repair-state.json`, signed like the watchers' approvals with a key a Bot
+  and a script cannot read, because a later step trusts it to say which signals the server wrote.
+  A signal's episode is saved with the wake before it is queued and settled after, so a restart
+  resends the same key instead of waking twice. A file that fails its signature is dropped whole.
+
 ## Model
 
 A Bot runs on a cheap model and may raise its own with `t3_thread_configure` for a task that needs

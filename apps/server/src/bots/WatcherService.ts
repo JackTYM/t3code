@@ -51,6 +51,7 @@ import { frameUntrustedText } from "../scheduledTasks/webhookTemplate.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as BotService from "./BotService.ts";
+import * as RepairService from "./RepairService.ts";
 
 // A version lives in `<bot folder>/watchers/<name>/<sha256>/` (`run` and `watcher.json`). What is
 // approved is kept in `<stateDir>/watcher-approvals.json`, written only by this service: a Bot
@@ -79,6 +80,12 @@ const MAX_REVIEWS_PER_SERVER = 6;
 // What a wake turn, which hostile text may steer, is allowed of those, so it cannot take every place.
 const MAX_WAKE_REVIEWS_PER_BOT = 1;
 const MAX_WAKE_REVIEWS_PER_SERVER = 3;
+// What counts as the Bot's own machinery failing, as opposed to one failure it can be told of:
+// a watcher whose last three scheduled runs all failed, or a reviewer that failed to run three
+// times for one Bot in an hour. Either tells the Bot through `RepairService`.
+const HEALTH_FAILING_RUNS = 3;
+const HEALTH_REVIEWER_FAILURES = 3;
+const HEALTH_REVIEWER_WINDOW_MS = 60 * 60_000;
 const RESUMED_REVIEWS_AT_A_TIME = 3;
 // After a version is rejected a wake turn may not propose that watcher again for this long, so a
 // Bot cannot answer each rejection with another proposal and keep the reviewer busy.
@@ -182,6 +189,11 @@ const WatcherState = Schema.fromJsonString(
         step: Schema.Int,
         /** Wakes sent this episode. Part of the wake key, so a fingerprint that flaps back is new. */
         wakes: Schema.Int,
+        /**
+         * Scheduled runs in a row that failed, whatever the failure, up to and including the last.
+         * A state saved before this existed counts as one: the run that tripped it.
+         */
+        runs: Schema.optional(Schema.Int),
         /** Saved before the wake is queued and cleared after, so a restart in between sends it again. */
         pending: Schema.Boolean,
       }),
@@ -280,9 +292,10 @@ const advance = (
   now: number,
 ): { readonly failing: Failing | undefined; readonly wake: boolean } => {
   if (fingerprint === undefined) return { failing: undefined, wake: false };
+  const runs = (previous === undefined ? 0 : (previous.runs ?? 1)) + 1;
   // A wake that was never confirmed goes out again under the same key, whatever the clock says.
   if (previous?.pending === true && previous.fingerprint === fingerprint) {
-    return { failing: previous, wake: true };
+    return { failing: { ...previous, runs }, wake: true };
   }
   const backoff = (step: number) => Math.min(FIRST_BACKOFF_MS * 2 ** step, MAX_BACKOFF_MS);
   if (previous === undefined || previous.fingerprint !== fingerprint) {
@@ -294,11 +307,12 @@ const advance = (
         nextWakeAt: now + backoff(0),
         step: 0,
         wakes: (previous?.wakes ?? 0) + 1,
+        runs,
         pending: true,
       },
     };
   }
-  if (now < previous.nextWakeAt) return { failing: previous, wake: false };
+  if (now < previous.nextWakeAt) return { failing: { ...previous, runs }, wake: false };
   const step = previous.step + 1;
   return {
     wake: true,
@@ -307,6 +321,7 @@ const advance = (
       nextWakeAt: now + backoff(step),
       step,
       wakes: previous.wakes + 1,
+      runs,
       pending: true,
     },
   };
@@ -427,6 +442,7 @@ const make = Effect.gen(function* () {
   const scheduler = yield* Scheduler.Scheduler;
   const peers = yield* PeerMcpClient.PeerMcpClient;
   const textGeneration = yield* TextGeneration.TextGeneration;
+  const repair = yield* RepairService.RepairService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const localEnvironmentId = yield* (yield* ServerEnvironment.ServerEnvironment).getEnvironmentId;
   const random = yield* SecureRandom.SecureRandom;
@@ -895,6 +911,8 @@ const make = Effect.gen(function* () {
       };
       // Saved before the send: a crash in between leaves it pending, and the same key replays it.
       yield* writeState(directory, { lastRunAt: startedAt, pendingEvent });
+      // News is a healthy run, which ends a failing streak.
+      yield* repair.clear({ kind: "watcher", botThreadId, name });
       const delivered = yield* bots.wakeWith({ botThreadId, ...pendingEvent });
       if (delivered) yield* writeState(directory, { lastRunAt: startedAt });
       return;
@@ -905,19 +923,33 @@ const make = Effect.gen(function* () {
     // Interval counted from the start, so a slow script does not stretch it.
     const lastRunAt = startedAt;
     if (!wake || failing === undefined) {
-      return yield* writeState(directory, { lastRunAt, ...(failing ? { failing } : {}) });
+      yield* writeState(directory, { lastRunAt, ...(failing ? { failing } : {}) });
+    } else {
+      yield* writeState(directory, { lastRunAt, failing });
+      const queued = yield* bots.wakeWith({
+        botThreadId,
+        // A crash between queueing and the save below leaves `pending`, so the next run resends
+        // this very key and the Bot's idempotent command replays the first send.
+        key: `watcher:${folder}:${name}:${failing.failingSince}:${failing.wakes}:${failing.fingerprint}`,
+        text: yield* wakeText(name, failing, outcome),
+      });
+      // Not queued (Bot settled or gone): still pending, so the next run offers it again.
+      if (queued)
+        yield* writeState(directory, { lastRunAt, failing: { ...failing, pending: false } });
     }
-    yield* writeState(directory, { lastRunAt, failing });
-    const queued = yield* bots.wakeWith({
-      botThreadId,
-      // A crash between queueing and the save below leaves `pending`, so the next run resends
-      // this very key and the Bot's idempotent command replays the first send.
-      key: `watcher:${folder}:${name}:${failing.failingSince}:${failing.wakes}:${failing.fingerprint}`,
-      text: yield* wakeText(name, failing, outcome),
-    });
-    // Not queued (Bot settled or gone): still pending, so the next run offers it again.
-    if (queued)
-      yield* writeState(directory, { lastRunAt, failing: { ...failing, pending: false } });
+    // After the state is saved, so a crash in between at worst reports the streak one run late.
+    if (failing === undefined) {
+      yield* repair.clear({ kind: "watcher", botThreadId, name });
+    } else if ((failing.runs ?? 1) >= HEALTH_FAILING_RUNS) {
+      yield* repair.signal({
+        kind: "watcher",
+        botThreadId,
+        name,
+        count: failing.runs ?? 1,
+        firstAt: failing.failingSince,
+        lastAt: finishedAt,
+      });
+    }
   });
 
   const homeThreadId = settings.getSettings.pipe(
@@ -973,9 +1005,12 @@ const make = Effect.gen(function* () {
    * script's cursor lives in the kept data folder and is already past it.
    */
   const resetState = Effect.fn("WatcherService.resetState")(function* (
+    botThreadId: ThreadId,
     folder: string,
     name: string,
   ) {
+    // The failure it had belonged to what ran before.
+    yield* repair.clear({ kind: "watcher", botThreadId, name });
     const directory = watcherDir(folder, name);
     const pendingEvent = (yield* readState(directory))?.pendingEvent;
     if (pendingEvent === undefined) {
@@ -1274,6 +1309,7 @@ const make = Effect.gen(function* () {
     yield* stopReview(folder, name);
     yield* commit(folder, name, undefined).pipe(Effect.mapError(ioError(botThreadId, name)));
     yield* removeQuietly(watcherDir(folder, name));
+    yield* repair.clear({ kind: "watcher", botThreadId, name });
   });
 
   const remove: WatcherService["Service"]["remove"] = Effect.fn("WatcherService.remove")(
@@ -1420,7 +1456,7 @@ const make = Effect.gen(function* () {
       ),
     }).pipe(Effect.mapError(ioError(botThreadId, name)));
     // A new version starts clean: the old one's failure and interval say nothing about it.
-    yield* resetState(folder, name);
+    yield* resetState(botThreadId, folder, name);
     if (record.approvedHash !== undefined) {
       yield* removeQuietly(versionDir(folder, name, record.approvedHash));
     }
@@ -1653,6 +1689,37 @@ const make = Effect.gen(function* () {
     };
   });
 
+  // When each Bot's reviews last failed to run, by its folder, within the hour that counts. A
+  // restart forgets them, which delays a signal and cannot repeat one: the episode is saved.
+  const reviewerFailures = new Map<string, Array<number>>();
+
+  /** A reviewer that cannot run is the server's trouble, not the script's: three in an hour tell the Bot. */
+  const noteReviewer = Effect.fn("WatcherService.noteReviewer")(function* (
+    botThreadId: ThreadId,
+    name: string,
+    source: BotWatcherReview["source"],
+  ) {
+    const folder = BotService.memoryFolderName(botThreadId);
+    if (source !== "error") {
+      reviewerFailures.delete(folder);
+      return yield* repair.clear({ kind: "reviewer", botThreadId, name });
+    }
+    const now = yield* Clock.currentTimeMillis;
+    const recent = [...(reviewerFailures.get(folder) ?? []), now]
+      .filter((at) => now - at < HEALTH_REVIEWER_WINDOW_MS)
+      .slice(-REVIEWS_MAX);
+    reviewerFailures.set(folder, recent);
+    if (recent.length < HEALTH_REVIEWER_FAILURES) return;
+    yield* repair.signal({
+      kind: "reviewer",
+      botThreadId,
+      name,
+      count: recent.length,
+      firstAt: recent[0]!,
+      lastAt: now,
+    });
+  });
+
   const reviewPending = Effect.fn("WatcherService.reviewPending")(function* (
     botThreadId: ThreadId,
     name: string,
@@ -1681,6 +1748,7 @@ const make = Effect.gen(function* () {
           ? undefined
           : yield* readVersion(folder, name, record.approvedHash);
       const asked = yield* askReviewer(botThreadId, name, version, previous);
+      yield* noteReviewer(botThreadId, name, asked.source);
       verdict = { hash, at: yield* isoNow, ...asked };
       // A newer proposal may have replaced this version while the model worked.
       if (!(yield* recordVerdict(botThreadId, name, verdict))) return;
@@ -1802,7 +1870,7 @@ const make = Effect.gen(function* () {
         Effect.mapError(ioError(botThreadId, name)),
       );
       // What it did where it ran before says nothing about the new place.
-      yield* resetState(folder, name);
+      yield* resetState(botThreadId, folder, name);
     },
     lock,
   );

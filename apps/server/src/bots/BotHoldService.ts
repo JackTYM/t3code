@@ -20,6 +20,8 @@ import * as BotService from "./BotService.ts";
 const MAIL_WAKE_MESSAGE_PREFIX = "bot-wake:mail:";
 /** Every watcher wake and review verdict carries `bot-wake:watcher` (`WatcherService` wake keys). */
 const WATCHER_WAKE_MESSAGE_PREFIX = "bot-wake:watcher";
+// A health wake (`bot-wake:health:`, `RepairService`) is deliberately in neither list: it holds no
+// outside text. Keep both prefixes as specific as they are; a bare `bot-wake:` would hold it.
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const MAIL_READER_ROLE = "mail-reader";
 const MAX_HELD_PER_BOT = 20;

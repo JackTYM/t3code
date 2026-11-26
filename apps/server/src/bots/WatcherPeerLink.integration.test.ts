@@ -40,6 +40,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as BotService from "./BotService.ts";
 import { makeOrchestration } from "./BotTestkit.ts";
+import * as RepairService from "./RepairService.ts";
 import * as WatcherService from "./WatcherService.ts";
 
 const MINUTE = 60_000;
@@ -101,6 +102,11 @@ const layerWatchers = (
         runner,
         peers,
         Scheduler.layer,
+        // These tests are about where a watcher runs, not about telling the Bot of its failures.
+        Layer.mock(RepairService.RepairService)({
+          signal: () => Effect.void,
+          clear: () => Effect.void,
+        }),
         Layer.mock(TextGeneration.TextGeneration)({
           reviewWatcher: () => Effect.succeed({ verdict: "approve", reason: "Looks fine." }),
         }),

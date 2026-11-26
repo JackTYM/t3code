@@ -148,6 +148,27 @@ it.effect.each([
   ),
 );
 
+// A health wake is the server's own words, written from fixed fields, so it is no more influenced
+// than a message the user typed. It must not match the mail or watcher prefixes, which do hold.
+it.effect.each([
+  { startedBy: "bot-wake:health:0123456789ab:1", held: false },
+  { startedBy: "bot-wake:health:0123456789ab:7", held: false },
+  { startedBy: DIGEST, held: true },
+  { startedBy: "bot-wake:watcher:home:disk:1700000000:2:abc", held: true },
+  { startedBy: "bot-wake:watcher-review:home:disk:abc", held: true },
+] as const)(
+  "a turn that began with $startedBy holds consequential calls: $held",
+  ({ startedBy, held }) =>
+    run({ startedBy }, (holds) =>
+      Effect.gen(function* () {
+        for (const tool of ["t3_thread_launch", "delegate_task", "schedule_task"]) {
+          assert.strictEqual((yield* holds.check(call(tool, { title: "Fix it." }))).held, held);
+        }
+        assert.strictEqual((yield* holds.list(BOT)).held.length, held ? 3 : 0);
+      }),
+    ),
+);
+
 it.effect("leaves reads, notes, tasks, the mail reader and crew messages free in that turn", () =>
   run({ startedBy: DIGEST }, (holds) =>
     Effect.gen(function* () {
