@@ -18,7 +18,7 @@ import type * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as BotService from "./BotService.ts";
 import * as RepairService from "./RepairService.ts";
-import { HEALTH_WAKE_ID, REPAIR_START_TOOL } from "./RepairService.ts";
+import { HEALTH_WAKE_ID, REPAIR_CREW_THREAD_ID, REPAIR_START_TOOL } from "./RepairService.ts";
 
 /** The id every mail digest wake carries after `bot-wake:` (`BotMailService.digestFolder`). */
 const MAIL_WAKE_MESSAGE_PREFIX = "bot-wake:mail:";
@@ -246,7 +246,9 @@ const make = Effect.gen(function* () {
     "BotHoldService.launchedByBot",
   )(function* (botThreadId, shell, hops) {
     if (shell.id === botThreadId) return true;
-    if (hops > MAX_LAUNCH_HOPS || (yield* repair.crewOf(shell.id)) !== undefined) return false;
+    // The id is a second recogniser, for when the registry has lost the crew.
+    if (hops > MAX_LAUNCH_HOPS || REPAIR_CREW_THREAD_ID.test(shell.id)) return false;
+    if ((yield* repair.crewOf(shell.id)) !== undefined) return false;
     const { relationshipToParent, parentThreadId } = shell.lineage;
     if (relationshipToParent === "subagent" && parentThreadId !== null) {
       const parent = yield* threads.getThreadShell(parentThreadId);

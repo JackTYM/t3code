@@ -108,12 +108,27 @@ episode. The wake id is `bot-wake:health:<signalId>:<n>`.
   wake's words. A wake is saved as a marker before it is queued and settled after, so a restart
   resends the same key instead of waking twice, and the words are made again from the validated
   fields (`healthText`, `mergeText`) when it is sent; a saved wake whose fields are not plain, or
-  whose key is not the episode's own, is dropped. A file that fails its signature is dropped whole.
-  Each save raises a version in the file, and the newest version is also kept in the secret store,
-  so a copy of the file older than the last save (a restored backup) is not believed and the service
-  starts empty. That check is outside the file but inside the user's reach: a process that can read
-  the key can also rewrite the counter, so a deliberate replay by a local script is not stopped.
-  Starting empty fails closed: no repair is known, so no crew merge is allowed.
+  whose key is not the episode's own, is dropped. Each save raises a version in the file, and the
+  newest version is also kept in the secret store. The start tells three outcomes apart:
+  - **A file that is not there** is the first run: empty.
+  - **A file that cannot be vouched for** (a bad signature, or a version older than the secret
+    store's, as a restored backup would be) is believed for nothing. It is moved to
+    `repair-state.json.rejected` so no later save writes over it, and the service starts empty.
+    The version count goes on from the secret store's, so later saves are newer.
+  - **Anything else** (a file that cannot be read, is not JSON or is a state this version cannot
+    decode, a secret store that cannot be read) proves nothing against the file, which may hold the
+    only record of a running crew. It is left as it is, and the run keeps its state in memory and
+    writes nothing until a start reads a file that verifies.
+
+  The version check is outside the file but inside the user's reach: a process that can read the
+  key can also rewrite the counter, so a deliberate replay by a local script is not stopped.
+  An empty registry fails closed for merges, which is the guard's job: no crew or repair branch is
+  known, so a `repair/` branch is refused (`no_repair_record`). It does not fail closed for the
+  Bot's hold on its own: there a thread with a repair crew's exact id shape
+  (`repair-crew:<12 hex>:<n>`), and a subagent of one, is held whether or not the registry knows it,
+  so a client that creates such an id can only make a thread the Bot must ask about. What an empty
+  registry does lose is the day's repair count and the give-up, which start again.
+
 - **Only `RepairService` can send a health wake.** `BotService.wakeWith` refuses a key that starts
   `health:`; `wakeHealth` takes only those. A Bot turn treats such a wake as the server's own words,
   so a caller that could name its key (a watcher's saved event, say) must not be able to make one.

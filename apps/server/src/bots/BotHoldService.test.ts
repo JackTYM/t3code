@@ -32,6 +32,16 @@ const CREW_HELPER = ThreadId.make("thread:crew-helper");
 const CREW_OF_HELPER = ThreadId.make("thread:crew-of-helper");
 const LOOP_A = ThreadId.make("thread:loop-a");
 const LOOP_B = ThreadId.make("thread:loop-b");
+// An id a repair crew has, made by someone else: a client may name a thread whatever it likes.
+const FORGED_CREW = ThreadId.make("repair-crew:ffffffffffff:7");
+const FORGED_CREW_HELPER = ThreadId.make("thread:forged-crew-helper");
+const LOOKALIKES = [
+  "repair-crew:ffffffffffff:0",
+  "repair-crew:FFFFFFFFFFFF:1",
+  "repair-crew:ffffffffffff:1:x",
+  "repair-crew:fffffffffff:1",
+  "my-repair-crew:ffffffffffff:1",
+].map((id) => ThreadId.make(id));
 const CHAIN = Array.from({ length: 12 }, (_, index) => ThreadId.make(`thread:chain-${index}`));
 const RUN = RunId.make("run:active");
 const HERE = EnvironmentId.make("environment:here");
@@ -91,6 +101,14 @@ const shells = {
   [BARE]: crewShell(BARE),
   // A thread the user made in the Bot's group from a client.
   [USER_CREW]: crewShell(USER_CREW, { createdBy: "user", creationSource: "web" }),
+  [FORGED_CREW]: crewShell(FORGED_CREW, { createdBy: "user", creationSource: "web" }),
+  [FORGED_CREW_HELPER]: crewShell(FORGED_CREW_HELPER, {
+    createdBy: "user",
+    lineage: { relationshipToParent: "subagent", parentThreadId: FORGED_CREW },
+  }),
+  ...Object.fromEntries(
+    LOOKALIKES.map((id) => [id, crewShell(id, { createdBy: "user", creationSource: "web" })]),
+  ),
   [LOOP_A]: crewShell(LOOP_A),
   [LOOP_B]: crewShell(LOOP_B),
   ...Object.fromEntries(CHAIN.map((id) => [id, crewShell(id)])),
@@ -364,6 +382,25 @@ it.effect.each(CREW_TOOL_CASES)(
         for (const threadId of unknown) {
           const verdict = yield* holds.check(call(tool, { ...params, threadId }));
           assert.isTrue(verdict.held, `${tool} to ${threadId}`);
+        }
+      }),
+    ),
+);
+
+// The registry can be lost (a file that fails its signature starts empty, a repair past the
+// 500-entry cap is dropped), and a client can create a thread with any id.
+it.effect.each(CREW_TOOL_CASES)(
+  "holds $tool aimed at a thread with a repair crew's id, and its subagent, whatever the registry says",
+  ({ tool, params }) =>
+    run({ startedBy: DIGEST }, (holds) =>
+      Effect.gen(function* () {
+        for (const threadId of [FORGED_CREW, FORGED_CREW_HELPER]) {
+          const verdict = yield* holds.check(call(tool, { ...params, threadId }));
+          assert.isTrue(verdict.held, `${tool} to ${threadId}`);
+        }
+        for (const threadId of LOOKALIKES) {
+          const verdict = yield* holds.check(call(tool, { ...params, threadId }));
+          assert.isFalse(verdict.held, `${tool} to ${threadId}`);
         }
       }),
     ),

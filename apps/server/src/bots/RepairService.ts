@@ -9,7 +9,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as Predicate from "effect/Predicate";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -32,6 +31,8 @@ const HEALTH_MESSAGE_PREFIX = "bot-wake:health:";
 /** A health wake's id exactly: its signal and which wake of the episode it is. */
 export const HEALTH_WAKE_ID = /^bot-wake:health:([0-9a-f]{12}):([1-9][0-9]*)$/u;
 export const REPAIR_START_TOOL = "t3_bot_repair_start";
+/** A repair crew's thread id exactly, as `startRepair` makes it. A client can make one too, so it only ever holds. */
+export const REPAIR_CREW_THREAD_ID = /^repair-crew:[0-9a-f]{12}:[1-9][0-9]*$/u;
 const SIGNAL_ID = /^[0-9a-f]{12}$/u;
 const DAY_MS = 24 * 60 * 60_000;
 const MAX_REPAIRS_PER_DAY = 3;
@@ -691,65 +692,76 @@ const make = Effect.gen(function* () {
     Effect.orDie,
   );
 
-  // The newest version this server saved, kept outside the state file: an older copy of the file
-  // (a restored backup) is signed correctly and would otherwise be believed.
-  const lastVersion = yield* secrets.get(STATE_VERSION_SECRET).pipe(
-    Effect.map((bytes) =>
-      Option.match(bytes, {
-        onNone: () => 0,
-        onSome: (value) => Number.parseInt(new TextDecoder().decode(value), 10),
-      }),
-    ),
-    Effect.map((version) => (Number.isSafeInteger(version) && version >= 0 ? version : 0)),
-    Effect.orElseSucceed(() => 0),
-  );
-  // Read once at start, like the watchers' approvals: every change is saved before it is used.
-  const initial = yield* fileSystem.readFileString(statePath).pipe(
-    Effect.flatMap(decodeSignedFile),
-    Effect.flatMap(({ data, signature }) =>
-      signer.verify(data, signature).pipe(
-        Effect.filterOrFail(
-          (valid) => valid,
-          () => "signature" as const,
-        ),
-        Effect.andThen(decodeState(data)),
+  const empty = (version: number): State => ({ episodes: {}, repairs: {}, limits: {}, version });
+  const rejectedPath = `${statePath}.rejected`;
+
+  // Read once at start, like the watchers' approvals: every change is saved before it is used. The
+  // newest version this server saved is kept outside the state file, in the secret store: an older
+  // copy of the file (a restored backup) is signed correctly and would otherwise be believed.
+  const verifiedLoad = Effect.gen(function* () {
+    const lastVersion = Option.match(yield* secrets.get(STATE_VERSION_SECRET), {
+      onNone: () => 0,
+      onSome: (value) => Number.parseInt(new TextDecoder().decode(value), 10),
+    });
+    if (!Number.isSafeInteger(lastVersion) || lastVersion < 0) return yield* Effect.fail("version");
+    const text = yield* fileSystem.readFileString(statePath).pipe(
+      Effect.catchIf(
+        (cause) => cause._tag === "PlatformError" && cause.reason._tag === "NotFound",
+        () => Effect.undefined,
       ),
+    );
+    if (text === undefined) return { lastVersion, state: empty(lastVersion), rejected: false };
+    const { data, signature } = yield* decodeSignedFile(text);
+    if (!(yield* signer.verify(data, signature))) {
+      return { lastVersion, state: empty(lastVersion), rejected: true };
+    }
+    const decoded = yield* decodeState(data);
+    const state: State = isState(decoded)
+      ? {
+          episodes: decoded.episodes,
+          repairs: decoded.repairs ?? {},
+          limits: decoded.limits ?? {},
+          version: decoded.version ?? 0,
+        }
+      : { episodes: decoded, repairs: {}, limits: {}, version: 0 };
+    return state.version >= lastVersion
+      ? { lastVersion, state, rejected: false }
+      : { lastVersion, state: empty(lastVersion), rejected: true };
+  });
+  // A file that cannot be vouched for (a bad signature, or older than the last save) is dropped:
+  // the count goes on from the newest one, so later saves are newer, and the file is moved aside
+  // first so a later save cannot write over it. A file or secret that could not be read or decoded
+  // is not evidence of anything: it is left untouched, and this run keeps its state in memory.
+  const initial = yield* verifiedLoad.pipe(
+    Effect.flatMap((loaded) =>
+      loaded.rejected
+        ? Effect.logWarning(
+            "Repair state failed verification or is older than the last save; it was set aside and the service starts without it.",
+          ).pipe(
+            Effect.andThen(fileSystem.rename(statePath, rejectedPath)),
+            Effect.as({ state: loaded.state, writable: true }),
+          )
+        : Effect.succeed({ state: loaded.state, writable: true }),
     ),
-    Effect.map((decoded): State =>
-      isState(decoded)
-        ? {
-            episodes: decoded.episodes,
-            repairs: decoded.repairs ?? {},
-            limits: decoded.limits ?? {},
-            version: decoded.version ?? 0,
-          }
-        : { episodes: decoded, repairs: {}, limits: {}, version: 0 },
+    Effect.catch((cause) =>
+      Effect.logWarning(
+        "Repair state could not be read; it was left as it is and this run keeps none on disk.",
+        { cause },
+      ).pipe(Effect.as({ state: empty(0), writable: false })),
     ),
-    Effect.filterOrFail(
-      (decoded) => decoded.version >= lastVersion,
-      () => "older" as const,
-    ),
-    // No file yet is the usual first run. A file that cannot be vouched for, or is older than the
-    // last save, is dropped whole; the count goes on from the newest one, so later saves are newer.
-    Effect.catch((cause): Effect.Effect<State> => {
-      const empty: State = { episodes: {}, repairs: {}, limits: {}, version: lastVersion };
-      return Predicate.isTagged(cause, "PlatformError") && cause.reason._tag === "NotFound"
-        ? Effect.succeed(empty)
-        : Effect.logWarning(
-            "Repair state failed verification, is older than the last save, or could not be read; starting without it.",
-            {
-              cause,
-            },
-          ).pipe(Effect.as(empty));
-    }),
   );
-  const state = yield* Ref.make<State>(initial);
+  const writable = initial.writable;
+  const state = yield* Ref.make<State>(initial.state);
   const readEpisodes = Ref.get(state).pipe(Effect.map((current) => current.episodes));
 
   /** Saves `next` and makes it the state; false when it could not be saved. */
   const save = Effect.fn("RepairService.save")(
     function* (next: State) {
       const stamped: State = { ...next, version: next.version + 1 };
+      if (!writable) {
+        yield* Ref.set(state, stamped);
+        return true;
+      }
       const data = yield* encodeState(stamped);
       const signature = yield* signer.sign(data);
       const text = yield* encodeSignedFile({ data, signature });

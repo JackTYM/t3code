@@ -68,6 +68,24 @@ const makeRestarts = (orchestration: ReturnType<typeof makeOrchestration>) =>
       boot: Layer.build(
         layerRepair(orchestration).pipe(Layer.provideMerge(Layer.succeedContext(base))),
       ).pipe(Effect.map((context) => Effect.provideContext(context))),
+      /** Starts over a secret store that cannot say what the newest saved version is. */
+      bootWithoutVersion: Layer.build(
+        layerRepair(orchestration).pipe(
+          Layer.provideMerge(
+            Layer.succeedContext(
+              Context.add(base, ServerSecretStore.ServerSecretStore, {
+                ...Context.get(base, ServerSecretStore.ServerSecretStore),
+                get: (name) =>
+                  name === "repair-state-version"
+                    ? Effect.fail(
+                        new ServerSecretStore.SecretStoreConcurrentReadError({ resource: name }),
+                      )
+                    : Context.get(base, ServerSecretStore.ServerSecretStore).get(name),
+              }),
+            ),
+          ),
+        ),
+      ).pipe(Effect.map((context) => Effect.provideContext(context))),
     };
   });
 
@@ -478,6 +496,187 @@ it.effect("remembers an episode across a restart, and resends a wake that never 
   }).pipe(Effect.provide(NodeServices.layer));
 });
 
+type Restarts = Effect.Success<ReturnType<typeof makeRestarts>>;
+
+/**
+ * A start with one episode saved, then `damage` done to the state file while the server is down.
+ * `damage` says what the file holds afterwards. `diskId` names the saved episode.
+ */
+const saveThenDamage = (
+  orchestration: ReturnType<typeof makeOrchestration>,
+  botThread: ThreadId,
+  damage: (
+    restarts: Restarts,
+    saved: string,
+  ) => Effect.Effect<string, never, FileSystem.FileSystem>,
+) =>
+  Effect.gen(function* () {
+    const restarts = yield* makeRestarts(orchestration);
+    const fileSystem = yield* FileSystem.FileSystem;
+    yield* TestClock.setTime(START);
+    const first = yield* restarts.boot;
+    yield* Effect.gen(function* () {
+      const repair = yield* RepairService.RepairService;
+      yield* repair.signal(watcherSignal(botThread, { name: "disk" }));
+    }).pipe(first);
+    const saved = yield* fileSystem.readFileString(restarts.stateFile);
+    const damaged = yield* damage(restarts, saved);
+    return {
+      restarts,
+      fileSystem,
+      saved,
+      damaged,
+      diskId: wakeId(orchestration.sent[0]!.commandId)![1]!,
+    };
+  });
+
+/** Replaces the state file's text with `text`, which is then what the file holds. */
+const overwrite = (restarts: Restarts, text: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.writeFileString(restarts.stateFile, text)),
+    Effect.as(text),
+    Effect.orDie,
+  );
+
+// A file the server could not read is not a file it may replace: the failure may be a passing one
+// (a permission, a disk), and the file may hold the only record of a crew that is still running.
+it.effect.each([
+  {
+    name: "cannot be read",
+    damage: (restarts: Restarts, saved: string) =>
+      FileSystem.FileSystem.pipe(
+        Effect.flatMap((fs) => fs.chmod(restarts.stateFile, 0o000)),
+        Effect.as(saved),
+        Effect.orDie,
+      ),
+  },
+  { name: "is not JSON", damage: (restarts: Restarts) => overwrite(restarts, "{not json") },
+  {
+    name: "is signed but is not a state",
+    damage: (restarts: Restarts) =>
+      restarts.sign('{"unknown":1}').pipe(
+        Effect.flatMap((signature) =>
+          overwrite(restarts, JSON.stringify({ data: '{"unknown":1}', signature })),
+        ),
+        Effect.orDie,
+      ),
+  },
+])("keeps a state file that $name as it is, and runs on without writing to it", ({ damage }) => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    const { restarts, fileSystem, saved, damaged, diskId } = yield* saveThenDamage(
+      orchestration,
+      botThread.id,
+      damage,
+    );
+
+    const second = yield* restarts.boot;
+    yield* Effect.gen(function* () {
+      const repair = yield* RepairService.RepairService;
+      // Nothing is known, so the same failure is news, and the service works from memory.
+      yield* repair.signal(watcherSignal(botThread.id, { name: "disk" }));
+      assert.strictEqual(orchestration.sent.length, 2);
+      const newId = wakeId(orchestration.sent[1]!.commandId)![1]!;
+      assert.notStrictEqual(newId, diskId);
+      assert.strictEqual((yield* repair.find(newId))?.name, "disk");
+    }).pipe(second);
+
+    // Not rewritten, not moved aside, no half-written file left next to it.
+    yield* fileSystem.chmod(restarts.stateFile, 0o600);
+    assert.strictEqual(yield* fileSystem.readFileString(restarts.stateFile), damaged);
+    assert.isFalse(yield* fileSystem.exists(`${restarts.stateFile}.rejected`));
+    assert.isFalse(yield* fileSystem.exists(`${restarts.stateFile}.tmp`));
+
+    // Once the file reads again, the next start believes it and the old episode is back.
+    yield* fileSystem.writeFileString(restarts.stateFile, saved);
+    const third = yield* restarts.boot;
+    yield* Effect.gen(function* () {
+      const repair = yield* RepairService.RepairService;
+      assert.strictEqual((yield* repair.find(diskId))?.name, "disk");
+    }).pipe(third);
+  }).pipe(Effect.provide(NodeServices.layer));
+});
+
+it.effect(
+  "keeps the state file as it is when the secret store cannot say how new it must be",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+    return Effect.gen(function* () {
+      const { restarts, fileSystem, saved, diskId } = yield* saveThenDamage(
+        orchestration,
+        botThread.id,
+        (_restarts, saved) => Effect.succeed(saved),
+      );
+      const second = yield* restarts.bootWithoutVersion;
+      yield* Effect.gen(function* () {
+        const repair = yield* RepairService.RepairService;
+        assert.isUndefined(yield* repair.find(diskId));
+        yield* repair.signal(watcherSignal(botThread.id, { name: "mail" }));
+        assert.strictEqual(orchestration.sent.length, 2);
+      }).pipe(second);
+      assert.strictEqual(yield* fileSystem.readFileString(restarts.stateFile), saved);
+
+      const third = yield* restarts.boot;
+      yield* Effect.gen(function* () {
+        assert.strictEqual(
+          (yield* (yield* RepairService.RepairService).find(diskId))?.name,
+          "disk",
+        );
+      }).pipe(third);
+    }).pipe(Effect.provide(NodeServices.layer));
+  },
+);
+
+it.effect("sets a file that fails its signature aside before it writes a fresh one", () => {
+  const orchestration = makeOrchestration();
+  const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
+  return Effect.gen(function* () {
+    // Pushes the next wake a year out, keeping the real signature.
+    const {
+      restarts,
+      fileSystem,
+      damaged: tampered,
+      diskId,
+    } = yield* saveThenDamage(orchestration, botThread.id, (restarts, saved) => {
+      const file = JSON.parse(saved);
+      const state = JSON.parse(file.data);
+      for (const episode of Object.values<{ nextWakeAt: number }>(state.episodes)) {
+        episode.nextWakeAt += 365 * 24 * HOUR;
+      }
+      return overwrite(restarts, JSON.stringify({ ...file, data: JSON.stringify(state) }));
+    });
+
+    const second = yield* restarts.boot;
+    // Moved at the start, so no later save can write over it.
+    assert.isFalse(yield* fileSystem.exists(restarts.stateFile));
+    assert.strictEqual(
+      yield* fileSystem.readFileString(`${restarts.stateFile}.rejected`),
+      tampered,
+    );
+    yield* Effect.gen(function* () {
+      const repair = yield* RepairService.RepairService;
+      assert.isUndefined(yield* repair.find(diskId));
+      yield* repair.signal(watcherSignal(botThread.id, { name: "mail" }));
+    }).pipe(second);
+
+    // The fresh file is the new one, signed, and the rejected one is still what was rejected.
+    const fresh = JSON.parse(yield* fileSystem.readFileString(restarts.stateFile));
+    assert.deepStrictEqual(Object.keys(JSON.parse(fresh.data).episodes).length, 1);
+    assert.strictEqual(
+      yield* fileSystem.readFileString(`${restarts.stateFile}.rejected`),
+      tampered,
+    );
+    const third = yield* restarts.boot;
+    yield* Effect.gen(function* () {
+      const repair = yield* RepairService.RepairService;
+      const mailId = wakeId(orchestration.sent.at(-1)!.commandId)![1]!;
+      assert.strictEqual((yield* repair.find(mailId))?.name, "mail");
+    }).pipe(third);
+  }).pipe(Effect.provide(NodeServices.layer));
+});
+
 it.effect("drops state that fails its signature, so a forged episode silences nothing", () => {
   const orchestration = makeOrchestration();
   const botThread = orchestration.addThread("thread:bot", { botConfig: bot });
@@ -741,6 +940,8 @@ it.effect("ignores an older copy of the state file, as a restored backup would b
       const repair = yield* RepairService.RepairService;
       const ids = orchestration.sent.map((message) => wakeId(message.commandId)![1]!);
       assert.isUndefined(yield* repair.find(ids[0]!));
+      // Set aside rather than overwritten, so what it held can still be looked at.
+      assert.strictEqual(yield* fileSystem.readFileString(`${restarts.stateFile}.rejected`), older);
       // Starting empty, the same failure is news again, with a new id.
       yield* repair.signal(watcherSignal(botThread.id, { name: "disk" }));
       assert.strictEqual(orchestration.sent.length, 3);
