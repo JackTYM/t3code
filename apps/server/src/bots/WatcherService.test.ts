@@ -27,12 +27,14 @@ import * as Queue from "effect/Queue";
 import * as Redacted from "effect/Redacted";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as PayloadSigner from "../auth/PayloadSigner.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as EgressProxy from "./EgressProxy.ts";
@@ -40,6 +42,7 @@ import * as ScriptSandbox from "./ScriptSandbox.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as BotDeletionReactor from "./BotDeletionReactor.ts";
 import * as BotSecretGrantService from "./BotSecretGrantService.ts";
 import * as BotService from "./BotService.ts";
 import { makeOrchestration, model, noSecretProviders } from "./BotTestkit.ts";
@@ -6212,6 +6215,231 @@ it.effect(
 
       yield* Deferred.succeed(gate.release, undefined);
       yield* Fiber.join(pass);
+    }).pipe(provideWatchers(orchestration, runner.layer));
+  },
+);
+
+// A deleted Bot's watchers and tools go with it. The pass already skips them: only the files and
+// records are left, which is what `removeAllFor` takes.
+const botFolder = Effect.fn("botFolder")(function* (threadId: ThreadId) {
+  const path = yield* Path.Path;
+  const { baseDir } = yield* ServerConfig.ServerConfig;
+  return path.join(baseDir, "bots", BotService.memoryFolderName(threadId));
+});
+
+it.effect(
+  "a watcher whose Bot thread is gone is skipped without a failure, and keeps its files",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const runner = makeScriptedRunner();
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const fileSystem = yield* FileSystem.FileSystem;
+      yield* installWatcher(botThread.id, "disk");
+      yield* watchers.runDue;
+      assert.strictEqual(runner.state.runs, 1);
+
+      orchestration.threads.delete(botThread.id);
+      yield* TestClock.adjust(EVERY_MS);
+      yield* watchers.runDue;
+      assert.strictEqual(runner.state.runs, 1);
+      assert.lengthOf((yield* watchers.list(botThread.id)).watchers, 1);
+      assert.isTrue(yield* fileSystem.exists(yield* stateFolder(botThread.id, "disk")));
+    }).pipe(provideWatchers(orchestration, runner.layer));
+  },
+);
+
+it.effect(
+  "removing a deleted Bot's watchers takes their records, versions and state folders",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const otherThread = addBot(orchestration, "thread:other");
+    const runner = makeScriptedRunner();
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      yield* installWatcher(botThread.id, "disk");
+      yield* installWatcher(botThread.id, "mail", { mode: "events" });
+      yield* installTool(botThread.id, "pr");
+      yield* installWatcher(otherThread.id, "disk");
+      // Last, since waiting for a verdict that never comes would stall the installs after it: its
+      // version folder has no record of an approval, and its review is in flight.
+      yield* installWatcher(botThread.id, "draft", { approve: false });
+      yield* watchers.runDue;
+      yield* callTool(botThread.id, "pr");
+      const folder = yield* botFolder(botThread.id);
+      yield* fileSystem.writeFileString(path.join(folder, "notes.md"), "keep me");
+
+      yield* watchers.removeAllFor({ botThreadId: botThread.id });
+
+      assert.deepStrictEqual((yield* watchers.list(botThread.id)).watchers, []);
+      assert.isFalse(yield* fileSystem.exists(path.join(folder, "watchers")));
+      assert.strictEqual(
+        yield* fileSystem.readFileString(path.join(folder, "notes.md")),
+        "keep me",
+      );
+      assert.notInclude(
+        yield* fileSystem.readFileString(path.join(stateDir, "watcher-approvals.json")),
+        BotService.memoryFolderName(botThread.id),
+      );
+      // Another Bot's are untouched, and nothing of the removed ones runs again.
+      assert.deepStrictEqual(yield* statuses(otherThread.id), [["disk", "healthy"]]);
+      assert.isTrue(yield* fileSystem.exists(yield* stateFolder(otherThread.id, "disk")));
+      const runs = runner.state.runs;
+      yield* TestClock.adjust(EVERY_MS);
+      yield* watchers.runDue;
+      assert.strictEqual(runner.state.runs, runs + 1);
+      // Nothing left to remove is not an error.
+      yield* watchers.removeAllFor({ botThreadId: botThread.id });
+    }).pipe(provideWatchers(orchestration, runner.layer));
+  },
+);
+
+it.effect(
+  "removing a deleted Home thread's watchers leaves them: every Home shares one folder",
+  () => {
+    const orchestration = makeOrchestration();
+    const home = orchestration.addThread("home:test");
+    const runner = makeScriptedRunner();
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const fileSystem = yield* FileSystem.FileSystem;
+      orchestration.startRun(home, userMessage);
+      yield* installWatcher(home.id, "disk");
+      yield* watchers.removeAllFor({ botThreadId: home.id });
+      assert.deepStrictEqual(yield* statuses(home.id), [["disk", "healthy"]]);
+      assert.isTrue(yield* fileSystem.exists(yield* stateFolder(home.id, "disk")));
+    }).pipe(
+      Effect.provide(
+        layerWatchers(orchestration, runner.layer, undefined, undefined, false, {
+          home: { enabled: true, threadId: home.id },
+        }).pipe(Layer.provideMerge(layerBase())),
+      ),
+    );
+  },
+);
+
+it.effect.each(["watcher", "tool"] as const)(
+  "removing a deleted Bot's watchers waits for a running %s, so its state folder is not deleted under it",
+  (running) => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const runner = makeScriptedRunner();
+    const writes = makeWriteWatch();
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      yield* installWatcher(botThread.id, "disk");
+      yield* installTool(botThread.id, "pr");
+      const folder = yield* stateFolder(botThread.id, running === "tool" ? "pr" : "disk");
+      const gate = yield* makeRunGate(runner, (input) => isToolRun(input) === (running === "tool"));
+
+      const run = yield* (
+        running === "tool" ? callTool(botThread.id, "pr").pipe(Effect.asVoid) : watchers.runDue
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(gate.started);
+      writes.watch.armed = true;
+      const removal = yield* watchers
+        .removeAllFor({ botThreadId: botThread.id })
+        .pipe(Effect.forkChild);
+
+      // The one that is idle may go at once; the running one holds the removal back from its folder.
+      assert.isTrue(yield* fileSystem.exists(path.join(folder, "data")));
+      yield* Effect.forEach(Array.from({ length: 200 }), () => Effect.yieldNow);
+      assert.isTrue(yield* fileSystem.exists(path.join(folder, "data")));
+
+      yield* Deferred.succeed(gate.release, undefined);
+      yield* Fiber.join(run);
+      yield* Fiber.join(removal);
+      assert.isFalse(
+        yield* fileSystem.exists(path.join(yield* botFolder(botThread.id), "watchers")),
+      );
+      assert.deepStrictEqual((yield* watchers.list(botThread.id)).watchers, []);
+    }).pipe(provideWatchersWatchingWrites(orchestration, runner.layer, writes));
+  },
+);
+
+const deletionEvents = (...events: ReadonlyArray<{ type: string; threadId: ThreadId }>) => {
+  const done = Deferred.makeUnsafe<void>();
+  const orchestrator = Layer.mock(Orchestrator.OrchestratorV2)({
+    // The stream ends after the last event, which is when every one before it has been handled.
+    streamDomainEvents: Stream.fromIterable(events).pipe(
+      Stream.ensuring(Deferred.succeed(done, undefined)),
+    ) as never,
+  });
+  return { done, orchestrator };
+};
+
+it.effect("a deleted Bot's watchers go when the server sees its thread deleted", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const otherThread = addBot(orchestration, "thread:other");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    yield* installWatcher(botThread.id, "disk");
+    yield* installTool(botThread.id, "pr");
+    yield* installWatcher(otherThread.id, "disk");
+    const { done, orchestrator } = deletionEvents(
+      { type: "thread.archived", threadId: otherThread.id },
+      { type: "thread.deleted", threadId: orchestration.addThread("thread:plain").id },
+      { type: "thread.deleted", threadId: botThread.id },
+    );
+    const reactor = yield* BotDeletionReactor.BotDeletionReactor.pipe(
+      Effect.provide(BotDeletionReactor.layer.pipe(Layer.provide(orchestrator))),
+    );
+    yield* reactor.start();
+    yield* Deferred.await(done);
+
+    assert.deepStrictEqual((yield* watchers.list(botThread.id)).watchers, []);
+    assert.deepStrictEqual(yield* statuses(otherThread.id), [["disk", "healthy"]]);
+  }).pipe(provideWatchers(orchestration, runner.layer), Effect.scoped);
+});
+
+// Approving a revision starts the new version clean, but what it clears is the server's own
+// `state.json` beside the script's folder, never the folder a running script is using.
+it.effect(
+  "approving a revision while the old version runs waits for it and keeps the script's folder",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const runner = makeScriptedRunner();
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const reviewer = yield* FakeReviewer;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const first = yield* installWatcher(botThread.id, "disk");
+      const folder = yield* stateFolder(botThread.id, "disk");
+      const gate = yield* makeRunGate(runner, () => true);
+
+      const pass = yield* watchers.runDue.pipe(Effect.forkChild);
+      yield* Deferred.await(gate.started);
+      const cursor = path.join(folder, "data", "cursor");
+      yield* fileSystem.writeFileString(cursor, "42");
+
+      yield* reviewer.answer(matchName("disk"), APPROVES);
+      const { hash: second } = yield* proposeWatcher(botThread.id, "disk", {
+        run: "#!/bin/sh\nexit 0\n",
+      });
+      // The first run of the new version waits for the script that is running, so the revision is
+      // not live while that script is still using its folder.
+      yield* Effect.forEach(Array.from({ length: 200 }), () => Effect.yieldNow);
+      const waiting = (yield* watchers.list(botThread.id)).watchers[0];
+      assert.strictEqual(waiting?.approvedHash, first);
+      assert.strictEqual(yield* fileSystem.readFileString(cursor), "42");
+
+      yield* Deferred.succeed(gate.release, undefined);
+      yield* Fiber.join(pass);
+      yield* watchers.drainReviews;
+      const live = (yield* watchers.list(botThread.id)).watchers[0];
+      assert.strictEqual(live?.approvedHash, second);
+      assert.strictEqual(yield* fileSystem.readFileString(cursor), "42");
     }).pipe(provideWatchers(orchestration, runner.layer));
   },
 );

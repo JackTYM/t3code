@@ -533,6 +533,8 @@ with the `Scheduler`.
   with a time that is not a time is ignored.
 - **Revisions keep the old version running.** A change to an approved watcher becomes the pending
   version while the live one keeps running, and replaces it only after a verdict and a first run.
+  Going live clears the server's `state.json` (interval, failure streak) beside the state folder,
+  never the folder, and only after the dry run, which waits for a script that is running.
   Proposing the live bytes again drops the pending version.
 - **The reviewer.** The server asks its text-generation model (`TextGeneration.reviewWatcher`, the
   model the thread title uses) to read the script, its purpose and `expect`, and the live version's full text to compare with,
@@ -566,6 +568,17 @@ with the `Scheduler`.
   reviewer has not approved, so a client cannot run code nobody read; an approved version, even one
   approved before the reviewer existed and so without a model verdict, always runs. Pause and remove need operate access since
   they run nothing; the others start code and need terminal access, as saving a workflow file does.
+- **When a Bot is deleted.** [`BotDeletionReactor`](../../apps/server/src/bots/BotDeletionReactor.ts)
+  follows `thread.deleted` and makes two independent calls, each logged and dropped if it fails:
+  `BotSecretGrantService.removeAll` (grants and stored values) and `WatcherService.removeAllFor`
+  (every watcher and tool: record, versions, state folder, review in flight, health signal). Each
+  removal takes the lock a user's removal does, so a script that is running finishes first.
+  Nothing else of the Bot's memory folder is touched (notes, tasks, preferences stay for the user).
+  The thread-deletion effects cannot do this: they run inside the orchestration runtime, below the
+  Bot services. Home is skipped, since every Home shares one memory folder, its grants and its
+  watchers. The event is not replayed, so one missed while the server was down leaves all of it
+  behind, though the pass still skips them, as it does an archived Bot's (it runs a folder only for a
+  live Bot). The in-memory call limits and failure streaks of a removed tool expire on their own.
 - **Watcher wakes are influenced.** A wake from a watcher (`bot-wake:watcher...`, review verdicts
   included) marks the turn it starts influenced, as a mail digest does, so
   [`BotHoldService`](../../apps/server/src/bots/BotHoldService.ts) holds consequential calls in it.
@@ -659,11 +672,8 @@ them.
   server refuses a change when the grant is no longer that kind. No RPC or tool returns a value. A Bot sees names, hosts and last use
   (`t3_bot_secret_grants_list`). The server's `resolve` is the only reader and answers only when the
   grant covers every host the version declares; a miss says one fixed thing.
-- **When a Bot is deleted.** [`BotDeletionReactor`](../../apps/server/src/bots/BotDeletionReactor.ts)
-  follows `thread.deleted` and calls `removeAll`, which drops the Bot's grants and stored values.
-  The thread-deletion effects cannot do it: they run inside the orchestration runtime, below the
-  Bot services. Home is skipped, since every Home shares one memory folder and its grants. The
-  event is not replayed, so one missed while the server was down leaves the grants behind.
+- **When a Bot is deleted.** See [Watchers](#watchers): its grants and stored values go with its
+  watchers and tools.
 - **Injection.** A script gets only the names its approved version declares, as environment
   variables, and only in a run on this machine: a run for a linked environment never gets one. A missing grant makes the run wait with a fixed text naming the secret and
   hosts, which the Bot passes on to the user.

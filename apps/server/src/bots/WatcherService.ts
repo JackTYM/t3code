@@ -589,6 +589,12 @@ export class WatcherService extends Context.Service<
       readonly botThreadId: ThreadId;
       readonly name: string;
     }) => Effect.Effect<void, BotWatcherError>;
+    /**
+     * Deletes every watcher and tool of a deleted Bot: records, versions and state folders. Each
+     * waits for its own running script, as `removeByUser` does. Home keeps its own, since every
+     * Home shares one folder; the rest of the Bot's memory folder is left alone.
+     */
+    readonly removeAllFor: (input: { readonly botThreadId: ThreadId }) => Effect.Effect<void>;
     /** Stops a watcher's runs and keeps its approval. */
     readonly pause: (input: {
       readonly botThreadId: ThreadId;
@@ -1532,6 +1538,8 @@ const make = Effect.gen(function* () {
   ) {
     // The failure it had belonged to what ran before.
     yield* repair.clear({ kind: "watcher", botThreadId, name });
+    // Only `state.json`, the server's own record beside the script's `data` folder, so it needs
+    // no wait for a running script, unlike a removal. A revision is dry-run first, which does wait.
     const directory = watcherDir(folder, name);
     const pendingEvent = (yield* readState(directory))?.pendingEvent;
     if (pendingEvent === undefined) {
@@ -2073,6 +2081,36 @@ const make = Effect.gen(function* () {
 
   const removeByUser: WatcherService["Service"]["removeByUser"] = (input) =>
     afterRunEnds(input.botThreadId, input.name)(removeByUserLocked(input));
+
+  const removeAllFor: WatcherService["Service"]["removeAllFor"] = Effect.fn(
+    "WatcherService.removeAllFor",
+  )(function* ({ botThreadId }) {
+    const folder = BotService.memoryFolderName(botThreadId);
+    if (folder === BotService.HOME_MEMORY_FOLDER) return;
+    const names = Object.keys((yield* Ref.get(approvals))[folder] ?? {});
+    // One at a time, each under only its own lock, so a long script holds up no other removal.
+    yield* Effect.forEach(
+      names,
+      (name) =>
+        removeByUser({ botThreadId, name }).pipe(
+          Effect.catch((error) =>
+            error.reason === "not_found"
+              ? Effect.void
+              : Effect.logWarning("A deleted Bot's watcher could not be removed.", {
+                  folder,
+                  name,
+                  error,
+                }),
+          ),
+        ),
+      { discard: true },
+    );
+    // What a Bot left under `watchers/` with no record approves nothing, and nothing runs it. A
+    // watcher that could not be removed keeps the folder, since its script may be running there.
+    if (Object.keys((yield* Ref.get(approvals))[folder] ?? {}).length === 0) {
+      yield* removeQuietly(watchersDir(folder));
+    }
+  });
 
   const setPaused = (paused: boolean) =>
     Effect.fn("WatcherService.setPaused")(function* ({
@@ -2871,6 +2909,7 @@ const make = Effect.gen(function* () {
     remove,
     runTool,
     removeByUser,
+    removeAllFor,
     pause: setPaused(true),
     resume: setPaused(false),
     dryRun,

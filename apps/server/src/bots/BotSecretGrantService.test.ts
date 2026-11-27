@@ -32,6 +32,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as BotDeletionReactor from "./BotDeletionReactor.ts";
 import * as BotSecretGrantService from "./BotSecretGrantService.ts";
 import * as BotService from "./BotService.ts";
+import * as WatcherService from "./WatcherService.ts";
 import { makeOrchestration } from "./BotTestkit.ts";
 
 const isGrantError = Schema.is(BotSecretGrantError);
@@ -1012,7 +1013,15 @@ it.effect("a deleted Bot's grants go when the server sees its thread deleted", (
         streamDomainEvents: events as never,
       });
       const reactor = yield* BotDeletionReactor.BotDeletionReactor.pipe(
-        Effect.provide(BotDeletionReactor.layer.pipe(Layer.provide(orchestrator))),
+        Effect.provide(
+          BotDeletionReactor.layer.pipe(
+            Layer.provide(orchestrator),
+            // The watchers' side of the reactor has its own tests.
+            Layer.provide(
+              Layer.mock(WatcherService.WatcherService)({ removeAllFor: () => Effect.void }),
+            ),
+          ),
+        ),
       );
       yield* reactor.start();
       yield* Deferred.await(seen);
