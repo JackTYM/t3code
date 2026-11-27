@@ -36,7 +36,8 @@ in the same project with a summary of the thread, and that thread becomes its fi
   is under review, and a tool, or a watcher that uses secrets or tools, always runs on this
   machine. To change a script, use **Ask the Bot to revise**; you cannot edit it yourself. A watcher
   on a linked environment shows **waiting** while that environment does not answer. The reviewer
-  uses your text-generation model, so if it cannot run, choose another in Settings. A count on the
+  uses your text-generation model unless you turn on **Script reviewer model** in
+  **Settings → Home** and pick another; if it cannot run, choose another model. A count on the
   **Bot** button shows how many watchers or tools are failing or broken and how many calls the Bot
   holds for you; it updates when you return to the window, close the popover or the Bot finishes a
   turn.

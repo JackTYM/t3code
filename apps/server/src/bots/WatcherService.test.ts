@@ -9,6 +9,7 @@ import {
   EnvironmentId,
   OrchestratorMcpFailure,
   ProjectId,
+  ProviderInstanceId,
   TextGenerationError,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -2184,6 +2185,42 @@ it.effect("gives the reviewer the watcher's own fields and nothing else", () => 
     assert.deepStrictEqual(first?.modelSelection, settings.textGenerationModelSelection);
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
+
+it.effect(
+  "reviews with the model chosen for reviews, and with the text generation model when none is",
+  () => {
+    const reviewerModel = {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "reviewer-m",
+    };
+    const run = (settings: Parameters<typeof layerWatchers>[5]) => {
+      const orchestration = makeOrchestration();
+      const botThread = addBot(orchestration, "thread:bot");
+      const runner = makeScriptedRunner();
+      return Effect.gen(function* () {
+        const reviewer = yield* FakeReviewer;
+        yield* installWatcher(botThread.id, "inbox");
+        const configured = yield* (yield* ServerSettings.ServerSettingsService).getSettings;
+        return {
+          used: reviewer.calls.at(-1)?.input.modelSelection,
+          textGeneration: configured.textGenerationModelSelection,
+        };
+      }).pipe(
+        Effect.provide(
+          layerWatchers(orchestration, runner.layer, undefined, undefined, false, settings).pipe(
+            Layer.provideMerge(layerBase()),
+          ),
+        ),
+      );
+    };
+    return Effect.gen(function* () {
+      const chosen = yield* run({ botReviewerModelSelection: reviewerModel });
+      assert.deepStrictEqual(chosen.used, reviewerModel);
+      const unset = yield* run(undefined);
+      assert.deepStrictEqual(unset.used, unset.textGeneration);
+    });
+  },
+);
 
 it.effect("drops a review's answer when a newer proposal has replaced its version", () => {
   const orchestration = makeOrchestration();

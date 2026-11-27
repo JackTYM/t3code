@@ -537,7 +537,7 @@ with the `Scheduler`.
   never the folder, and only after the dry run, which waits for a script that is running.
   Proposing the live bytes again drops the pending version.
 - **The reviewer.** The server asks its text-generation model (`TextGeneration.reviewWatcher`, the
-  model the thread title uses) to read the script, its purpose and `expect`, and the live version's full text to compare with,
+  `botReviewerModelSelection` setting, else the model the thread title uses) to read the script, its purpose and `expect`, and the live version's full text to compare with,
   with the Bot's text framed as data under a random tag; a watcher that quotes the
   frame's markers is refused outright. On approval the server dry-runs the version where it will
   run and, if that completes, makes it live with `approvedBy: "reviewer"`. No user approval exists,

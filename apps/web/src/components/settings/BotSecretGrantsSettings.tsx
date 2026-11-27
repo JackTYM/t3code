@@ -282,8 +282,8 @@ function GrantDialog(props: {
                 />
                 <span className="block text-muted-foreground text-xs">
                   <T>
-                    One per line, up to 8. Do not grant credentials whose misuse you could not
-                    accept until scripts run isolated and requests are limited to these hosts.
+                    One per line, up to 8. A script holding this secret can reach only these hosts,
+                    over HTTPS. This needs macOS: on other systems, scripts with secrets do not run.
                   </T>
                 </span>
               </label>

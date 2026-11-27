@@ -13275,7 +13275,6 @@
   "1a990979efc31c0f": "The value is never shown again, so saving asks for it once more. Hosts and value are saved together.",
   "7a3242e0e0d314cb": "This replaces the existing grant.",
   "c1a31a7735b9d75b": "Hosts",
-  "42e359d70a6d9d3b": "One per line, up to 8. Do not grant credentials whose misuse you could not accept until scripts run isolated and requests are limited to these hosts.",
   "cabc718fa1a5c436": "Value",
   "a2d6284ba55d9777": "Reading the secret from a provider needs permission to manage providers.",
   "1aa957b983f2bba6": "stored value",
@@ -13323,5 +13322,9 @@
   "4378ac931b8b2959": "The saved grants could not be read, so none of them is in effect and none can be added or changed until they can. Try again in a moment.",
   "376e86f311f8aba8": "The hosts are saved on their own and the current value stays as it is. Clear Keep current value to give a new one with them.",
   "a5dacedf426c4e60": "Keep current value",
-  "cf902b70903257ce": "Changing the hosts of a reference needs permission to manage providers."
+  "cf902b70903257ce": "Changing the hosts of a reference needs permission to manage providers.",
+  "bad1fdde43f2824c": "Script reviewer model",
+  "693e823627dd14b5": "The model that reads each script a Bot writes before it runs. When off, it uses the text generation model.",
+  "e79f914279589873": "Use a separate script reviewer model",
+  "2c540d7eba5418cd": "One per line, up to 8. A script holding this secret can reach only these hosts, over HTTPS. This needs macOS: on other systems, scripts with secrets do not run."
 }

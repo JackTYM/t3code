@@ -22,6 +22,7 @@ import { homeFailure, type HomeFailure } from "../home/homeErrors";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { BotReviewerModelRow } from "./BotReviewerModelRow";
 import { BotSecretGrantsSettings } from "./BotSecretGrantsSettings";
 import { scheduledTaskDefaultModel } from "./scheduledTasksSettings.logic";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -208,6 +209,7 @@ function HomeSettingsContent({
             </div>
           }
         />
+        <BotReviewerModelRow environmentId={environmentId} disabled={!canOperate || busy} />
         <SettingsRow
           title={gt("Start fresh")}
           description={gt("Begin a new Home conversation. Notes, preferences and crew carry over.")}

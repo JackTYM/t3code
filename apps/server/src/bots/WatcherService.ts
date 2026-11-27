@@ -2435,13 +2435,15 @@ const make = Effect.gen(function* () {
     version: Version,
     previous: Version | undefined,
   ) {
-    // The thread title's own way to choose a model: the project's setting, else the server's.
+    // A model chosen for reviews wins; otherwise the thread title's own way to choose one: the
+    // project's setting, else the server's.
     const projectId = (yield* threads
       .getThreadShell(botThreadId)
       .pipe(Effect.orElseSucceed(() => null)))?.projectId;
     const selection = yield* settings.getSettings.pipe(
       Effect.map(
         (current) =>
+          current.botReviewerModelSelection ??
           resolveProjectSettings(current, projectId ?? null).settings.textGenerationModelSelection,
       ),
       Effect.option,
