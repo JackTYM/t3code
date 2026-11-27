@@ -653,7 +653,7 @@ it.effect("names the recipes when one is unknown, and serves only a Bot", () =>
   Effect.gen(function* () {
     const unknown = yield* run(asBot, "t3_bot_recipe", { name: "toString" });
     expect(unknown.code).toBe("invalid_request");
-    expect(unknown.message).toContain("github-notifications, calendar-events");
+    expect(unknown.message).toContain("github-notifications, calendar-events, slack-messages");
     const stranger: Fixture = { caller: STRANGER, shells: { [STRANGER]: mode("full-access") } };
     expect((yield* run(stranger, "t3_bot_recipe", {})).code).toBe("capability_denied");
   }),

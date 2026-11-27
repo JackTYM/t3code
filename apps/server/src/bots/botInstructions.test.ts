@@ -32,7 +32,7 @@ describe("withBotInstructions", () => {
     expect(instructions).toContain("`tools` parameter of t3_bot_watcher_propose");
   });
 
-  it("points the Bot at the recipes for a calendar or GitHub", () => {
-    expect(instructions).toMatch(/calendar.*GitHub.*t3_bot_recipe/iu);
+  it("points the Bot at the recipes for a calendar, GitHub or Slack", () => {
+    expect(instructions).toMatch(/calendar.*GitHub.*Slack.*t3_bot_recipe/iu);
   });
 });

@@ -100,6 +100,36 @@ an event, comments, or marks a notification read.
 
 If access is missing, Home tells you what to change once instead of repeating it.
 
+## Slack
+
+Home can read your Slack mentions, direct messages and one channel at a time, and tell you when
+someone mentions you or sends you a direct message. This uses a **browser session**, not an
+official Slack app, so read the risks before you grant it.
+
+- **The token can do anything you can.** A session token has your full Slack powers: it can post,
+  edit, delete and join as you. "Read-only" here is a promise of the reviewed script and of the host
+  limit, not something the token enforces, and the host limit cannot stop a script from posting to
+  the Slack workspace it is allowed to reach. This is the opposite of the advice above to grant only
+  tokens limited to read access; Slack offers no such limit for a session. Grant it only if you
+  accept that.
+- **Messages can steer the Bot.** Anyone in your workspace can write what Home reads. Home treats it
+  as information and does not act on it, and what it reads is cut to 300 characters a message, but
+  it is the most likely text to try to give a Bot orders.
+- **It ends when your session does.** If you log out of Slack in that browser or the session
+  expires, Home tells you once and you must grant a fresh token and cookie.
+
+To set it up, ask Home to watch your Slack and tell it your workspace's address (`acme` for
+`acme.slack.com`). Then, in **Settings → Home → Bot secret grants**, add two grants for that same
+host, `acme.slack.com`: `SLACK_TOKEN` and `SLACK_COOKIE`. Never paste either into the chat. In the
+browser where you are logged into Slack, open the developer tools:
+
+- `SLACK_COOKIE` is the value of the cookie named `d` (Application, or Storage in Safari, then
+  Cookies). It starts with `xoxd-` and is URL-encoded; paste it as shown.
+- `SLACK_TOKEN` starts with `xoxc-`. It is in Local Storage under `localConfig_v2`, as the `token`
+  of your workspace, or in the Network tab as the `token` field of any request to `/api/`.
+
+Both must come from the same login. Then ask Home again.
+
 ## Self-repair
 
 When something in how a Bot runs keeps failing (a watcher, the model that reviews watchers, or a
