@@ -2087,6 +2087,70 @@ it.effect("tells the Bot a rejected tool is a tool and a rejected watcher is a w
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
 
+/** The wakes that told the Bot a tool of its own was approved. */
+const approvalWakes = (orchestration: ReturnType<typeof makeOrchestration>) =>
+  orchestration.sent.filter(({ commandId }) => commandId.startsWith("bot-wake:watcher-approved:"));
+
+it.effect(
+  "wakes the Bot once when the reviewer first approves a tool, and not for anything else",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const runner = makeScriptedRunner();
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const reviewer = yield* FakeReviewer;
+
+      // Rejected, and a watcher: neither is a tool's first approval.
+      yield* reviewer.answer(matchName("rejected"), REJECTS);
+      yield* proposeTool(botThread.id, "rejected");
+      yield* installWatcher(botThread.id, "disk");
+      yield* watchers.drainReviews;
+      assert.strictEqual(approvalWakes(orchestration).length, 0);
+
+      const hash = yield* installTool(botThread.id, "pr");
+      const [wake, ...more] = approvalWakes(orchestration);
+      assert.strictEqual(more.length, 0);
+      assert.strictEqual(
+        wake?.text,
+        "Tool pr: approved by the reviewer. You can call it with t3_bot_tool_run.",
+      );
+      const approvedAt = (yield* watchers.list(botThread.id)).watchers
+        .find((listed) => listed.name === "pr")
+        ?.history.find((entry) => entry.hash === hash)?.approvedAt;
+      assert.strictEqual(
+        wake?.commandId,
+        `bot-wake:watcher-approved:${BotService.memoryFolderName(botThread.id)}:pr:${hash}:${approvedAt}`,
+      );
+
+      // A revision replaces an approved version the Bot already calls.
+      yield* installTool(botThread.id, "pr", { run: "echo two\n" });
+      assert.strictEqual(approvalWakes(orchestration).length, 1);
+    }).pipe(provideWatchers(orchestration, runner.layer));
+  },
+);
+
+it.effect("approves a tool whose Bot cannot be woken, and tells it nothing", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    botThread.settledOverride = "settled";
+    const hash = yield* installTool(botThread.id, "pr");
+    const [listed] = (yield* watchers.list(botThread.id)).watchers;
+    assert.strictEqual(listed?.approvedHash, hash);
+    assert.strictEqual(approvalWakes(orchestration).length, 0);
+  }).pipe(provideWatchers(orchestration, runner.layer));
+});
+
+// A test about what happens after a tool is installed starts from a Bot that has not been told so.
+const forgetApprovalWakes = (orchestration: ReturnType<typeof makeOrchestration>) => {
+  const told = new Set(approvalWakes(orchestration));
+  const rest = orchestration.sent.filter((message) => !told.has(message));
+  orchestration.sent.splice(0, orchestration.sent.length, ...rest);
+};
+
 it.effect.each([
   [
     "fails",
@@ -4462,6 +4526,7 @@ it.effect(
     };
     return Effect.gen(function* () {
       yield* installTool(botThread.id, "pr");
+      forgetApprovalWakes(orchestration);
       // A turn a watcher's wake began: influenced, and the call is still allowed.
       orchestration.startRun(botThread, { id: "bot-wake:watcher:other:1", createdBy: "system" });
       const first = yield* callTool(botThread.id, "pr");
@@ -4500,6 +4565,7 @@ it.effect(
     return Effect.gen(function* () {
       const watchers = yield* WatcherService.WatcherService;
       yield* installTool(botThread.id, "pr");
+      forgetApprovalWakes(orchestration);
       const result = yield* callTool(botThread.id, "pr", ["nope"]);
       assert.strictEqual(result.exit, "2");
       assert.isFalse(result.outputCut);
@@ -5209,6 +5275,7 @@ it.effect.each(toolBreakages)(
       yield* installWatcher(botThread.id, "w", { tools: [BAL] });
       yield* breakage.breakIt === undefined ? Effect.void : breakage.breakIt(botThread.id);
       runner.state.inputs.length = 0;
+      forgetApprovalWakes(orchestration);
 
       yield* watchers.runDue;
       assert.lengthOf(scriptRuns(runner), 0);
@@ -5263,6 +5330,7 @@ it.effect("waits, without failing, while a tool's secret has no grant", () => {
         .list(botThread.id)
         .pipe(Effect.map(({ watchers }) => watchers.find(({ name }) => name === "w")!));
     runner.state.inputs.length = 0;
+    forgetApprovalWakes(orchestration);
 
     yield* grants.remove({ botThreadId: botThread.id, name: "GITHUB_TOKEN" });
     for (let pass = 0; pass < 3; pass += 1) {
@@ -5292,6 +5360,7 @@ it.effect("keeps a reviewed watcher pending until the grant its tool needs is th
     const grants = yield* BotSecretGrantService.BotSecretGrantService;
     yield* grantSecret(botThread.id, "GITHUB_TOKEN");
     yield* installTool(botThread.id, "bal", declaresGithub);
+    forgetApprovalWakes(orchestration);
     yield* grants.remove({ botThreadId: botThread.id, name: "GITHUB_TOKEN" });
     yield* installWatcher(botThread.id, "w", { tools: [BAL] });
     const listed = () =>
@@ -5421,6 +5490,7 @@ it.effect("an events watcher wakes the Bot only when a tool's output is below a 
       "",
     ].join("\n");
     yield* installTool(botThread.id, "balance", { run: tool });
+    forgetApprovalWakes(orchestration);
     yield* installWatcher(botThread.id, "low", {
       mode: "events",
       run: WATCHES_BALANCE,
@@ -5889,6 +5959,7 @@ it.effect(
         ...declaresGithub,
         run: '#!/bin/sh\nprintf %s "$GITHUB_TOKEN" > "$T3_WATCHER_STATE_DIR/leak"\necho fine\n',
       });
+      forgetApprovalWakes(orchestration);
       yield* installWatcher(botThread.id, "w", {
         mode: "events",
         run: '#!/bin/sh\ncat "$T3_TOOL_OUTPUT_DIR/writes.out"\n',
@@ -5925,6 +5996,7 @@ it.effect("does not fail a watcher's run for a revision of its tool approved whi
     yield* installTool(botThread.id, "mail");
     yield* installWatcher(botThread.id, "w", { tools: [BAL, MAIL] });
     runner.state.inputs.length = 0;
+    forgetApprovalWakes(orchestration);
     // While the first tool runs, a revision of the second is approved and its old files go.
     let revised = false;
     runner.state.onRun = (input) =>

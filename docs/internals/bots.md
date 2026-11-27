@@ -545,7 +545,13 @@ with the `Scheduler`.
   - A rejection, a reviewer that fails or times out, and a failed dry run all
     end the same way: the pending version is discarded and the Bot is woken with the reason, framed
     as untrusted data, since a model that read a hostile script may repeat its words. A rejected
-    new watcher is deleted; the log and that wake are the only record.
+    new watcher is deleted; the log and that wake are the only record. An approval wakes the Bot
+    only for a tool's first approved version (key `watcher-approved:...`, text written by the
+    server and the validated name alone, so it holds no data), since a Bot proposes a tool in order
+    to call it and would otherwise sit until nudged. A revision and a watcher stay quiet. It is a
+    `bot-wake:watcher` message like the rejection's, so the turn it starts is influenced and holds
+    new watchers and tools: influence follows the message id alone, with no way to mark one wake as
+    clean, so the Bot proposes the watcher that uses the tool from a turn the user typed.
   - Verdicts (a bounded history that always keeps the approved ones) are shown in the user's Watchers view. The Bot's
     `t3_bot_watcher_list` returns them without reasons, for the same reason.
   - The Bot may ask for a revision of a watcher it has from any turn, but a new watcher or removal

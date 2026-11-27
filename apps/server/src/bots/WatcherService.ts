@@ -80,6 +80,7 @@ import {
   MAX_TOOLS_PER_BOT,
   MAX_WATCHER_TOOL_RUNS_PER_MINUTE,
   normaliseToolRefs,
+  BOT_TOOL_RUN_TOOL,
   refuseToolArgs,
   sameToolRefs,
   TOOL_CALL_LIMIT_MESSAGE,
@@ -2543,6 +2544,34 @@ const make = Effect.gen(function* () {
     });
   });
 
+  // A Bot proposes a tool to call it, so its first approval is news; revisions and watchers (which
+  // report through their own output) stay quiet. Only the server's words and the validated name go
+  // in. The `bot-wake:watcher` id keeps the turn influenced, as `BotService.turnInfluenced` keys off
+  // the id alone. The key holds the committed approval time, so a replay never wakes twice.
+  const wakeToolApproved = Effect.fn("WatcherService.wakeToolApproved")(function* (
+    botThreadId: ThreadId,
+    name: string,
+    hash: string,
+  ) {
+    const folder = BotService.memoryFolderName(botThreadId);
+    const approvedAt = (yield* recordOf(folder, name))?.history.find(
+      (entry) => entry.hash === hash,
+    )?.approvedAt;
+    if (approvedAt === undefined) return;
+    const queued = yield* bots.wakeWith({
+      botThreadId,
+      key: `watcher-approved:${folder}:${name}:${hash}:${approvedAt}`,
+      text: `Tool ${name}: approved by the reviewer. You can call it with ${BOT_TOOL_RUN_TOOL}.`,
+    });
+    if (!queued) {
+      yield* Effect.logWarning("Tool approval could not be sent to the Bot.", {
+        folder,
+        name,
+        hash,
+      });
+    }
+  });
+
   const reviewPending = Effect.fn("WatcherService.reviewPending")(function* (
     botThreadId: ThreadId,
     name: string,
@@ -2610,7 +2639,12 @@ const make = Effect.gen(function* () {
       }
       // The dry run took a while, and a newer proposal may have come in: that one needs its own review.
       if ((yield* recordOf(folder, name))?.pendingHash !== hash) return;
+      const firstToolApproval = current.kind === "tool" && current.approvedHash === undefined;
       yield* approve({ botThreadId, name, hash, approvedBy: "reviewer" });
+      // The approval is committed: nothing about telling the Bot may undo it or fail the review.
+      if (firstToolApproval) {
+        yield* wakeToolApproved(botThreadId, name, hash).pipe(Effect.ignoreCause({ log: true }));
+      }
     });
     yield* goLive.pipe(
       // A move during the dry run leaves it covering the wrong place: run it where the watcher is now.
