@@ -275,6 +275,7 @@ const layerWatchers = (
   health = false,
   settings?: Parameters<typeof ServerSettings.ServerSettingsService.layerTest>[0],
   sandbox: Layer.Layer<ScriptSandbox.ScriptSandbox> = ScriptSandbox.layerOff,
+  scheduler: Layer.Layer<Scheduler.Scheduler> = Scheduler.layer,
 ) =>
   WatcherService.layer.pipe(
     Layer.provideMerge(
@@ -284,7 +285,7 @@ const layerWatchers = (
         EgressProxy.layer,
         peer,
         layerReviewer,
-        Scheduler.layer,
+        scheduler,
         health ? RepairService.layer : noRepair,
         // Grants are stored values here, so the provider the references would go through is never asked.
         BotSecretGrantService.layer.pipe(Layer.provide(noSecretProviders)),
@@ -307,11 +308,19 @@ const provideWatchers = (
   peer?: Layer.Layer<PeerMcpClient.PeerMcpClient>,
   environmentId?: string,
   sandbox?: Layer.Layer<ScriptSandbox.ScriptSandbox>,
+  scheduler?: Layer.Layer<Scheduler.Scheduler>,
 ) =>
   Effect.provide(
-    layerWatchers(orchestration, runner, peer, environmentId, false, undefined, sandbox).pipe(
-      Layer.provideMerge(layerBase()),
-    ),
+    layerWatchers(
+      orchestration,
+      runner,
+      peer,
+      environmentId,
+      false,
+      undefined,
+      sandbox,
+      scheduler,
+    ).pipe(Layer.provideMerge(layerBase())),
   );
 
 /** As `provideWatchers`, with the health signals real: a failing watcher also tells the Bot so. */
@@ -1196,20 +1205,49 @@ it.effect("runs the script in its own folder with a scrubbed environment and cap
   );
 });
 
-it.effect("runs due watchers from the Scheduler", () => {
+/**
+ * A Scheduler whose ticks the test fires. The real one runs its sources on a timer and skips a
+ * tick while the previous pass still holds its permit, which suits production. In a test that
+ * moves the TestClock a pass is real file I/O racing a virtual clock that never waits for it,
+ * so under load the one tick that matters is skipped and nothing ever fires another.
+ */
+const makeManualScheduler = () => {
+  const sources: Array<Effect.Effect<void>> = [];
+  const layer = Layer.succeed(
+    Scheduler.Scheduler,
+    Scheduler.Scheduler.of({
+      register: <E, R>(_name: string, runDueWork: Effect.Effect<void, E, R>) =>
+        Effect.contextWith((context: Context.Context<R>) =>
+          Effect.sync(() => {
+            sources.push(runDueWork.pipe(Effect.provideContext(context), Effect.ignore));
+          }),
+        ),
+    }),
+  );
+  return { layer, tick: Effect.forEach(sources, (run) => run, { discard: true }) };
+};
+
+it.effect("runs due watchers whenever the Scheduler ticks", () => {
   const orchestration = makeOrchestration();
   const botThread = addBot(orchestration, "thread:bot");
   const runner = makeScriptedRunner();
+  const scheduler = makeManualScheduler();
   return Effect.gen(function* () {
-    const runs = yield* Queue.unbounded<void>();
     const watchers = yield* WatcherService.WatcherService;
     yield* installWatcher(botThread.id, "api");
-    runner.state.onRun = () => Queue.offer(runs, undefined).pipe(Effect.asVoid);
     yield* watchers.start();
-    yield* Queue.take(runs);
+    assert.strictEqual(runner.state.runs, 0);
+    yield* scheduler.tick;
+    assert.strictEqual(runner.state.runs, 1);
+    // Not due again yet.
+    yield* scheduler.tick;
+    assert.strictEqual(runner.state.runs, 1);
     yield* TestClock.adjust(EVERY_MS);
-    yield* Queue.take(runs);
-  }).pipe(provideWatchers(orchestration, runner.layer));
+    yield* scheduler.tick;
+    assert.strictEqual(runner.state.runs, 2);
+  }).pipe(
+    provideWatchers(orchestration, runner.layer, undefined, undefined, undefined, scheduler.layer),
+  );
 });
 
 it.effect("approves a version whose dry run completed, whatever that run found", () => {
