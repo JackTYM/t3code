@@ -10,6 +10,12 @@ describe("withBotInstructions", () => {
     expect(withBotInstructions(ThreadId.make("thread-1"), "  ")).toBe("  ");
   });
 
+  it("tells the Bot a script with a secret reaches only its declared hosts, over HTTPS, through a proxy", () => {
+    expect(instructions).toContain("only its declared hosts, over HTTPS on port 443");
+    expect(instructions).toContain("HTTPS_PROXY");
+    expect(instructions).toContain("egress blocked:");
+  });
+
   it("explains grants, tools and what a tool call does to the turn", () => {
     for (const name of [
       "t3_bot_tool_propose",

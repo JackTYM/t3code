@@ -8,11 +8,10 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ProcessRunner from "../processRunner.ts";
 
 /**
- * Runs a Bot-written script under macOS `sandbox-exec` with the T3 home out of reach, so an
- * approved script cannot read the stored secret grants (or the database, or the sessions) that
- * sit under it. Only the script's own folders are let back in.
- *
- * Other platforms have no sandbox here: a script that declares a secret does not run there.
+ * Runs a Bot-written script under macOS `sandbox-exec` with the T3 home out of reach (the secret
+ * grants, database and sessions under it); only the script's own folders are let back in. With a
+ * `proxyPort` the network is closed too, except that loopback port (see `EgressProxy`). Elsewhere
+ * a script that declares a secret does not run.
  */
 const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 const PROBE_TIMEOUT = Duration.seconds(5);
@@ -27,6 +26,11 @@ interface SandboxInput extends SandboxedCommand {
   readonly hidden: ReadonlyArray<string>;
   /** Let back in under a hidden path: contents and writes. */
   readonly allowed: ReadonlyArray<string>;
+  /**
+   * The egress proxy's loopback port. When set, it is the only place the script can connect to:
+   * every other address, port, UDP socket and unix socket is refused. Unset leaves the network alone.
+   */
+  readonly proxyPort?: number | undefined;
 }
 
 /**
@@ -35,7 +39,7 @@ interface SandboxInput extends SandboxedCommand {
  * the hidden tree. Metadata (stat, realpath of a parent) stays readable so a script can still
  * resolve its own path; contents and listings of the hidden tree do not.
  */
-const sandboxProfile = (hiddenCount: number, allowedCount: number): string => {
+const sandboxProfile = (hiddenCount: number, allowedCount: number, withProxy: boolean): string => {
   const subpaths = (prefix: string, count: number) =>
     Array.from({ length: count }, (_, index) => `(subpath (param "${prefix}${index}"))`).join(" ");
   return [
@@ -47,6 +51,14 @@ const sandboxProfile = (hiddenCount: number, allowedCount: number): string => {
     ...(allowedCount === 0
       ? []
       : [`(allow file-read-data file-write* ${subpaths("A", allowedCount)})`]),
+    // `network*` also covers binding, listening, UDP and unix sockets. Name lookups through the
+    // system resolver fail inside, which is wanted: the proxy resolves the host, not the script.
+    ...(withProxy
+      ? [
+          "(deny network*)",
+          '(allow network-outbound (remote ip (string-append "localhost:" (param "PROXY_PORT"))))',
+        ]
+      : []),
   ].join("\n");
 };
 
@@ -55,8 +67,9 @@ const sandboxCommand = (input: SandboxInput): SandboxedCommand => ({
   args: [
     ...input.hidden.flatMap((path, index) => ["-D", `H${index}=${path}`]),
     ...input.allowed.flatMap((path, index) => ["-D", `A${index}=${path}`]),
+    ...(input.proxyPort === undefined ? [] : ["-D", `PROXY_PORT=${input.proxyPort}`]),
     "-p",
-    sandboxProfile(input.hidden.length, input.allowed.length),
+    sandboxProfile(input.hidden.length, input.allowed.length, input.proxyPort !== undefined),
     input.command,
     ...input.args,
   ],

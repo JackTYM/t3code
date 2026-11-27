@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeCrypto from "node:crypto";
+import * as NodeNet from "node:net";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -34,6 +35,7 @@ import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as EgressProxy from "./EgressProxy.ts";
 import * as ScriptSandbox from "./ScriptSandbox.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -275,6 +277,7 @@ const layerWatchers = (
       Layer.mergeAll(
         runner,
         sandbox,
+        EgressProxy.layer,
         peer,
         layerReviewer,
         Scheduler.layer,
@@ -3623,8 +3626,21 @@ it.effect("gives a script the secrets it declares as environment variables, and 
       "T3_WATCHER_STATE_DIR",
       "GITHUB_TOKEN",
     ]);
+    const proxied = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "NODE_USE_ENV_PROXY"];
     for (const env of envs)
-      for (const key of Object.keys(env)) assert.isTrue(allowed.has(key), key);
+      for (const key of Object.keys(env)) {
+        assert.isTrue(
+          allowed.has(key) || (env.GITHUB_TOKEN !== undefined && proxied.includes(key)),
+          key,
+        );
+      }
+    // Only the run that holds a secret is held to its hosts: it gets a proxy on the loopback.
+    assert.match(secretEnv?.HTTPS_PROXY ?? "", /^http:\/\/127\.0\.0\.1:\d+$/u);
+    assert.strictEqual(secretEnv?.ALL_PROXY, secretEnv?.HTTPS_PROXY);
+    assert.strictEqual(secretEnv?.NODE_USE_ENV_PROXY, "1");
+    for (const env of envs.filter((env) => env.GITHUB_TOKEN === undefined)) {
+      for (const key of proxied) assert.notProperty(env, key);
+    }
     assert.isTrue(runner.state.inputs.every(({ inheritEnv }) => inheritEnv === false));
     assert.strictEqual(
       envs.filter((env) => env.GITHUB_TOKEN !== undefined).length,
@@ -4566,6 +4582,54 @@ it.effect("a tool that holds a secret cannot read the T3 home, only its own fold
     );
   }).pipe(provideWatchers(orchestration, realRunner, undefined, undefined, liveSandbox));
 });
+
+// The real runner and the real sandbox: a tool that holds a secret reaches the network only
+// through the run's proxy, and is told which hosts the proxy refused.
+it.effect(
+  "a tool that holds a secret can reach only its declared hosts, and learns what was refused",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const liveSandbox = ScriptSandbox.layer.pipe(Layer.provide(realRunner));
+    return Effect.gen(function* () {
+      const sandbox = yield* ScriptSandbox.ScriptSandbox;
+      if (!(yield* sandbox.available)) return;
+      // Something else on the machine the tool has no business reaching.
+      const listener = yield* Effect.acquireRelease(
+        Effect.callback<NodeNet.Server>((resume) => {
+          const server = NodeNet.createServer((socket) => socket.end("HTTP/1.0 200 OK\r\n\r\nhi"));
+          server.listen(0, "127.0.0.1", () => resume(Effect.succeed(server)));
+        }),
+        (server) => Effect.sync(() => server.close()),
+      );
+      yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+      // The proxy variables are what the script was given. Its own host is refused on any port but
+      // 443, and an undeclared one on any port.
+      yield* installTool(botThread.id, "leak", {
+        ...declaresGithub,
+        run: [
+          "#!/bin/sh",
+          'echo "proxy=$HTTPS_PROXY use=$NODE_USE_ENV_PROXY" >&2',
+          `curl -sS -m 5 --noproxy '*' http://127.0.0.1:${(listener.address() as NodeNet.AddressInfo).port}/ >/dev/null 2>&1 && echo direct-ok >&2`,
+          "curl -sS -m 5 https://Evil.Example.NET/ >/dev/null 2>&1 && echo proxied-ok >&2",
+          "curl -sS -m 5 https://api.github.com:8443/ >/dev/null 2>&1 && echo port-ok >&2",
+          "exit 1",
+          "",
+        ].join("\n"),
+      });
+      const result = yield* callTool(botThread.id, "leak");
+      assert.strictEqual(result.exit, "1");
+      const body = framedBody(result.output) ?? "";
+      assert.match(body, /^egress blocked: evil\.example\.net, api\.github\.com\n/u);
+      assert.match(body, /proxy=http:\/\/127\.0\.0\.1:\d+ use=1/u);
+      for (const reached of ["direct-ok", "proxied-ok", "port-ok"])
+        assert.notInclude(body, reached);
+    }).pipe(
+      Effect.scoped,
+      provideWatchers(orchestration, realRunner, undefined, undefined, liveSandbox),
+    );
+  },
+);
 
 it.effect("waits, without spawning or failing, while a secret has no grant", () => {
   const orchestration = makeOrchestration();

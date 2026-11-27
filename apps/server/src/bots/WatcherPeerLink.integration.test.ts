@@ -43,6 +43,7 @@ import * as BotService from "./BotService.ts";
 import { makeOrchestration, noSecretProviders } from "./BotTestkit.ts";
 import * as RepairService from "./RepairService.ts";
 import * as WatcherService from "./WatcherService.ts";
+import * as EgressProxy from "./EgressProxy.ts";
 import * as ScriptSandbox from "./ScriptSandbox.ts";
 
 const MINUTE = 60_000;
@@ -103,6 +104,7 @@ const layerWatchers = (
       Layer.mergeAll(
         runner,
         ScriptSandbox.layerOff,
+        EgressProxy.layer,
         peers,
         Scheduler.layer,
         // Only needed to build the watchers: none of these declares a secret.

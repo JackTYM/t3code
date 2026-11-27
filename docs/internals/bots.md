@@ -683,7 +683,23 @@ them.
 - **Known limits.** Values that are split, reversed, hex-encoded or otherwise transformed are not
   found, nor are values past the scan's bounds, or written by a descendant that outlives the run,
   after the scan. The reviewer is meant to catch those, and it is a model.
-- **Hosts are not enforced.** They gate the grant (it must cover every declared host), the reviewer
-  reads them and the view shows them. Nothing stops a script that holds a value from sending it
-  elsewhere. The egress proxy, which is not built, is what would hold a run's requests to its
-  declared hosts; until then granting a secret trusts the reviewer and the redaction above.
+- **Hosts are enforced by the egress proxy, for a run that holds a secret.** A run that injects a
+  secret gets the network only through [`EgressProxy`](../../apps/server/src/bots/EgressProxy.ts),
+  one per run on an ephemeral loopback port. The sandbox profile denies every other network
+  operation (other addresses and ports, listening, UDP, unix sockets) and allows outbound only to
+  that port, so the script cannot go around it; `HTTPS_PROXY`, `ALL_PROXY` and `NODE_USE_ENV_PROXY`
+  (reserved names) point curl and Node's `fetch` at it. The proxy tunnels a `CONNECT` only to port
+  443 of a declared hostname (exact, case-insensitive, no wildcards), and only when every address
+  the name resolves to is public. It resolves and connects itself, so a name that changes its answer
+  afterwards cannot redirect the tunnel. Plain HTTP, other ports and redirects to another host fail.
+  A refused host is added to a short list that `runScript` writes as a first line of the run's
+  stderr (`egress blocked: ...`), after redaction, so the Bot can see why the script failed. A run
+  without a secret keeps the open network. Limits:
+  - A secret can still be sent to a declared host; that is what the grant is, and the reviewer and
+    the redaction above are the controls on what the script does with it there.
+  - The sandbox closes the network, not every channel to other processes. System services the
+    profile leaves open (it starts from `allow default`) are not enumerated here. Name lookups
+    through the system resolver fail inside it on the macOS tested, which closes DNS as a side
+    channel, but that rests on how the resolver reaches its daemon, not on a rule of ours.
+  - Only macOS enforces it. Elsewhere a script that declares a secret waits, as above, so a secret
+    is never injected without the proxy.

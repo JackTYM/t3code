@@ -16,6 +16,7 @@ import * as BotService from "./bots/BotService.ts";
 import * as BotWakeReactor from "./bots/BotWakeReactor.ts";
 import * as RepairMergeGuard from "./bots/RepairMergeGuard.ts";
 import * as BotSecretGrantService from "./bots/BotSecretGrantService.ts";
+import * as EgressProxy from "./bots/EgressProxy.ts";
 import * as ScriptSandbox from "./bots/ScriptSandbox.ts";
 import * as RepairService from "./bots/RepairService.ts";
 import * as WatcherService from "./bots/WatcherService.ts";
@@ -854,6 +855,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
           // environment calls it through the link the rest of the server keeps alive.
           Layer.provide(PeerMcpClient.layer.pipe(Layer.provide(PeerLinks.layer))),
           Layer.provide(ScriptSandbox.layer),
+          Layer.provide(EgressProxy.layer),
         ),
       ),
       // What the user lets a Bot's scripts use; the watchers read it when they run.

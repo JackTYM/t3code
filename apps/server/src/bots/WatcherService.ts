@@ -58,6 +58,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as EgressProxy from "./EgressProxy.ts";
 import * as ScriptSandbox from "./ScriptSandbox.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { frameUntrustedText } from "../scheduledTasks/webhookTemplate.ts";
@@ -151,6 +152,11 @@ const RESERVED_ENV = new Set([
   "T3_WATCHER_DRY_RUN",
   "T3_TOOL",
   "T3_TOOL_OUTPUT_DIR",
+  // Where a secret-holding script's requests go: a granted secret named like one would reroute them.
+  "HTTPS_PROXY",
+  "https_proxy",
+  "ALL_PROXY",
+  "NODE_USE_ENV_PROXY",
 ]);
 const NO_SANDBOX_REASON =
   "This machine cannot run a script in a sandbox (macOS only), so a script that uses a secret does not run here.";
@@ -640,6 +646,7 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const runner = yield* ProcessRunner.ProcessRunner;
   const sandbox = yield* ScriptSandbox.ScriptSandbox;
+  const egress = yield* EgressProxy.EgressProxy;
   const bots = yield* BotService.BotService;
   const grants = yield* BotSecretGrantService.BotSecretGrantService;
   const settings = yield* ServerSettings.ServerSettingsService;
@@ -874,6 +881,7 @@ const make = Effect.gen(function* () {
     secrets: ReadonlyArray<InjectedSecret>,
     tool: boolean,
     toolOutputDir: string | undefined,
+    proxyPort: number | undefined,
   ): NodeJS.ProcessEnv => ({
     // First, so nothing the server sets below can be replaced by a secret of the same name.
     ...Object.fromEntries(secrets.map(({ name, value }) => [name, value])),
@@ -891,6 +899,15 @@ const make = Effect.gen(function* () {
     ...(tool ? { T3_TOOL: "1" } : {}),
     // Only a watcher that declares tools has a directory of their output.
     ...(toolOutputDir === undefined ? {} : { T3_TOOL_OUTPUT_DIR: toolOutputDir }),
+    // Node 22.21+ reads the proxy from the environment only when told to.
+    ...(proxyPort === undefined
+      ? {}
+      : {
+          HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`,
+          https_proxy: `http://127.0.0.1:${proxyPort}`,
+          ALL_PROXY: `http://127.0.0.1:${proxyPort}`,
+          NODE_USE_ENV_PROXY: "1",
+        }),
   });
 
   // Runs the bytes it is given, from a private copy: the stored path is never executed, so a
@@ -911,6 +928,8 @@ const make = Effect.gen(function* () {
     readonly ownLock?: boolean | undefined;
     /** A watcher's declared tools' output, already hidden of their secrets, written as files for the script. */
     readonly toolOutputs?: ReadonlyArray<ToolOutput> | undefined;
+    /** The version's declared hosts: all a script that holds a secret can reach. */
+    readonly hosts?: ReadonlyArray<string> | undefined;
   }) {
     const runtime = RUNTIMES[input.runtime];
     const secrets = input.secrets ?? [];
@@ -941,11 +960,17 @@ const make = Effect.gen(function* () {
       // The sandbox matches real paths, and the script may use only its own folders under the T3 home.
       const real = (target: string) =>
         fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => path.resolve(target)));
+      // A run that holds a secret reaches the network only through this, so the secret can go only
+      // to the hosts it was granted for. It is always behind the sandbox: `injectSecrets` makes a
+      // script that declares a secret wait where there is none. If the proxy cannot start, the run does not.
+      const proxy =
+        secrets.length === 0 ? undefined : yield* egress.open({ hosts: input.hosts ?? [] });
       const launch = sandbox.wrap({
         command: runtime.command,
         args: [file, ...(input.tool?.args ?? [])],
         hidden: [yield* real(config.baseDir)],
         allowed: [yield* real(scratch), yield* real(stateDir)],
+        proxyPort: proxy?.port,
       });
       const output = yield* runner.run({
         command: launch.command,
@@ -960,6 +985,7 @@ const make = Effect.gen(function* () {
             secrets,
             input.tool !== undefined,
             toolOutputDir,
+            proxy?.port,
           ),
           // Inside the desktop app the server's own binary is Electron, which runs a script as Node only when told to.
           ...(input.runtime === "node" && process.versions.electron !== undefined
@@ -979,19 +1005,27 @@ const make = Effect.gen(function* () {
       // Before the scope ends: a dry run's state folder is under the scratch directory.
       const written =
         secrets.length > 0 && (yield* Effect.promise(() => hideInStateFolder(stateDir, secrets)));
-      return { output, written };
+      return { output, written, blocked: proxy === undefined ? [] : yield* proxy.blocked };
     }).pipe(
       Effect.scoped,
-      Effect.map(({ output, written }) => {
+      Effect.map(({ output, written, blocked }) => {
         if (written) {
           return {
             raw: { exit: SECRET_WRITTEN_EXIT, stdout: "", stderr: SECRET_WRITTEN_STDERR },
             cut: false,
           };
         }
-        const stderr = hideThenCut(output.stderr, output.stderrTruncated, secrets, slack, {
-          chars: STDERR_MAX_CHARS,
-        });
+        // Added after the values are hidden, and first so a cut to the Bot's smaller window keeps
+        // it. The names are the proxy's, already plain characters, so nothing of the script's text
+        // or a secret rides in with them.
+        const stderr = [
+          ...(blocked.length === 0 ? [] : [`egress blocked: ${blocked.join(", ")}`]),
+          hideThenCut(output.stderr, output.stderrTruncated, secrets, slack, {
+            chars: STDERR_MAX_CHARS,
+          }),
+        ]
+          .filter((text) => text !== "")
+          .join("\n");
         if (output.timedOut) return { raw: { exit: "timeout", stdout: "", stderr }, cut: false };
         // A watcher's is judged from the bytes read: a remote run result has no truncation flag,
         // so `judge` counts bytes, and what hiding takes out must not make a cut output look whole.
@@ -1199,6 +1233,7 @@ const make = Effect.gen(function* () {
             dryRun: false,
             dataDir: dataDir(folder, name),
             secrets: secrets.injected,
+            hosts: version.config.hosts,
             tool: { args },
             ownLock: true,
           });
@@ -1284,6 +1319,7 @@ const make = Effect.gen(function* () {
       dryRun: scheduled === undefined,
       dataDir: scheduled === undefined ? undefined : dataDir(scheduled.folder, scheduled.name),
       secrets: secrets.injected,
+      hosts: version.config.hosts,
       // A dry run of a tool is a call with no arguments.
       tool: isTool ? { args: [] } : undefined,
       toolOutputs: tools.outputs,
@@ -2684,6 +2720,7 @@ const make = Effect.gen(function* () {
             dryRun: false,
             dataDir: dataDir(folder, name),
             secrets: secrets.injected,
+            hosts: version.config.hosts,
             tool: { args },
             ownLock: true,
           });
