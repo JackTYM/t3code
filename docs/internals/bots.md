@@ -616,7 +616,10 @@ a name cannot be both and review has one path. What differs is a trap:
 - Calls do not take the global one-script-at-a-time gate, which a 30 second tool would hold against
   every watcher. Each tool has its own lock (its state folder is a cursor), four calls run at once
   overall and at most two for one Bot, so one Bot cannot take every place, and the lock is held across re-reading the record, so a pause, removal or approved
-  revision that came while a call waited decides what it does.
+  revision that came while a call waited decides what it does. Removing a tool or watcher takes
+  the same lock (a watcher's script holds the one-at-a-time gate) before deleting its state
+  folder, so a script that is running does not lose it; the removal queues behind calls already
+  waiting.
 - What stops a loop from spending a paid API is the call limit (six calls a minute and twelve tools per Bot)
   and the failure streaks, both in memory.
 
@@ -649,11 +652,18 @@ them.
   aside and every grant in it dropped; stored values are not touched. The file holds names, hosts and
   a reference, never a value: a stored value is in the server's secret store, and a reference is
   read through its secret provider at each use.
-- **Who may create one.** `botSecretGrant.set` and `.remove` need operate scope, and a reference
-  also needs `providers:manage`, which reading a provider's secrets already takes (decided in
-  `clientRpcPermissions`). No RPC or tool returns a value. A Bot sees names, hosts and last use
+- **Who may create one.** `botSecretGrant.set`, `.setHosts` and `.remove` need operate scope, and a
+  reference also needs `providers:manage`, which reading a provider's secrets already takes
+  (decided in `clientRpcPermissions`). `setHosts` keeps the value or reference and carries the kind
+  the caller saw, because the permission is decided from the input before the grant is read; the
+  server refuses a change when the grant is no longer that kind. No RPC or tool returns a value. A Bot sees names, hosts and last use
   (`t3_bot_secret_grants_list`). The server's `resolve` is the only reader and answers only when the
   grant covers every host the version declares; a miss says one fixed thing.
+- **When a Bot is deleted.** [`BotDeletionReactor`](../../apps/server/src/bots/BotDeletionReactor.ts)
+  follows `thread.deleted` and calls `removeAll`, which drops the Bot's grants and stored values.
+  The thread-deletion effects cannot do it: they run inside the orchestration runtime, below the
+  Bot services. Home is skipped, since every Home shares one memory folder and its grants. The
+  event is not replayed, so one missed while the server was down leaves the grants behind.
 - **Injection.** A script gets only the names its approved version declares, as environment
   variables, and only in a run on this machine: a run for a linked environment never gets one. A missing grant makes the run wait with a fixed text naming the secret and
   hosts, which the Bot passes on to the user.

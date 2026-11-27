@@ -86,6 +86,15 @@ export function botGrantTargets(
 export const replacesBotSecretGrant = (name: string, existing: ReadonlyArray<{ name: string }>) =>
   existing.some((grant) => grant.name === name.trim());
 
+/**
+ * Whether saving carries a value. Editing the hosts of a grant keeps its stored value or
+ * reference as it is, unless the user chooses to give a new one.
+ */
+export const botSecretGrantSaveCarriesValue = (
+  mode: "add" | "hosts" | "value",
+  keepCurrentValue: boolean,
+) => mode !== "hosts" || !keepCurrentValue;
+
 export type BotSecretGrantValueIssue = "empty" | "too_short" | "reference_required";
 
 /**

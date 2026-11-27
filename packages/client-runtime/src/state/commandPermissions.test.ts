@@ -259,6 +259,7 @@ describe("command permissions", () => {
     WS_METHODS.botWatcherPause,
     WS_METHODS.botWatcherRemove,
     WS_METHODS.botSecretGrantSet,
+    WS_METHODS.botSecretGrantSetHosts,
     WS_METHODS.botSecretGrantRemove,
     WS_METHODS.botHoldReject,
     WS_METHODS.botMailSetMailboxes,
@@ -464,6 +465,33 @@ it.effect(
       );
       expect(registry.get(set.permissionAtom(env, reference))).toBe(true);
       yield* set.authorize(registry, env, reference);
+    }),
+);
+
+it.effect(
+  "changing the hosts of a reference grant needs provider management, a stored one does not",
+  () =>
+    Effect.gen(function* () {
+      const registry = yield* setup;
+      const setHosts = createCommandPermissions(runtime, WS_METHODS.botSecretGrantSetHosts);
+      registry.set(sessions(env), AsyncResult.success(grant(true)));
+      expect(registry.get(setHosts.permissionAtom(env, { source: "stored" }))).toBe(true);
+      expect(registry.get(setHosts.permissionAtom(env, { source: "reference" }))).toBe(false);
+      yield* setHosts.authorize(registry, env, { source: "stored" });
+      expect(
+        (yield* setHosts.authorize(registry, env, { source: "reference" }).pipe(Effect.flip))
+          .requiredPermission,
+      ).toBe(AuthProvidersManageScope);
+      registry.set(
+        sessions(env),
+        AsyncResult.success({
+          ...grant(true),
+          scopes: [AuthOrchestrationOperateScope, AuthProvidersManageScope],
+          permissions: [AuthOrchestrationOperateScope, AuthProvidersManageScope],
+        }),
+      );
+      expect(registry.get(setHosts.permissionAtom(env, { source: "reference" }))).toBe(true);
+      yield* setHosts.authorize(registry, env, { source: "reference" });
     }),
 );
 

@@ -68,8 +68,10 @@ through a script that uses a secret you gave it. You decide which secrets it get
   processes, so do not start the server with tokens in its environment.
 - **Do not grant a credential whose misuse you could not accept.** Until the Bot and its crews are kept
   from that folder, give only tokens limited to read access, and rotate one you doubt.
-- Remove a grant to take the secret back. A row in the **Watchers and tools** tab marks a secret
-  that still needs a grant.
+- **Edit hosts** keeps the value as it is while **Keep current value** is checked; clear it to give
+  a new value along with the hosts. Remove a grant to take the secret back, and deleting a Bot
+  removes its grants. A row in the **Watchers and tools** tab marks a secret that still needs a
+  grant.
 
 A **tool** is a read-only script the Bot calls when it wants an answer, with arguments, for
 example "what is open on this repository". It gets the same review as a watcher and appears in the

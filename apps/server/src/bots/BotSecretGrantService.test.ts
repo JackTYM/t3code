@@ -21,12 +21,15 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as PayloadSigner from "../auth/PayloadSigner.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as BotDeletionReactor from "./BotDeletionReactor.ts";
 import * as BotSecretGrantService from "./BotSecretGrantService.ts";
 import * as BotService from "./BotService.ts";
 import { makeOrchestration } from "./BotTestkit.ts";
@@ -36,6 +39,7 @@ const START = Date.UTC(2026, 10, 26, 12);
 const bot = { enabled: true, muteChildren: false } as const;
 const SECRET = "ghp_PLANTED_secret_value_0123456789";
 const GITHUB = ["api.github.com"];
+const HOME_ID = ThreadId.make("home:test");
 
 const layerBase = () =>
   ServerSecretStore.layer.pipe(
@@ -95,7 +99,11 @@ const makeHarness = Effect.gen(function* () {
       BotSecretGrantService.layer.pipe(
         Layer.provideMerge(BotService.layer),
         Layer.provideMerge(orchestration.layer),
-        Layer.provideMerge(ServerSettings.ServerSettingsService.layerTest()),
+        Layer.provideMerge(
+          ServerSettings.ServerSettingsService.layerTest({
+            home: { enabled: true, threadId: HOME_ID },
+          }),
+        ),
         Layer.provideMerge(resolver),
         Layer.provideMerge(
           Layer.succeedContext(Context.add(base, ServerSecretStore.ServerSecretStore, secretStore)),
@@ -746,5 +754,274 @@ it.effect("never lets a value or a reference into a list, an error or a log line
     }
     // The file is where a reference is kept, so only the value must be absent from it.
     assert.notInclude(yield* harness.read, SECRET);
+  }),
+);
+
+it.effect("changes only the hosts: the value, its time of use and the save count carry over", () =>
+  withService((harness, service) =>
+    Effect.gen(function* () {
+      const bot = harness.botThread.id;
+      const storedName = "bot-grant-thread-thread~3abot-GITHUB_TOKEN";
+      yield* grant(service, bot, "GITHUB_TOKEN");
+      yield* service.resolve({ botThreadId: bot, name: "GITHUB_TOKEN", hosts: GITHUB });
+      const before = JSON.parse(yield* harness.read) as { data: string };
+      yield* TestClock.adjust("2 hours");
+
+      yield* service.setHosts({
+        botThreadId: bot,
+        name: "GITHUB_TOKEN",
+        hosts: ["uploads.github.com", "uploads.github.com", "api.github.com"],
+        source: "stored",
+      });
+
+      assert.deepStrictEqual(yield* harness.storedValue(storedName), Option.some(SECRET));
+      assert.deepStrictEqual((yield* service.list(bot)).grants, [
+        {
+          name: "GITHUB_TOKEN",
+          hosts: ["uploads.github.com", "api.github.com"],
+          source: "stored",
+          lastUsedAt: "2026-11-26T12:00:00.000Z",
+        },
+      ]);
+      const after = JSON.parse(yield* harness.read) as { data: string };
+      assert.strictEqual(
+        (JSON.parse(after.data) as { version: number }).version,
+        (JSON.parse(before.data) as { version: number }).version + 1,
+      );
+      const ok = yield* service.resolve({
+        botThreadId: bot,
+        name: "GITHUB_TOKEN",
+        hosts: ["uploads.github.com"],
+      });
+      assert.strictEqual(ok._tag === "Ok" ? Redacted.value(ok.value) : undefined, SECRET);
+
+      // Narrowing: a run that declares a host the grant no longer covers is told so, as after a removal.
+      yield* service.setHosts({
+        botThreadId: bot,
+        name: "GITHUB_TOKEN",
+        hosts: GITHUB,
+        source: "stored",
+      });
+      assert.deepStrictEqual(
+        yield* service.resolve({
+          botThreadId: bot,
+          name: "GITHUB_TOKEN",
+          hosts: ["uploads.github.com"],
+        }),
+        { _tag: "Missing", reason: "host not covered" },
+      );
+    }),
+  ),
+);
+
+it.effect("keeps changed hosts across a restart, as signed grants", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness;
+    yield* TestClock.setTime(START);
+    const bot = harness.botThread.id;
+    yield* Effect.gen(function* () {
+      const service = yield* BotSecretGrantService.BotSecretGrantService;
+      yield* grant(service, bot, "GITHUB_TOKEN");
+      yield* service.setHosts({
+        botThreadId: bot,
+        name: "GITHUB_TOKEN",
+        hosts: ["uploads.github.com"],
+        source: "stored",
+      });
+    }).pipe(yield* harness.boot);
+
+    yield* Effect.gen(function* () {
+      const service = yield* BotSecretGrantService.BotSecretGrantService;
+      const listed = yield* service.list(bot);
+      assert.strictEqual(listed.approvals, "ok");
+      assert.deepStrictEqual(listed.grants[0]?.hosts, ["uploads.github.com"]);
+    }).pipe(yield* harness.boot);
+  }),
+);
+
+it.effect("changes the hosts of a reference without reading or keeping its secret", () =>
+  withService((harness, service) =>
+    Effect.gen(function* () {
+      const bot = harness.botThread.id;
+      harness.provided.set("op://v/i/f", "from the provider");
+      yield* grant(service, bot, "OP_TOKEN", {
+        type: "reference",
+        reference: reference("op://v/i/f"),
+      });
+      yield* service.setHosts({
+        botThreadId: bot,
+        name: "OP_TOKEN",
+        hosts: ["uploads.github.com"],
+        source: "reference",
+      });
+      const ok = yield* service.resolve({
+        botThreadId: bot,
+        name: "OP_TOKEN",
+        hosts: ["uploads.github.com"],
+      });
+      assert.strictEqual(
+        ok._tag === "Ok" ? Redacted.value(ok.value) : undefined,
+        "from the provider",
+      );
+      assert.isTrue(
+        Option.isNone(yield* harness.storedValue("bot-grant-thread-thread~3abot-OP_TOKEN")),
+      );
+    }),
+  ),
+);
+
+it.effect("refuses a hosts change for an unknown grant or one that is not the kind seen", () =>
+  withService((harness, service) =>
+    Effect.gen(function* () {
+      const bot = harness.botThread.id;
+      const storedName = "bot-grant-thread-thread~3abot-GITHUB_TOKEN";
+      yield* grant(service, bot, "GITHUB_TOKEN");
+      const unknown = yield* service
+        .setHosts({ botThreadId: bot, name: "NOPE", hosts: GITHUB, source: "stored" })
+        .pipe(Effect.flip);
+      assert.strictEqual(unknown.reason, "not_found");
+      // The caller's permission was decided from `source`, so a lie about it changes nothing.
+      const wrongKind = yield* service
+        .setHosts({
+          botThreadId: bot,
+          name: "GITHUB_TOKEN",
+          hosts: ["uploads.github.com"],
+          source: "reference",
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(wrongKind.reason, "changed");
+      assert.deepStrictEqual((yield* service.list(bot)).grants[0]?.hosts, GITHUB);
+      assert.deepStrictEqual(yield* harness.storedValue(storedName), Option.some(SECRET));
+
+      yield* harness.breakWrites;
+      const failed = yield* service
+        .setHosts({
+          botThreadId: bot,
+          name: "GITHUB_TOKEN",
+          hosts: ["uploads.github.com"],
+          source: "stored",
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(failed.reason, "io");
+      assert.deepStrictEqual((yield* service.list(bot)).grants[0]?.hosts, GITHUB);
+    }),
+  ),
+);
+
+it.effect("a run that read the value before its hosts changed is not given it", () =>
+  withService((harness, service) =>
+    Effect.gen(function* () {
+      const bot = harness.botThread.id;
+      harness.provided.set("op://v/i/f", "from the provider");
+      yield* grant(service, bot, "OP_TOKEN", {
+        type: "reference",
+        reference: reference("op://v/i/f"),
+      });
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      harness.slowRead.current = { started, release };
+      const run = yield* Effect.forkChild(
+        service.resolve({ botThreadId: bot, name: "OP_TOKEN", hosts: GITHUB }),
+      );
+      yield* Deferred.await(started);
+      yield* service.setHosts({
+        botThreadId: bot,
+        name: "OP_TOKEN",
+        hosts: ["uploads.github.com"],
+        source: "reference",
+      });
+      yield* Deferred.succeed(release, undefined);
+      assert.deepStrictEqual(yield* Fiber.join(run), { _tag: "Missing", reason: "not granted" });
+    }),
+  ),
+);
+
+it.effect("removes every grant of a Bot and its stored values, and no other Bot's", () =>
+  withService((harness, service) =>
+    Effect.gen(function* () {
+      const bot = harness.botThread.id;
+      const other = harness.otherBot.id;
+      harness.provided.set("op://v/i/f", "from the provider");
+      yield* grant(service, bot, "GITHUB_TOKEN");
+      yield* grant(service, bot, "SECOND_TOKEN", stored("second-value"));
+      yield* grant(service, bot, "OP_TOKEN", {
+        type: "reference",
+        reference: reference("op://v/i/f"),
+      });
+      yield* grant(service, other, "GITHUB_TOKEN", stored("other-value-1"));
+
+      yield* service.removeAll({ botThreadId: bot });
+
+      assert.deepStrictEqual((yield* service.list(bot)).grants, []);
+      for (const name of ["GITHUB_TOKEN", "SECOND_TOKEN", "OP_TOKEN"]) {
+        assert.isTrue(
+          Option.isNone(yield* harness.storedValue(`bot-grant-thread-thread~3abot-${name}`)),
+        );
+      }
+      assert.deepStrictEqual(
+        (yield* service.list(other)).grants.map(({ name }) => name),
+        ["GITHUB_TOKEN"],
+      );
+      assert.deepStrictEqual(
+        yield* harness.storedValue("bot-grant-thread-thread~3aother-bot-GITHUB_TOKEN"),
+        Option.some("other-value-1"),
+      );
+      // Nothing left to remove is not an error, and the saved file no longer names the Bot.
+      yield* service.removeAll({ botThreadId: bot });
+      assert.notInclude(yield* harness.read, "thread-thread~3abot-");
+    }),
+  ),
+);
+
+it.effect("leaves Home's grants when a Home thread is removed: every Home shares them", () =>
+  withService((harness, service) =>
+    Effect.gen(function* () {
+      yield* grant(service, HOME_ID, "GITHUB_TOKEN");
+      yield* service.removeAll({ botThreadId: HOME_ID });
+      assert.deepStrictEqual(
+        (yield* service.list(HOME_ID)).grants.map(({ name }) => name),
+        ["GITHUB_TOKEN"],
+      );
+      assert.deepStrictEqual(
+        yield* harness.storedValue("bot-grant-home-GITHUB_TOKEN"),
+        Option.some(SECRET),
+      );
+    }),
+  ),
+);
+
+it.effect("a deleted Bot's grants go when the server sees its thread deleted", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness;
+    yield* TestClock.setTime(START);
+    const run = yield* harness.boot;
+    const bot = harness.botThread.id;
+    const other = harness.otherBot.id;
+    yield* Effect.gen(function* () {
+      const service = yield* BotSecretGrantService.BotSecretGrantService;
+      yield* grant(service, bot, "GITHUB_TOKEN");
+      yield* grant(service, other, "GITHUB_TOKEN", stored("other-value-1"));
+      const seen = yield* Deferred.make<void>();
+      // The stream ends after the last event, which is when every one before it has been handled.
+      const events = Stream.fromIterable([
+        { type: "thread.archived", threadId: other },
+        { type: "thread.deleted", threadId: harness.plainThread.id },
+        { type: "thread.deleted", threadId: bot },
+      ]).pipe(Stream.ensuring(Deferred.succeed(seen, undefined)));
+      const orchestrator = Layer.mock(Orchestrator.OrchestratorV2)({
+        streamDomainEvents: events as never,
+      });
+      const reactor = yield* BotDeletionReactor.BotDeletionReactor.pipe(
+        Effect.provide(BotDeletionReactor.layer.pipe(Layer.provide(orchestrator))),
+      );
+      yield* reactor.start();
+      yield* Deferred.await(seen);
+
+      assert.deepStrictEqual((yield* service.list(bot)).grants, []);
+      assert.isTrue(
+        Option.isNone(yield* harness.storedValue("bot-grant-thread-thread~3abot-GITHUB_TOKEN")),
+      );
+      assert.lengthOf((yield* service.list(other)).grants, 1);
+    }).pipe(run, Effect.scoped);
   }),
 );

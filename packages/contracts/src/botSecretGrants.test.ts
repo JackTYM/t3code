@@ -3,10 +3,15 @@ import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
-import { BotSecretGrantName, BotSecretGrantSetInput } from "./botSecretGrants.ts";
+import {
+  BotSecretGrantName,
+  BotSecretGrantSetHostsInput,
+  BotSecretGrantSetInput,
+} from "./botSecretGrants.ts";
 
 const decodeSet = Schema.decodeUnknownEffect(BotSecretGrantSetInput);
 const encodeSet = Schema.encodeEffect(BotSecretGrantSetInput);
+const decodeSetHosts = Schema.decodeUnknownEffect(BotSecretGrantSetHostsInput);
 const isName = Schema.is(BotSecretGrantName);
 
 const set = (overrides: Record<string, unknown> = {}) => ({
@@ -71,5 +76,24 @@ it.effect("takes a reference to a secret provider in place of a value", () =>
       set({ value: { type: "reference", reference: { provider: "op", reference: "op://v/i/f" } } }),
     );
     assert.strictEqual(input.value.type, "reference");
+  }),
+);
+
+it.effect("a hosts-only change holds to the host rules and names the kind of grant it saw", () =>
+  Effect.gen(function* () {
+    const hostsOnly = (overrides: Record<string, unknown> = {}) => ({
+      threadId: "thread:bot",
+      name: "GITHUB_TOKEN",
+      hosts: ["api.github.com"],
+      source: "stored",
+      ...overrides,
+    });
+    yield* decodeSetHosts(hostsOnly());
+    yield* decodeSetHosts(hostsOnly({ hosts: manyHosts(8), source: "reference" }));
+    yield* decodeSetHosts(hostsOnly({ hosts: manyHosts(9) })).pipe(Effect.flip);
+    yield* decodeSetHosts(hostsOnly({ hosts: [] })).pipe(Effect.flip);
+    yield* decodeSetHosts(hostsOnly({ hosts: ["API.github.com"] })).pipe(Effect.flip);
+    yield* decodeSetHosts(hostsOnly({ source: undefined })).pipe(Effect.flip);
+    yield* decodeSetHosts(hostsOnly({ source: "other" })).pipe(Effect.flip);
   }),
 );

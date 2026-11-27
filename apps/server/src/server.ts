@@ -13,6 +13,7 @@ import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQ
 import * as BotHoldService from "./bots/BotHoldService.ts";
 import * as BotMailService from "./bots/BotMailService.ts";
 import * as BotService from "./bots/BotService.ts";
+import * as BotDeletionReactor from "./bots/BotDeletionReactor.ts";
 import * as BotWakeReactor from "./bots/BotWakeReactor.ts";
 import * as RepairMergeGuard from "./bots/RepairMergeGuard.ts";
 import * as BotSecretGrantService from "./bots/BotSecretGrantService.ts";
@@ -813,6 +814,9 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.effectDiscard(
     BotWakeReactor.BotWakeReactor.pipe(Effect.flatMap((reactor) => reactor.start())),
   ).pipe(Layer.provide(BotWakeReactor.layer)),
+  Layer.effectDiscard(
+    BotDeletionReactor.BotDeletionReactor.pipe(Effect.flatMap((reactor) => reactor.start())),
+  ).pipe(Layer.provide(BotDeletionReactor.layer)),
   // Watcher scripts run for free on their interval; only a trip wakes a Bot.
   Layer.effectDiscard(
     WatcherService.WatcherService.pipe(Effect.flatMap((watchers) => watchers.start())),

@@ -13311,5 +13311,8 @@
   "a9c21d14c3224fbf": "Secret grants could not be read",
   "5d61ea6f30196ad7": "The saved secret grants could not be read, so none of them is in effect for now. Try again in a moment.",
   "1d9cf94658cc1040": "Saved grants could not be read",
-  "4378ac931b8b2959": "The saved grants could not be read, so none of them is in effect and none can be added or changed until they can. Try again in a moment."
+  "4378ac931b8b2959": "The saved grants could not be read, so none of them is in effect and none can be added or changed until they can. Try again in a moment.",
+  "376e86f311f8aba8": "The hosts are saved on their own and the current value stays as it is. Clear Keep current value to give a new one with them.",
+  "a5dacedf426c4e60": "Keep current value",
+  "cf902b70903257ce": "Changing the hosts of a reference needs permission to manage providers."
 }

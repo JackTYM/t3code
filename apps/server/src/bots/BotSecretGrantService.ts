@@ -100,10 +100,28 @@ export class BotSecretGrantService extends Context.Service<
       readonly hosts: BotSecretGrant["hosts"];
       readonly value: BotSecretGrantSetInput["value"];
     }) => Effect.Effect<void, BotSecretGrantError>;
+    /**
+     * The user changes where a grant may be sent and keeps its value or reference as it is.
+     * `source` is the kind the caller saw (the permission was decided from it), so a grant that is
+     * no longer that kind is refused as `changed`.
+     */
+    readonly setHosts: (input: {
+      readonly botThreadId: ThreadId;
+      readonly name: string;
+      readonly hosts: BotSecretGrant["hosts"];
+      readonly source: BotSecretGrant["source"];
+    }) => Effect.Effect<void, BotSecretGrantError>;
     /** The user takes a grant back, with its stored value. */
     readonly remove: (input: {
       readonly botThreadId: ThreadId;
       readonly name: string;
+    }) => Effect.Effect<void, BotSecretGrantError>;
+    /**
+     * Every grant of a Bot that is gone, with its stored values. Home keeps its grants: every Home
+     * shares one memory folder, so a deleted Home thread is not the end of them.
+     */
+    readonly removeAll: (input: {
+      readonly botThreadId: ThreadId;
     }) => Effect.Effect<void, BotSecretGrantError>;
     /**
      * The value for a run, only when the grant covers every host the run names. For the server's
@@ -380,6 +398,20 @@ const make = Effect.gen(function* () {
     },
   );
 
+  // The caller holds the lock.
+  const removeLocked = Effect.fn("BotSecretGrantService.removeLocked")(function* (
+    botThreadId: ThreadId,
+    folder: string,
+    name: string,
+  ) {
+    noteChange(folder, name);
+    // The value first: a failure leaves a grant that resolves to nothing, which a retry finishes.
+    yield* secrets
+      .remove(storedSecretName(folder, name))
+      .pipe(Effect.mapError(ioError(botThreadId, name)));
+    yield* commit(folder, name, undefined).pipe(Effect.mapError(ioError(botThreadId, name)));
+  });
+
   const remove: BotSecretGrantService["Service"]["remove"] = Effect.fn(
     "BotSecretGrantService.remove",
   )(function* ({ botThreadId, name }) {
@@ -388,12 +420,43 @@ const make = Effect.gen(function* () {
       if (!(yield* recover)) return yield* failure(botThreadId, name, "unreadable");
       const existing = recordIn(yield* Ref.get(state), folder, name);
       if (existing === undefined) return yield* failure(botThreadId, name, "not_found");
+      yield* removeLocked(botThreadId, folder, name);
+    }).pipe(Effect.ensuring(Effect.sync(() => noteChange(folder, name))), locked);
+  });
+
+  const removeAll: BotSecretGrantService["Service"]["removeAll"] = Effect.fn(
+    "BotSecretGrantService.removeAll",
+  )(function* ({ botThreadId }) {
+    const folder = BotService.memoryFolderName(botThreadId);
+    if (folder === BotService.HOME_MEMORY_FOLDER) return;
+    yield* Effect.gen(function* () {
+      if (!(yield* recover)) return yield* failure(botThreadId, undefined, "unreadable");
+      const names = Object.keys((yield* Ref.get(state)).grants[folder] ?? {});
+      yield* Effect.forEach(
+        names,
+        (name) =>
+          removeLocked(botThreadId, folder, name).pipe(
+            Effect.ensuring(Effect.sync(() => noteChange(folder, name))),
+          ),
+        { discard: true },
+      );
+    }).pipe(locked);
+  });
+
+  const setHosts: BotSecretGrantService["Service"]["setHosts"] = Effect.fn(
+    "BotSecretGrantService.setHosts",
+  )(function* ({ botThreadId, name, hosts, source }) {
+    const folder = BotService.memoryFolderName(botThreadId);
+    yield* Effect.gen(function* () {
+      if (!(yield* recover)) return yield* failure(botThreadId, name, "unreadable");
+      const existing = recordIn(yield* Ref.get(state), folder, name);
+      if (existing === undefined) return yield* failure(botThreadId, name, "not_found");
+      if (existing.value.type !== source) return yield* failure(botThreadId, name, "changed");
       noteChange(folder, name);
-      // The value first: a failure leaves a grant that resolves to nothing, which a retry finishes.
-      yield* secrets
-        .remove(storedSecretName(folder, name))
-        .pipe(Effect.mapError(ioError(botThreadId, name)));
-      yield* commit(folder, name, undefined).pipe(Effect.mapError(ioError(botThreadId, name)));
+      // The rest of the record stays: the value is the same, so its time of use still holds.
+      yield* commit(folder, name, { ...existing, hosts: [...new Set(hosts)] }).pipe(
+        Effect.mapError(ioError(botThreadId, name)),
+      );
     }).pipe(Effect.ensuring(Effect.sync(() => noteChange(folder, name))), locked);
   });
 
@@ -450,7 +513,7 @@ const make = Effect.gen(function* () {
     }).pipe(locked);
   });
 
-  return BotSecretGrantService.of({ list, set, remove, resolve });
+  return BotSecretGrantService.of({ list, set, setHosts, remove, removeAll, resolve });
 });
 
 export const layer = Layer.effect(BotSecretGrantService, make);

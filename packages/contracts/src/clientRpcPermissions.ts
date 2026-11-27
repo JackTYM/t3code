@@ -85,6 +85,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // reference grant has the server read a secret the caller names, so `clientRpcRequiredScopes`
   // adds providers:manage for it.
   [WS_METHODS.botSecretGrantSet]: AuthOrchestrationOperateScope,
+  // Hosts decide where a reference's secret may go, so a reference grant adds providers:manage there too.
+  [WS_METHODS.botSecretGrantSetHosts]: AuthOrchestrationOperateScope,
   [WS_METHODS.botSecretGrantRemove]: AuthOrchestrationOperateScope,
   // Allowing lets a call run that can start code, as approving a watcher does; rejecting runs nothing.
   [WS_METHODS.botHoldAllow]: AuthTerminalOperateScope,
@@ -167,6 +169,10 @@ const decodeSecretGrantValueType = Schema.decodeUnknownOption(
   Schema.Struct({ value: Schema.Struct({ type: Schema.String }) }),
 );
 
+const decodeSecretGrantSource = Schema.decodeUnknownOption(
+  Schema.Struct({ source: Schema.String }),
+);
+
 export function clientRpcRequiredScopes(
   method: string,
   input: unknown,
@@ -192,6 +198,11 @@ export function clientRpcRequiredScopes(
   if (method === WS_METHODS.botSecretGrantSet && input !== undefined) {
     const decoded = decodeSecretGrantValueType(input);
     if (Option.isSome(decoded) && decoded.value.value.type === "reference")
+      return [AuthOrchestrationOperateScope, AuthProvidersManageScope];
+  }
+  if (method === WS_METHODS.botSecretGrantSetHosts && input !== undefined) {
+    const decoded = decodeSecretGrantSource(input);
+    if (Option.isSome(decoded) && decoded.value.source === "reference")
       return [AuthOrchestrationOperateScope, AuthProvidersManageScope];
   }
   if (method === WS_METHODS.guestShareCreate) {

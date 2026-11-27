@@ -27,6 +27,7 @@ type BotWatcherDecisionTag =
 
 type BotSecretGrantCommandTag =
   | typeof WS_METHODS.botSecretGrantSet
+  | typeof WS_METHODS.botSecretGrantSetHosts
   | typeof WS_METHODS.botSecretGrantRemove;
 
 type BotHoldDecisionTag = typeof WS_METHODS.botHoldAllow | typeof WS_METHODS.botHoldReject;
@@ -131,6 +132,7 @@ export function createBotFilesEnvironmentAtoms<R, E>(
     holds,
     secretGrants,
     secretGrantSet: secretGrantCommand("set", WS_METHODS.botSecretGrantSet),
+    secretGrantSetHosts: secretGrantCommand("set-hosts", WS_METHODS.botSecretGrantSetHosts),
     secretGrantRemove: secretGrantCommand("remove", WS_METHODS.botSecretGrantRemove),
     holdAllow: holdDecision("allow", WS_METHODS.botHoldAllow),
     holdReject: holdDecision("reject", WS_METHODS.botHoldReject),

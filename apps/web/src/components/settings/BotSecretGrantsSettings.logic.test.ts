@@ -4,6 +4,7 @@ import { EnvironmentId, SecretProviderId, ThreadId } from "@t3tools/contracts";
 
 import {
   botGrantTargets,
+  botSecretGrantSaveCarriesValue,
   botSecretGrantValueIssue,
   replacesBotSecretGrant,
   resolveBotGrantTarget,
@@ -181,5 +182,19 @@ describe("resolveBotGrantTarget", () => {
 
   it("has nothing to show without Bots", () => {
     expect(resolveBotGrantTarget([], null)).toEqual({ kind: "none" });
+  });
+});
+
+describe("botSecretGrantSaveCarriesValue", () => {
+  it("keeps the current value when only the hosts are edited, unless a new one is chosen", () => {
+    expect(botSecretGrantSaveCarriesValue("hosts", true)).toBe(false);
+    expect(botSecretGrantSaveCarriesValue("hosts", false)).toBe(true);
+  });
+
+  it("always carries a value when adding a grant or replacing one", () => {
+    for (const keep of [true, false]) {
+      expect(botSecretGrantSaveCarriesValue("add", keep)).toBe(true);
+      expect(botSecretGrantSaveCarriesValue("value", keep)).toBe(true);
+    }
   });
 });

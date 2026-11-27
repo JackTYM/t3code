@@ -245,6 +245,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.botWatcherRemove]: "orchestration",
   [WS_METHODS.botSecretGrantList]: "orchestration",
   [WS_METHODS.botSecretGrantSet]: "orchestration",
+  [WS_METHODS.botSecretGrantSetHosts]: "orchestration",
   [WS_METHODS.botSecretGrantRemove]: "orchestration",
   [WS_METHODS.botHoldList]: "orchestration",
   [WS_METHODS.botHoldAllow]: "orchestration",

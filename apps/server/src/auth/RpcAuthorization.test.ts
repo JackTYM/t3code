@@ -187,7 +187,11 @@ describe("RPC authorization scopes", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.botSecretGrantList)).toBe(
       AuthOrchestrationReadScope,
     );
-    for (const method of [WS_METHODS.botSecretGrantSet, WS_METHODS.botSecretGrantRemove]) {
+    for (const method of [
+      WS_METHODS.botSecretGrantSet,
+      WS_METHODS.botSecretGrantSetHosts,
+      WS_METHODS.botSecretGrantRemove,
+    ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }
   });
@@ -887,15 +891,25 @@ it.effect("giving a Bot a secret grant by reference needs provider management", 
           tag,
         ): tag is Exclude<
           keyof typeof RPC_REQUIRED_SCOPES,
-          typeof WS_METHODS.botSecretGrantSet | typeof WS_METHODS.botSecretGrantRemove
-        > => tag !== WS_METHODS.botSecretGrantSet && tag !== WS_METHODS.botSecretGrantRemove,
+          | typeof WS_METHODS.botSecretGrantSet
+          | typeof WS_METHODS.botSecretGrantSetHosts
+          | typeof WS_METHODS.botSecretGrantRemove
+        > =>
+          tag !== WS_METHODS.botSecretGrantSet &&
+          tag !== WS_METHODS.botSecretGrantSetHosts &&
+          tag !== WS_METHODS.botSecretGrantRemove,
       ),
     );
     const handled: string[] = [];
-    const handlers = Layer.merge(
+    const handlers = Layer.mergeAll(
       group.toLayerHandler(WS_METHODS.botSecretGrantSet, ({ value }) =>
         Effect.sync(() => {
           handled.push(value.type);
+        }),
+      ),
+      group.toLayerHandler(WS_METHODS.botSecretGrantSetHosts, ({ source }) =>
+        Effect.sync(() => {
+          handled.push(`hosts:${source}`);
         }),
       ),
       group.toLayerHandler(WS_METHODS.botSecretGrantRemove, () =>
@@ -944,6 +958,19 @@ it.effect("giving a Bot a secret grant by reference needs provider management", 
     const manageOnly = yield* clientWith(AuthProvidersManageScope);
     expect(
       yield* manageOnly[WS_METHODS.botSecretGrantSet](reference).pipe(Effect.flip),
+    ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
+
+    // Changing hosts keeps the value, but where a reference's secret may go is still its owner's call.
+    const hostsOf = (source: "stored" | "reference") => ({ ...base, source });
+    handled.length = 0;
+    expect(
+      yield* operate[WS_METHODS.botSecretGrantSetHosts](hostsOf("reference")).pipe(Effect.flip),
+    ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
+    yield* operate[WS_METHODS.botSecretGrantSetHosts](hostsOf("stored"));
+    yield* manage[WS_METHODS.botSecretGrantSetHosts](hostsOf("reference"));
+    expect(handled).toEqual(["hosts:stored", "hosts:reference"]);
+    expect(
+      yield* manageOnly[WS_METHODS.botSecretGrantSetHosts](hostsOf("reference")).pipe(Effect.flip),
     ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
   }),
 );

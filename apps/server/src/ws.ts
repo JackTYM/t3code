@@ -2799,6 +2799,13 @@ export const layerWsRpc = (
             hosts: input.hosts,
             value: input.value,
           }),
+        [WS_METHODS.botSecretGrantSetHosts]: (input) =>
+          botSecretGrants.setHosts({
+            botThreadId: input.threadId,
+            name: input.name,
+            hosts: input.hosts,
+            source: input.source,
+          }),
         [WS_METHODS.botSecretGrantRemove]: (input) =>
           botSecretGrants.remove({ botThreadId: input.threadId, name: input.name }),
         [WS_METHODS.botHoldList]: ({ threadId }) => botHolds.list(threadId),

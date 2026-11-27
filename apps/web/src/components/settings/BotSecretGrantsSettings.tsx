@@ -35,6 +35,7 @@ import {
 } from "../ui/alert-dialog";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import {
   Dialog,
   DialogDescription,
@@ -51,6 +52,7 @@ import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import {
   botGrantTargets,
+  botSecretGrantSaveCarriesValue,
   botSecretGrantValueIssue,
   replacesBotSecretGrant,
   resolveBotGrantTarget,
@@ -62,7 +64,7 @@ import { SecretSourceInput, useSecretSources } from "./SecretSourceInput";
 import { useSearchableSetting } from "./settingsSearch";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 
-/** What a grant's dialog is for. Hosts and the value are saved together, so each edit asks for the value again. */
+/** What a grant's dialog is for. Editing hosts keeps the value unless a new one is chosen; replacing the value keeps the hosts. */
 type Editing =
   | { readonly mode: "add" }
   | { readonly mode: "hosts" | "value"; readonly grant: BotSecretGrant };
@@ -95,7 +97,16 @@ function GrantDialog(props: {
   const grant = editing.mode === "add" ? null : editing.grant;
   const reportFailure = useFailureToast();
   const set = useAtomCommand(botFilesEnvironment.secretGrantSet, { reportFailure: false });
+  const setHosts = useAtomCommand(botFilesEnvironment.secretGrantSetHosts, {
+    reportFailure: false,
+  });
   const canStore = useAtomValue(botFilesEnvironment.secretGrantSet.permissionAtom(environmentId));
+  // A reference grant's hosts say where its secret may go, so its change needs providers:manage too.
+  const canSetHosts = useAtomValue(
+    botFilesEnvironment.secretGrantSetHosts.permissionAtom(environmentId, {
+      source: grant?.source ?? "stored",
+    }),
+  );
   const canReference = useAtomValue(
     botFilesEnvironment.secretGrantSet.permissionAtom(environmentId, REFERENCE_PROBE),
   );
@@ -105,6 +116,8 @@ function GrantDialog(props: {
   const [value, setValue] = useState<string | SecretReference>("");
   // A reference grant stays one: its provider text is not shown, so a typed value would replace it.
   const grantIsReference = grant?.source === "reference";
+  const [keepValue, setKeepValue] = useState(true);
+  const sendsValue = botSecretGrantSaveCarriesValue(editing.mode, keepValue);
   const [valueValid, setValueValid] = useState(!grantIsReference);
   const [attempted, setAttempted] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -114,8 +127,8 @@ function GrantDialog(props: {
     // Replacing the value keeps the hosts the grant already has.
     hostsText: editing.mode === "value" ? editing.grant.hosts.join(" ") : hostsText,
   });
-  const valueIssue = botSecretGrantValueIssue(value, grantIsReference);
-  const allowed = typeof value === "string" ? canStore : canReference;
+  const valueIssue = sendsValue ? botSecretGrantValueIssue(value, grantIsReference) : null;
+  const allowed = !sendsValue ? canSetHosts : typeof value === "string" ? canStore : canReference;
   const problem = (result: BotSecretGrantDraftResult) => {
     if (result.ok) return null;
     switch (result.issue) {
@@ -151,20 +164,31 @@ function GrantDialog(props: {
 
   const save = async () => {
     setAttempted(true);
-    if (!draft.ok || valueIssue !== null || !valueValid || !allowed || busy) return;
+    if (!draft.ok || valueIssue !== null || (sendsValue && !valueValid) || !allowed || busy) return;
     setBusy(true);
-    const result = await set({
-      environmentId,
-      input: {
-        threadId: props.threadId,
-        name: draft.name,
-        hosts: draft.hosts,
-        value:
-          typeof value === "string"
-            ? { type: "stored", secret: Redacted.make(value) }
-            : { type: "reference", reference: value },
-      },
-    });
+    const result =
+      grant !== null && !sendsValue
+        ? await setHosts({
+            environmentId,
+            input: {
+              threadId: props.threadId,
+              name: draft.name,
+              hosts: draft.hosts,
+              source: grant.source,
+            },
+          })
+        : await set({
+            environmentId,
+            input: {
+              threadId: props.threadId,
+              name: draft.name,
+              hosts: draft.hosts,
+              value:
+                typeof value === "string"
+                  ? { type: "stored", secret: Redacted.make(value) }
+                  : { type: "reference", reference: value },
+            },
+          });
     setBusy(false);
     if (result._tag === "Success") {
       setValue("");
@@ -202,6 +226,11 @@ function GrantDialog(props: {
                 <T>
                   Scripts that declare this secret get it as an environment variable. The reviewer
                   is told the hosts; nothing blocks other requests yet.
+                </T>
+              ) : editing.mode === "hosts" && keepValue ? (
+                <T>
+                  The hosts are saved on their own and the current value stays as it is. Clear Keep
+                  current value to give a new one with them.
                 </T>
               ) : grantIsReference ? (
                 <T>
@@ -259,31 +288,49 @@ function GrantDialog(props: {
                 </span>
               </label>
             )}
-            <div className="space-y-1.5 text-sm">
-              <label htmlFor="bot-secret-grant-value" className="block">
-                <T>Value</T>
+            {editing.mode === "hosts" ? (
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <Checkbox
+                  checked={keepValue}
+                  disabled={busy}
+                  onCheckedChange={(checked) => setKeepValue(checked === true)}
+                />
+                <T>Keep current value</T>
               </label>
-              <SecretSourceInput
-                id="bot-secret-grant-value"
-                aria-label={gt("Secret value")}
-                value={value}
-                // A reference needs the permission to manage providers, so without it only a value is offered.
-                sources={canReference ? sources : []}
-                initialProvider={grantIsReference && canReference ? sources[0]?.id : undefined}
-                environmentId={environmentId}
-                disabled={busy}
-                autoFocus={editing.mode === "value"}
-                placeholder={gt("Paste the secret")}
-                onChange={(event) => setValue(event.target.value)}
-                onSecretChange={(secret) => setValue(secret ?? "")}
-                onValidityChange={setValueValid}
-              />
-              {!canReference && (sources.length > 0 || grantIsReference) ? (
+            ) : null}
+            {!sendsValue ? (
+              grantIsReference && !canSetHosts ? (
                 <p className="text-muted-foreground text-xs">
-                  <T>Reading the secret from a provider needs permission to manage providers.</T>
+                  <T>Changing the hosts of a reference needs permission to manage providers.</T>
                 </p>
-              ) : null}
-            </div>
+              ) : null
+            ) : (
+              <div className="space-y-1.5 text-sm">
+                <label htmlFor="bot-secret-grant-value" className="block">
+                  <T>Value</T>
+                </label>
+                <SecretSourceInput
+                  id="bot-secret-grant-value"
+                  aria-label={gt("Secret value")}
+                  value={value}
+                  // A reference needs the permission to manage providers, so without it only a value is offered.
+                  sources={canReference ? sources : []}
+                  initialProvider={grantIsReference && canReference ? sources[0]?.id : undefined}
+                  environmentId={environmentId}
+                  disabled={busy}
+                  autoFocus={editing.mode === "value"}
+                  placeholder={gt("Paste the secret")}
+                  onChange={(event) => setValue(event.target.value)}
+                  onSecretChange={(secret) => setValue(secret ?? "")}
+                  onValidityChange={setValueValid}
+                />
+                {!canReference && (sources.length > 0 || grantIsReference) ? (
+                  <p className="text-muted-foreground text-xs">
+                    <T>Reading the secret from a provider needs permission to manage providers.</T>
+                  </p>
+                ) : null}
+              </div>
+            )}
             {attempted && (problem(draft) ?? valueProblem(valueIssue)) !== null ? (
               <p className="text-destructive text-xs" role="alert">
                 {problem(draft) ?? valueProblem(valueIssue)}

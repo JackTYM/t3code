@@ -220,6 +220,7 @@ import {
   BotSecretGrantListInput,
   BotSecretGrantListResult,
   BotSecretGrantRemoveInput,
+  BotSecretGrantSetHostsInput,
   BotSecretGrantSetInput,
 } from "./botSecretGrants.ts";
 import {
@@ -622,6 +623,7 @@ export const WS_METHODS = {
   botWatcherRemove: "botWatcher.remove",
   botSecretGrantList: "botSecretGrant.list",
   botSecretGrantSet: "botSecretGrant.set",
+  botSecretGrantSetHosts: "botSecretGrant.setHosts",
   botSecretGrantRemove: "botSecretGrant.remove",
   botHoldList: "botHold.list",
   botHoldAllow: "botHold.allow",
@@ -2109,6 +2111,11 @@ const WsBotSecretGrantSetRpc = Rpc.make(WS_METHODS.botSecretGrantSet, {
   error: botSecretGrantFailure,
 });
 
+const WsBotSecretGrantSetHostsRpc = Rpc.make(WS_METHODS.botSecretGrantSetHosts, {
+  payload: BotSecretGrantSetHostsInput,
+  error: botSecretGrantFailure,
+});
+
 const WsBotSecretGrantRemoveRpc = Rpc.make(WS_METHODS.botSecretGrantRemove, {
   payload: BotSecretGrantRemoveInput,
   error: botSecretGrantFailure,
@@ -3070,6 +3077,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotWatcherRemoveRpc,
   WsBotSecretGrantListRpc,
   WsBotSecretGrantSetRpc,
+  WsBotSecretGrantSetHostsRpc,
   WsBotSecretGrantRemoveRpc,
   WsBotHoldListRpc,
   WsBotHoldAllowRpc,

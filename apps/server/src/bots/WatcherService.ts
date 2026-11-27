@@ -2009,43 +2009,70 @@ const make = Effect.gen(function* () {
     return users.toSorted(byCodeUnit);
   });
 
-  const remove: WatcherService["Service"]["remove"] = Effect.fn("WatcherService.remove")(
-    function* ({ botThreadId, name, kind }) {
-      yield* requireUserStartedBot(botThreadId, name, kind === "tool");
-      if (kind !== undefined) {
-        const { record } = yield* requireRecord(botThreadId, name);
-        if ((record.kind === "tool") !== (kind === "tool")) {
-          return yield* failure(
-            botThreadId,
-            name,
-            "invalid",
-            `${name} is ${record.kind === "tool" ? "a tool, not a watcher" : "a watcher, not a tool"}.`,
-          );
-        }
-      }
-      // The user may still remove a tool in use, and the watchers then fail with `tool-failed`;
-      // the Bot is not let break its own watchers that way.
-      if ((yield* recordOf(BotService.memoryFolderName(botThreadId), name))?.kind === "tool") {
-        const users = yield* watchersUsing(BotService.memoryFolderName(botThreadId), name);
-        if (users.length > 0) {
-          return yield* failure(
-            botThreadId,
-            name,
-            "invalid",
-            `Tool ${name} is used by ${users.join(", ")}. Remove or revise ${users.length === 1 ? "that watcher" : "those watchers"} first.`,
-          );
-        }
-      }
-      yield* deleteWatcher(botThreadId, name);
-    },
-    lock,
-  );
+  // Removing deletes the state folder a running script uses. A tool's calls hold its own lock for
+  // the whole run and a watcher's script holds `oneRunAtATime`, so removal takes that one first,
+  // before the approvals `lock` (no run waits for it) so a long run does not stall the Bot's other changes.
+  // A name with no record has nothing running.
+  const afterRunEnds =
+    (botThreadId: ThreadId, name: string) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+      const folder = BotService.memoryFolderName(botThreadId);
+      return recordOf(folder, name).pipe(
+        Effect.flatMap((record) =>
+          record === undefined
+            ? effect
+            : record.kind === "tool"
+              ? withToolLock(folder, name)(effect)
+              : oneRunAtATime(effect),
+        ),
+      );
+    };
 
-  const removeByUser: WatcherService["Service"]["removeByUser"] = Effect.fn(
-    "WatcherService.removeByUser",
-  )(function* ({ botThreadId, name }) {
+  const removeLocked = Effect.fn("WatcherService.remove")(function* ({
+    botThreadId,
+    name,
+    kind,
+  }: Parameters<WatcherService["Service"]["remove"]>[0]) {
+    yield* requireUserStartedBot(botThreadId, name, kind === "tool");
+    if (kind !== undefined) {
+      const { record } = yield* requireRecord(botThreadId, name);
+      if ((record.kind === "tool") !== (kind === "tool")) {
+        return yield* failure(
+          botThreadId,
+          name,
+          "invalid",
+          `${name} is ${record.kind === "tool" ? "a tool, not a watcher" : "a watcher, not a tool"}.`,
+        );
+      }
+    }
+    // The user may still remove a tool in use, and the watchers then fail with `tool-failed`;
+    // the Bot is not let break its own watchers that way.
+    if ((yield* recordOf(BotService.memoryFolderName(botThreadId), name))?.kind === "tool") {
+      const users = yield* watchersUsing(BotService.memoryFolderName(botThreadId), name);
+      if (users.length > 0) {
+        return yield* failure(
+          botThreadId,
+          name,
+          "invalid",
+          `Tool ${name} is used by ${users.join(", ")}. Remove or revise ${users.length === 1 ? "that watcher" : "those watchers"} first.`,
+        );
+      }
+    }
     yield* deleteWatcher(botThreadId, name);
   }, lock);
+
+  const remove: WatcherService["Service"]["remove"] = (input) =>
+    afterRunEnds(input.botThreadId, input.name)(removeLocked(input));
+
+  const removeByUserLocked = Effect.fn("WatcherService.removeByUser")(function* ({
+    botThreadId,
+    name,
+  }: Parameters<WatcherService["Service"]["removeByUser"]>[0]) {
+    yield* deleteWatcher(botThreadId, name);
+  }, lock);
+
+  const removeByUser: WatcherService["Service"]["removeByUser"] = (input) =>
+    afterRunEnds(input.botThreadId, input.name)(removeByUserLocked(input));
 
   const setPaused = (paused: boolean) =>
     Effect.fn("WatcherService.setPaused")(function* ({

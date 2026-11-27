@@ -3653,6 +3653,52 @@ it.effect("gives a script the secrets it declares as environment variables, and 
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
 
+it.effect(
+  "a hosts change that stops covering a watcher's hosts makes it wait, and a wider one lets it run",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const runner = makeScriptedRunner();
+    runner.state.result = { code: ExitCode(0), stdout: "", timedOut: false };
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const grants = yield* BotSecretGrantService.BotSecretGrantService;
+      yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+      yield* installWatcher(botThread.id, "gh", declaresGithub);
+      const listed = () =>
+        watchers.list(botThread.id).pipe(Effect.map(({ watchers }) => watchers[0]!));
+      yield* watchers.runDue;
+      assert.strictEqual(runner.state.runs, 1);
+
+      // Narrowed to other hosts, with the value kept: the next pass waits, as when the grant is removed.
+      yield* grants.setHosts({
+        botThreadId: botThread.id,
+        name: "GITHUB_TOKEN",
+        hosts: ["uploads.github.com"],
+        source: "stored",
+      });
+      yield* TestClock.adjust(EVERY_MS);
+      yield* watchers.runDue;
+      assert.strictEqual(runner.state.runs, 1);
+      const waiting = yield* listed();
+      assert.strictEqual(waiting.status, "waiting");
+      assert.strictEqual(waiting.waiting?.reason, NEEDS_GRANT);
+
+      yield* grants.setHosts({
+        botThreadId: botThread.id,
+        name: "GITHUB_TOKEN",
+        hosts: ["uploads.github.com", ...GITHUB],
+        source: "stored",
+      });
+      yield* TestClock.adjust(EVERY_MS);
+      yield* watchers.runDue;
+      assert.strictEqual(runner.state.runs, 2);
+      assert.strictEqual((yield* listed()).status, "healthy");
+      assert.strictEqual(runner.state.inputs.at(-1)?.env?.GITHUB_TOKEN, SECRET);
+    }).pipe(provideWatchers(orchestration, runner.layer));
+  },
+);
+
 it.effect("waits without spawning, failing or telling the Bot while a secret has no grant", () => {
   const orchestration = makeOrchestration();
   const botThread = addBot(orchestration, "thread:bot");
@@ -5579,27 +5625,35 @@ it.effect("a pause that came while a call waited wins, and the call keeps its mi
   }).pipe(provideWatchers(orchestration, runner.layer));
 });
 
-it.effect("a removal that came while a call waited wins, and leaves no folder behind", () => {
-  const orchestration = makeOrchestration();
-  const botThread = addBot(orchestration, "thread:bot");
-  const runner = makeScriptedRunner();
-  return Effect.gen(function* () {
-    const watchers = yield* WatcherService.WatcherService;
-    const fileSystem = yield* FileSystem.FileSystem;
-    yield* installTool(botThread.id, "pr");
-    const gate = yield* makeToolGate(runner);
-    const running = yield* callTool(botThread.id, "pr", ["1"]).pipe(Effect.forkChild);
-    yield* Queue.take(gate.started);
-    const queued = yield* callTool(botThread.id, "pr", ["2"]).pipe(Effect.flip, Effect.forkChild);
+it.effect(
+  "a call that comes while a removal waits finds the tool gone, and leaves no folder behind",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const runner = makeScriptedRunner();
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const fileSystem = yield* FileSystem.FileSystem;
+      yield* installTool(botThread.id, "pr");
+      const gate = yield* makeToolGate(runner);
+      const running = yield* callTool(botThread.id, "pr", ["1"]).pipe(Effect.forkChild);
+      yield* Queue.take(gate.started);
+      // The removal takes its place in the tool's line, so the call that comes after it is behind it.
+      const removal = yield* watchers
+        .removeByUser({ botThreadId: botThread.id, name: "pr" })
+        .pipe(Effect.forkChild);
+      for (let tick = 0; tick < 50; tick += 1) yield* Effect.yieldNow;
+      const queued = yield* callTool(botThread.id, "pr", ["2"]).pipe(Effect.flip, Effect.forkChild);
 
-    yield* watchers.removeByUser({ botThreadId: botThread.id, name: "pr" });
-    yield* Deferred.succeed(gate.release, undefined);
-    yield* Fiber.join(running);
-    assert.strictEqual((yield* Fiber.join(queued)).reason, "not_found");
-    assert.strictEqual(runner.state.runs, 1);
-    assert.isFalse(yield* fileSystem.exists(yield* watcherDirectory(botThread.id, "pr")));
-  }).pipe(provideWatchers(orchestration, runner.layer));
-});
+      yield* Deferred.succeed(gate.release, undefined);
+      yield* Fiber.join(running);
+      yield* Fiber.join(removal);
+      assert.strictEqual((yield* Fiber.join(queued)).reason, "not_found");
+      assert.strictEqual(runner.state.runs, 1);
+      assert.isFalse(yield* fileSystem.exists(yield* watcherDirectory(botThread.id, "pr")));
+    }).pipe(provideWatchers(orchestration, runner.layer));
+  },
+);
 
 it.effect("a revision approved while a call waited is the version that call runs", () => {
   const orchestration = makeOrchestration();
@@ -5972,6 +6026,192 @@ it.effect(
       yield* Deferred.succeed(gate.release, undefined);
       yield* Effect.forEach([...calls, theirs], Fiber.join);
       assert.strictEqual(runner.state.runs, 5);
+    }).pipe(provideWatchers(orchestration, runner.layer));
+  },
+);
+
+// Removing a tool or watcher deletes its state folder, which a script that is running is using.
+const stateFolder = Effect.fn("stateFolder")(function* (threadId: ThreadId, name: string) {
+  const path = yield* Path.Path;
+  const { baseDir } = yield* ServerConfig.ServerConfig;
+  return path.join(baseDir, "bots", BotService.memoryFolderName(threadId), "watchers", name);
+});
+
+/**
+ * Sees the server's file writes once armed. A removal that is not held back reaches its first write
+ * (the approvals file) within a few turns and does no waiting before it, so a removal that has not
+ * written after many turns is held back, with no clock involved.
+ */
+const makeWriteWatch = () => {
+  const watch = { armed: false, written: Deferred.makeUnsafe<void>() };
+  const layer = Layer.effect(
+    FileSystem.FileSystem,
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      return {
+        ...fileSystem,
+        writeFileString: (...args: Parameters<typeof fileSystem.writeFileString>) =>
+          (watch.armed ? Deferred.succeed(watch.written, undefined) : Effect.void).pipe(
+            Effect.andThen(fileSystem.writeFileString(...args)),
+          ),
+      } satisfies FileSystem.FileSystem;
+    }),
+  );
+  const writesSoon = Effect.raceFirst(
+    Deferred.await(watch.written).pipe(Effect.as(true)),
+    Effect.forEach(Array.from({ length: 200 }), () => Effect.yieldNow).pipe(Effect.as(false)),
+  );
+  return { watch, layer, writesSoon };
+};
+
+/** As `provideWatchers`, with the watcher service's file writes watched. */
+const provideWatchersWatchingWrites = (
+  orchestration: ReturnType<typeof makeOrchestration>,
+  runner: Layer.Layer<ProcessRunner.ProcessRunner>,
+  writes: ReturnType<typeof makeWriteWatch>,
+) =>
+  Effect.provide(
+    layerWatchers(orchestration, runner).pipe(
+      Layer.provide(writes.layer),
+      Layer.provideMerge(layerBase()),
+    ),
+  );
+
+/** Holds every run of a script that is not a dry run, and says when one has started. */
+const makeRunGate = (
+  runner: ReturnType<typeof makeScriptedRunner>,
+  only: (input: ProcessRunner.ProcessRunInput) => boolean,
+) =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    runner.state.onRun = (input) =>
+      input.env?.T3_WATCHER_DRY_RUN === "1" || !only(input)
+        ? Effect.void
+        : Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)));
+    return { started, release };
+  });
+
+it.effect.each(["user", "bot"] as const)(
+  "removing a tool waits for a call that is running, so its state folder is not deleted under it (%s)",
+  (who) => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const runner = makeScriptedRunner();
+    const writes = makeWriteWatch();
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      yield* installTool(botThread.id, "pr");
+      const folder = yield* stateFolder(botThread.id, "pr");
+      const gate = yield* makeRunGate(runner, isToolRun);
+
+      const call = yield* callTool(botThread.id, "pr", ["1"]).pipe(Effect.forkChild);
+      yield* Deferred.await(gate.started);
+      writes.watch.armed = true;
+      const removal = yield* (
+        who === "user"
+          ? watchers.removeByUser({ botThreadId: botThread.id, name: "pr" })
+          : watchers.remove({ botThreadId: botThread.id, name: "pr", kind: "tool" })
+      ).pipe(Effect.forkChild);
+
+      assert.isFalse(yield* writes.writesSoon);
+      assert.isTrue(yield* fileSystem.exists(path.join(folder, "data")));
+
+      yield* Deferred.succeed(gate.release, undefined);
+      yield* Fiber.join(call);
+      yield* Fiber.join(removal);
+      assert.isFalse(yield* fileSystem.exists(folder));
+      assert.deepStrictEqual((yield* watchers.list(botThread.id)).watchers, []);
+    }).pipe(provideWatchersWatchingWrites(orchestration, runner.layer, writes));
+  },
+);
+
+it.effect("removing a watcher waits for its script that is running", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  const writes = makeWriteWatch();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* installWatcher(botThread.id, "disk");
+    const folder = yield* stateFolder(botThread.id, "disk");
+    const gate = yield* makeRunGate(runner, () => true);
+
+    const pass = yield* watchers.runDue.pipe(Effect.forkChild);
+    yield* Deferred.await(gate.started);
+    writes.watch.armed = true;
+    const removal = yield* watchers
+      .removeByUser({ botThreadId: botThread.id, name: "disk" })
+      .pipe(Effect.forkChild);
+
+    assert.isFalse(yield* writes.writesSoon);
+    assert.isTrue(yield* fileSystem.exists(path.join(folder, "data")));
+
+    yield* Deferred.succeed(gate.release, undefined);
+    yield* Fiber.join(pass);
+    yield* Fiber.join(removal);
+    assert.isFalse(yield* fileSystem.exists(folder));
+    assert.deepStrictEqual((yield* watchers.list(botThread.id)).watchers, []);
+  }).pipe(provideWatchersWatchingWrites(orchestration, runner.layer, writes));
+});
+
+it.effect("removing a tool a watcher's run is calling waits for it, and neither run hangs", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const runner = makeScriptedRunner();
+  const writes = makeWriteWatch();
+  return Effect.gen(function* () {
+    const watchers = yield* WatcherService.WatcherService;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* installTool(botThread.id, "bal");
+    yield* installWatcher(botThread.id, "w", { tools: [BAL] });
+    const toolFolder = yield* stateFolder(botThread.id, "bal");
+    const gate = yield* makeRunGate(runner, isToolRun);
+
+    // The watcher's own run is calling the tool when the user takes it away.
+    const pass = yield* watchers.runDue.pipe(Effect.forkChild);
+    yield* Deferred.await(gate.started);
+    writes.watch.armed = true;
+    const removal = yield* watchers
+      .removeByUser({ botThreadId: botThread.id, name: "bal" })
+      .pipe(Effect.forkChild);
+    assert.isFalse(yield* writes.writesSoon);
+    assert.isTrue(yield* fileSystem.exists(path.join(toolFolder, "data")));
+
+    yield* Deferred.succeed(gate.release, undefined);
+    yield* Fiber.join(pass);
+    yield* Fiber.join(removal);
+    assert.isFalse(yield* fileSystem.exists(toolFolder));
+    // The tool finished and the watcher's script ran with its output before the tool went.
+    assert.lengthOf(scriptRuns(runner), 1);
+  }).pipe(provideWatchersWatchingWrites(orchestration, runner.layer, writes));
+});
+
+it.effect(
+  "a removal that finds nothing to remove does not wait for a script that is running",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const runner = makeScriptedRunner();
+    return Effect.gen(function* () {
+      const watchers = yield* WatcherService.WatcherService;
+      yield* installWatcher(botThread.id, "disk");
+      const gate = yield* makeRunGate(runner, () => true);
+      const pass = yield* watchers.runDue.pipe(Effect.forkChild);
+      yield* Deferred.await(gate.started);
+
+      const missing = yield* watchers
+        .removeByUser({ botThreadId: botThread.id, name: "nope" })
+        .pipe(Effect.flip);
+      assert.strictEqual(missing.reason, "not_found");
+
+      yield* Deferred.succeed(gate.release, undefined);
+      yield* Fiber.join(pass);
     }).pipe(provideWatchers(orchestration, runner.layer));
   },
 );

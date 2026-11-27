@@ -63,6 +63,19 @@ export const BotSecretGrantSetInput = Schema.Struct({
 });
 export type BotSecretGrantSetInput = typeof BotSecretGrantSetInput.Type;
 
+/**
+ * Changes only the hosts and keeps the value or reference as it is. `source` is what the caller
+ * saw: the permission is decided from it before the grant is read, so the server refuses a change
+ * when the grant is no longer that kind.
+ */
+export const BotSecretGrantSetHostsInput = Schema.Struct({
+  threadId: ThreadId,
+  name: BotSecretGrantName,
+  hosts: BotSecretGrant.fields.hosts,
+  source: BotSecretGrant.fields.source,
+});
+export type BotSecretGrantSetHostsInput = typeof BotSecretGrantSetHostsInput.Type;
+
 export const BotSecretGrantRemoveInput = Schema.Struct({
   threadId: ThreadId,
   name: BotSecretGrantName,
@@ -81,6 +94,7 @@ export class BotSecretGrantError extends Schema.TaggedError<BotSecretGrantError>
       "too_short",
       "limit",
       "not_found",
+      "changed",
       "unreadable",
       "io",
     ]),
@@ -99,6 +113,8 @@ export class BotSecretGrantError extends Schema.TaggedError<BotSecretGrantError>
         return `A Bot can hold at most ${BOT_SECRET_GRANTS_MAX_PER_BOT} secret grants. Remove one first.`;
       case "not_found":
         return `There is no secret grant named ${this.grant ?? ""}.`;
+      case "changed":
+        return `The secret grant ${this.grant ?? ""} is no longer the kind it was when you opened it. Reload and try again.`;
       case "unreadable":
         return "The saved secret grants could not be read, so they cannot be changed now. Try again in a moment.";
       case "io":
