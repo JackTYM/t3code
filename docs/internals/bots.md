@@ -572,7 +572,7 @@ with the `Scheduler`.
   A script's output reaches the Bot, and a script may print what a stranger wrote.
 - **Running.** The verified bytes are read once, hashed, written to a fresh 0700 scratch directory
   and executed from that copy, never from the stored path, so a rewrite after the check changes
-  nothing. Watchers are trusted code, not sandboxed: the scratch directory is the cwd and
+  nothing. On macOS a script runs under `sandbox-exec` ([`ScriptSandbox`](../../apps/server/src/bots/ScriptSandbox.ts)) with the whole T3 home unreadable and unwritable except the script's own scratch and state folders, so it cannot open a stored grant, the database or a session. Nothing else is restricted (network, the rest of the user's files): the sandbox protects the server's own data, and a script is otherwise trusted code. The scratch directory is the cwd and
   `TMPDIR`, stdin is closed, output and time are capped, one script runs at a time, and the
   environment is an allowlist (`inheritEnv: false`). A dry run uses the same path with
   `T3_WATCHER_DRY_RUN=1`.
@@ -667,14 +667,15 @@ them.
   hit fails the run as `secret-written`. The scan fails closed: a file it cannot open or read, one
   too large to read, a path that leaves the folder, and a hit in a file that is not small text all
   count as a hit, and such a file is removed rather than rewritten.
-- **Values are not isolated from the Bot's machine.** A stored value is a plain file under the
-  server's `secrets` folder (`ServerSecretStore`), readable by every process of the user who runs
-  the server: the Bot's own full-access shell (its instructions say not to use one; nothing
-  enforces it), repair crews and every approved script. `resolve` is the only API that returns a
-  value, which stops a tool or RPC from handing one out, not a process from opening the file.
-  Redaction protects what is recorded and sent, not against a hostile process. Granting a secret is
-  therefore not safe for a credential whose misuse is unacceptable, until the Bot and scripts run
-  isolated from that folder and an egress allowlist holds requests to the declared hosts.
+- **Scripts cannot open a value; the Bot and its crews can.** A stored value is a plain file under
+  the server's `secrets` folder (`ServerSecretStore`). An approved script runs in the sandbox
+  above, so it cannot read it. The Bot's own full-access shell (its instructions say not to use
+  one; nothing enforces it) and repair crews are agents running as the user, and can. Putting the
+  Bot in `auto` mode makes a classifier judge its commands, which is a model, not a boundary. The
+  sandbox needs macOS: where it is missing, or the server is itself sandboxed (`sandbox-exec` does
+  not nest), a script that declares a secret waits instead of running. `resolve` is the only API
+  that returns a value. Granting a secret is therefore not safe for a credential whose misuse is
+  unacceptable, until the Bot and its crews are kept from that folder too.
 - **Only the reviewer judges it.** Any new version of a script that declares secrets is approved by
   the reviewer model alone, which sees names and hosts, never values, and is the one control on what
   the script does with them. A wake or tainted turn cannot add or widen what a script declares

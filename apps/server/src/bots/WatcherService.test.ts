@@ -34,6 +34,7 @@ import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as ScriptSandbox from "./ScriptSandbox.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
@@ -267,11 +268,13 @@ const layerWatchers = (
   environmentId?: string,
   health = false,
   settings?: Parameters<typeof ServerSettings.ServerSettingsService.layerTest>[0],
+  sandbox: Layer.Layer<ScriptSandbox.ScriptSandbox> = ScriptSandbox.layerOff,
 ) =>
   WatcherService.layer.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         runner,
+        sandbox,
         peer,
         layerReviewer,
         Scheduler.layer,
@@ -296,9 +299,12 @@ const provideWatchers = (
   runner: Layer.Layer<ProcessRunner.ProcessRunner>,
   peer?: Layer.Layer<PeerMcpClient.PeerMcpClient>,
   environmentId?: string,
+  sandbox?: Layer.Layer<ScriptSandbox.ScriptSandbox>,
 ) =>
   Effect.provide(
-    layerWatchers(orchestration, runner, peer, environmentId).pipe(Layer.provideMerge(layerBase())),
+    layerWatchers(orchestration, runner, peer, environmentId, false, undefined, sandbox).pipe(
+      Layer.provideMerge(layerBase()),
+    ),
   );
 
 /** As `provideWatchers`, with the health signals real: a failing watcher also tells the Bot so. */
@@ -4491,6 +4497,75 @@ it.effect(
     }).pipe(provideWatchers(orchestration, realRunner));
   },
 );
+
+it.effect(
+  "keeps a secret from a script where the machine has no sandbox, and still runs one without",
+  () => {
+    const orchestration = makeOrchestration();
+    const botThread = addBot(orchestration, "thread:bot");
+    const runner = makeScriptedRunner();
+    // The machine loses its sandbox after the tool was approved, as a server restarted inside one would.
+    let sandboxed = true;
+    const switchable = Layer.succeed(
+      ScriptSandbox.ScriptSandbox,
+      ScriptSandbox.ScriptSandbox.of({
+        available: Effect.sync(() => sandboxed),
+        wrap: ({ command, args }) => ({ command, args }),
+      }),
+    );
+    return Effect.gen(function* () {
+      yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+      yield* installTool(botThread.id, "pr", declaresGithub);
+      yield* installTool(botThread.id, "plain", {});
+      const withSecret = runner.state.inputs.length;
+      sandboxed = false;
+      const waiting = yield* callTool(botThread.id, "pr").pipe(Effect.flip);
+      assert.strictEqual(waiting.reason, "unreachable");
+      assert.include(waiting.message, "sandbox");
+      assert.notInclude(waiting.message, SECRET);
+      assert.strictEqual(runner.state.inputs.length, withSecret);
+      const before = runner.state.runs;
+      const plain = yield* callTool(botThread.id, "plain");
+      assert.strictEqual(plain.exit, "0");
+      assert.strictEqual(runner.state.runs, before + 1);
+    }).pipe(provideWatchers(orchestration, runner.layer, undefined, undefined, switchable));
+  },
+);
+
+// The real runner and the real sandbox: a tool that has been given a secret still cannot read the
+// folder the grants are kept in, but its own state folder works.
+it.effect("a tool that holds a secret cannot read the T3 home, only its own folders", () => {
+  const orchestration = makeOrchestration();
+  const botThread = addBot(orchestration, "thread:bot");
+  const liveSandbox = ScriptSandbox.layer.pipe(Layer.provide(realRunner));
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const sandbox = yield* ScriptSandbox.ScriptSandbox;
+    // A server that is itself sandboxed cannot nest another.
+    if (!(yield* sandbox.available)) return;
+    const { baseDir } = yield* ServerConfig.ServerConfig;
+    const canary = path.join(baseDir, "canary");
+    yield* fileSystem.makeDirectory(baseDir, { recursive: true });
+    yield* fileSystem.writeFileString(canary, "CANARY-VALUE");
+    yield* grantSecret(botThread.id, "GITHUB_TOKEN");
+    yield* installTool(botThread.id, "peek", {
+      ...declaresGithub,
+      run: `#!/bin/sh\ncat '${canary}' 2>/dev/null || echo blocked\necho kept > "$T3_WATCHER_STATE_DIR/note" && echo wrote\n`,
+    });
+    const result = yield* callTool(botThread.id, "peek");
+    assert.strictEqual(result.exit, "0");
+    assert.notInclude(result.output, "CANARY-VALUE");
+    assert.include(result.output, "blocked");
+    assert.include(result.output, "wrote");
+    assert.strictEqual(
+      yield* fileSystem.readFileString(
+        path.join(yield* watcherDirectory(botThread.id, "peek"), "data", "note"),
+      ),
+      "kept\n",
+    );
+  }).pipe(provideWatchers(orchestration, realRunner, undefined, undefined, liveSandbox));
+});
 
 it.effect("waits, without spawning or failing, while a secret has no grant", () => {
   const orchestration = makeOrchestration();

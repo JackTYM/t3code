@@ -58,6 +58,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as ScriptSandbox from "./ScriptSandbox.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { frameUntrustedText } from "../scheduledTasks/webhookTemplate.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -151,6 +152,8 @@ const RESERVED_ENV = new Set([
   "T3_TOOL",
   "T3_TOOL_OUTPUT_DIR",
 ]);
+const NO_SANDBOX_REASON =
+  "This machine cannot run a script in a sandbox (macOS only), so a script that uses a secret does not run here.";
 const SECRETS_STAY_HERE = "A watcher that uses secrets runs only on this machine.";
 const TOOLS_STAY_HERE = "A tool runs only on this machine.";
 const STARTED_BY_WAKE_TOOL =
@@ -636,6 +639,7 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const config = yield* ServerConfig.ServerConfig;
   const runner = yield* ProcessRunner.ProcessRunner;
+  const sandbox = yield* ScriptSandbox.ScriptSandbox;
   const bots = yield* BotService.BotService;
   const grants = yield* BotSecretGrantService.BotSecretGrantService;
   const settings = yield* ServerSettings.ServerSettingsService;
@@ -934,9 +938,18 @@ const make = Effect.gen(function* () {
       const file = path.join(scratch, runtime.file);
       yield* fileSystem.writeFile(file, input.source, { mode: 0o700 });
       yield* fileSystem.chmod(file, 0o700);
-      const output = yield* runner.run({
+      // The sandbox matches real paths, and the script may use only its own folders under the T3 home.
+      const real = (target: string) =>
+        fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => path.resolve(target)));
+      const launch = sandbox.wrap({
         command: runtime.command,
         args: [file, ...(input.tool?.args ?? [])],
+        hidden: [yield* real(config.baseDir)],
+        allowed: [yield* real(scratch), yield* real(stateDir)],
+      });
+      const output = yield* runner.run({
+        command: launch.command,
+        args: launch.args,
         refuseShell: true,
         cwd: scratch,
         env: {
@@ -1113,6 +1126,10 @@ const make = Effect.gen(function* () {
   ) {
     const hosts = version.config.hosts ?? [];
     const injected: Array<InjectedSecret> = [];
+    // Without the sandbox the script could read every grant's file, so none is handed to it.
+    if ((version.config.secrets ?? []).length > 0 && !(yield* sandbox.available)) {
+      return { _tag: "Waiting", reason: NO_SANDBOX_REASON } as const;
+    }
     for (const name of version.config.secrets ?? []) {
       const resolved = yield* grants.resolve({ botThreadId, name, hosts });
       if (resolved._tag === "Missing") {

@@ -54,17 +54,17 @@ through a script that uses a secret you gave it. You decide which secrets it get
 - In **Settings → Home**, open **Bot secret grants**, choose the Bot and press **Add grant**. Give
   the secret a name in capitals, such as `GITHUB_TOKEN`, the hosts it may be sent to, and its value
   (at least 8 characters), or pick a reference to a secret in your password manager.
-- No screen or tool shows the Bot a grant's value, only its name and hosts. That is not the same as
-  the Bot being unable to read it: stored values are plain files in the `secrets` folder of the
-  server's data, which every program running as you can read. That includes the Bot's own shell if
-  something steered it to look (it is told not to, and nothing enforces that), its crews, and any
-  script you approved. A script gets a secret only if it names it, and only when it runs on this
-  machine. Anything the script prints has the value replaced by `[secret NAME]`; that keeps it out
-  of what is recorded, not out of a script that is out to get it.
+- No screen or tool shows the Bot a grant's value, only its name and hosts. Stored values are
+  plain files in the `secrets` folder of the server's data. A script you approved runs in a
+  sandbox that cannot open that folder (macOS; on another system a script that uses a secret does
+  not run). The Bot's own shell and its crews run as you and can open it if something steered
+  them to look; the Bot is told not to, and nothing enforces that. A script gets a secret only if
+  it names it, and only when it runs on this machine. Anything the script prints has the value
+  replaced by `[secret NAME]`.
 - Hosts are shown to the reviewer model, but nothing yet stops a script from sending a secret
   elsewhere, and a model alone judges every new version of a script that uses one.
-- **Do not grant a credential whose misuse you could not accept.** Until the Bot and its scripts run
-  apart from that folder and requests are held to the listed hosts, give only tokens limited to
+- **Do not grant a credential whose misuse you could not accept.** Until the Bot and its crews are kept
+  from that folder and requests are held to the listed hosts, give only tokens limited to
   read access, and rotate one you doubt.
 - Remove a grant to take the secret back. A row in the **Watchers and tools** tab marks a secret
   that still needs a grant.
