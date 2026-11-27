@@ -151,7 +151,12 @@ describe("recipes", () => {
 
 describe("github recipe scripts", () => {
   const token = "ghp_testtoken1234567890";
-  const run = (name: "github" | "github-watch", dir: string, args: ReadonlyArray<string> = []) => {
+  const run = (
+    name: "github" | "github-watch",
+    dir: string,
+    args: ReadonlyArray<string> = [],
+    env: Record<string, string> = {},
+  ) => {
     const file = NodePath.join(dir, `${name}.js`);
     NodeFS.writeFileSync(file, proposalNamed("github-notifications", name).source);
     return NodeChildProcess.spawnSync(process.execPath, [file, ...args], {
@@ -162,6 +167,7 @@ describe("github recipe scripts", () => {
         T3_WATCHER_STATE_DIR: NodePath.join(dir, "state"),
         GITHUB_TOKEN: token,
         FAKE_DIR: NodePath.join(dir, "fake"),
+        ...env,
       },
     });
   };
@@ -231,6 +237,24 @@ cp "$FAKE_DIR/$kind.body" "$out"
     user: { login: "alice" },
     updated_at: "2026-11-26T10:00:00Z",
     repository_url: "https://api.github.com/repos/o/r",
+  });
+
+  it("refuses a token that could end the curl config line, before any request", () => {
+    const { dir, requests } = withFakeCurl();
+    for (const bad of ['ghp_abc"\nurl = "https://evil.example', "short", ""]) {
+      const result = run("github", dir, ["notifications"], { GITHUB_TOKEN: bad });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("github-token-rejected");
+    }
+    expect(requests()).toEqual([]);
+  });
+
+  it("refuses a limit that is not digits", () => {
+    const { dir, requests } = withFakeCurl();
+    const result = run("github", dir, ["notifications", "--config"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("the limit must be a number");
+    expect(requests()).toEqual([]);
   });
 
   it("the watcher prints nothing until something is new, then each new item once", () => {

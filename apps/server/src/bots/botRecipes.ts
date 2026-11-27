@@ -27,13 +27,19 @@ const path = require("node:path");
 
 const body = path.join(process.env.TMPDIR || ".", "gh-body");
 
+// The token is written into a quoted curl config line, so a value that could end that line is refused.
 function get(urlPath, extraHeaders) {
+  const token = process.env.GITHUB_TOKEN || "";
+  if (!/^[A-Za-z0-9_]{20,}$/.test(token)) {
+    console.error("github-token-rejected: the GITHUB_TOKEN grant is not a GitHub token; ask the user to replace it in Settings -> Home");
+    process.exit(1);
+  }
   const args = ["-sS", "--max-time", "20", "--suppress-connect-headers", "-D", "-", "-o", body, "--config", "-",
     "-H", "Accept: application/vnd.github+json", "-H", "X-GitHub-Api-Version: 2022-11-28", "-H", "User-Agent: t3-home-bot"];
   for (const header of extraHeaders || []) args.push("-H", header);
   args.push("https://api.github.com" + urlPath);
   const head = execFileSync("curl", args, {
-    input: 'header = "Authorization: Bearer ' + process.env.GITHUB_TOKEN + '"\n',
+    input: 'header = "Authorization: Bearer ' + token + '"\n',
     encoding: "utf8",
   });
   const lines = head.split(/\r?\n/);
@@ -81,12 +87,14 @@ const REVIEWS = "/search/issues?per_page=20&sort=updated&q=is%3Apr+is%3Aopen+arc
 
 const GITHUB_TOOL = String.raw`
 const [what, limitArg] = process.argv.slice(2);
-const limit = Math.min(Math.max(Number(limitArg) || 20, 1), 50);
 
 function fail(text) {
   console.error(text);
   process.exit(1);
 }
+
+if (limitArg !== undefined && !/^[0-9]{1,4}$/.test(limitArg)) fail("the limit must be a number from 1 to 50");
+const limit = Math.min(Math.max(Number(limitArg) || 20, 1), 50);
 
 if (what !== "notifications" && what !== "review-requested") {
   fail("usage: notifications [limit] | review-requested [limit]");

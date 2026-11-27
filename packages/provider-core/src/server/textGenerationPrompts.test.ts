@@ -155,7 +155,7 @@ describe("buildWatcherReviewPrompt", () => {
   it("keeps every safety rejection", () => {
     const { before } = regionOf(buildWatcherReviewPrompt(watcher).prompt);
     for (const text of [
-      "- Writes, moves or deletes files outside $T3_WATCHER_STATE_DIR and its temp directory.",
+      "- Writes, moves or deletes files outside $T3_WATCHER_STATE_DIR and its private temp directory ($TMPDIR, set by the server for this script, so its value can be trusted). Writing a response to a file under $TMPDIR and reading it back is normal (curl -o) and is not a reason to reject.",
       "- Reads or prints credentials or private files itself (cat, grep, cp or reading ~/.ssh, keychains, browser profiles, .env files, other apps' data, or a client's token file such as ~/.config/gh/hosts.yml), or passes a credential to anything but the client it belongs to.",
       "- Sends data to any host that the purpose does not require, or sends anything it read from the user's computer to a network host.",
       "- Acts instead of reading: POST, PUT, PATCH or DELETE requests, sending mail or messages, git push, running other programs that change things.",
