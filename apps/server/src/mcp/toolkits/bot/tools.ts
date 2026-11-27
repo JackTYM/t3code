@@ -437,6 +437,31 @@ const SecretGrantsList = Tool.make("t3_bot_secret_grants_list", {
   .annotate(Tool.OpenWorld, false)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromNonBots);
 
+// Server-owned text with no side effects, so it is free in any turn; nothing here is outside text.
+const Recipe = Tool.make("t3_bot_recipe", {
+  ...shared,
+  description:
+    "Read a worked example for building a tool and a watcher against one outside source, such as the user's calendar or GitHub, ready to propose and adapt. Without `name`, lists the recipes. Call it when the user wants one of those sources.",
+  parameters: Schema.Struct({
+    name: Schema.optional(
+      Schema.String.annotate({ description: "A recipe name from the list. Omit to list them." }),
+    ),
+  }),
+  success: Schema.Struct({
+    recipes: Schema.optional(
+      Schema.Array(Schema.Struct({ name: Schema.String, description: Schema.String })),
+    ),
+    name: Schema.optional(Schema.String),
+    text: Schema.optional(Schema.String),
+  }),
+})
+  .annotate(Tool.Title, "Read a Bot recipe")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromNonBots);
+
 // The Bot's only part in a repair is saying it should start: the server writes the rest. The tool
 // takes no text, so nothing a hostile message says can steer what the crew is asked to do.
 const RepairStart = Tool.make(RepairService.REPAIR_START_TOOL, {
@@ -551,6 +576,7 @@ export const BotToolkit = Toolkit.make(
   ToolRemove,
   WatcherList,
   SecretGrantsList,
+  Recipe,
   RepairStart,
   MailSearch,
   MailRead,

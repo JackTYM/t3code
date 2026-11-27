@@ -79,6 +79,25 @@ email or an issue title, and anyone can write that text. The Bot treats it as in
 instructions, and once it has called a tool in a turn, actions that reach beyond its notes and
 crew wait for your approval, as they do after an email.
 
+## Calendar and GitHub
+
+Home can read your Mac's Calendar and your GitHub notifications, and tell you when an event is new
+or about to start, or when something needs your review. It only reads: it never creates or answers
+an event, comments, or marks a notification read.
+
+- **GitHub.** Ask Home to watch your GitHub. When it says which secret it needs, add `GITHUB_TOKEN`
+  for `api.github.com` in **Settings → Home → Bot secret grants**, using a token that can only read
+  (a fine-grained one with pull request read access, or a classic one limited to notifications; some
+  fine-grained tokens cannot read notifications at all). Then ask Home again.
+- **Calendar.** Ask Home to watch your calendar. It needs no token. The first time it looks, macOS
+  asks whether to allow Calendar access. The request is for the app that runs the T3 Code server (the
+  T3 Code app, or your terminal if you started it with `npx t3`), so allow it there, or later under
+  **System Settings → Privacy & Security → Calendars**. This works only on a Mac with the Xcode
+  command line tools (`xcode-select --install`), and only for the Mac that runs the server. Home
+  sees an event's title, time, calendar, location and status, never its attendees or notes.
+
+If access is missing, Home tells you what to change once instead of repeating it.
+
 ## Self-repair
 
 When something in how a Bot runs keeps failing (a watcher, the model that reviews watchers, or a

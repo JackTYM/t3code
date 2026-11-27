@@ -2585,6 +2585,7 @@ it.effect("lists and runs Bot tools only for a Bot thread, and leaves a mail rea
         "t3_bot_memory_read",
         "t3_bot_notes_write",
         "t3_bot_preferences_append",
+        "t3_bot_recipe",
         "t3_bot_repair_start",
         "t3_bot_secret_grants_list",
         "t3_bot_tasks_write",

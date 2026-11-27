@@ -18,6 +18,7 @@ import * as Stream from "effect/Stream";
 import { Tool } from "effect/ai";
 
 import * as BotMailService from "../../../bots/BotMailService.ts";
+import { BOT_RECIPES } from "../../../bots/botRecipes.ts";
 import * as BotService from "../../../bots/BotService.ts";
 import * as RepairService from "../../../bots/RepairService.ts";
 import * as BotSecretGrantService from "../../../bots/BotSecretGrantService.ts";
@@ -82,6 +83,7 @@ const run = (
   tool:
     | "t3_bot_mail_read"
     | "t3_bot_mail_search"
+    | "t3_bot_recipe"
     | "t3_bot_repair_start"
     | "t3_bot_watcher_list"
     | "t3_bot_watcher_remove"
@@ -214,6 +216,9 @@ const run = (
         readonly results?: ReadonlyArray<{ readonly message: string }>;
         readonly threadId?: string;
         readonly branch?: string;
+        readonly recipes?: ReadonlyArray<{ readonly name: string; readonly description: string }>;
+        readonly name?: string;
+        readonly text?: string;
         readonly watchers?: ReadonlyArray<{
           readonly name: string;
           readonly kind?: string;
@@ -631,5 +636,25 @@ it.effect("proposes and removes as a tool, and removes a watcher as a watcher", 
       { method: "remove", input: { botThreadId: BOT, name: "pr", kind: "tool" } },
       { method: "remove", input: { botThreadId: BOT, name: "disk", kind: "watch" } },
     ]);
+  }),
+);
+
+it.effect("lists the recipes without a name, and returns one recipe's text with it", () =>
+  Effect.gen(function* () {
+    const listed = yield* run(asBot, "t3_bot_recipe", {});
+    expect(listed.recipes?.map(({ name }) => name)).toEqual(Object.keys(BOT_RECIPES));
+    expect(listed.text).toBeUndefined();
+    const read = yield* run(asBot, "t3_bot_recipe", { name: "calendar-events" });
+    expect(read).toEqual({ name: "calendar-events", text: BOT_RECIPES["calendar-events"].text });
+  }),
+);
+
+it.effect("names the recipes when one is unknown, and serves only a Bot", () =>
+  Effect.gen(function* () {
+    const unknown = yield* run(asBot, "t3_bot_recipe", { name: "toString" });
+    expect(unknown.code).toBe("invalid_request");
+    expect(unknown.message).toContain("github-notifications, calendar-events");
+    const stranger: Fixture = { caller: STRANGER, shells: { [STRANGER]: mode("full-access") } };
+    expect((yield* run(stranger, "t3_bot_recipe", {})).code).toBe("capability_denied");
   }),
 );

@@ -24,4 +24,8 @@ describe("withBotInstructions", () => {
     // The Bot once denied that a watcher has a field for declaring tools.
     expect(instructions).toContain("`tools` parameter of t3_bot_watcher_propose");
   });
+
+  it("points the Bot at the recipes for a calendar or GitHub", () => {
+    expect(instructions).toMatch(/calendar.*GitHub.*t3_bot_recipe/iu);
+  });
 });

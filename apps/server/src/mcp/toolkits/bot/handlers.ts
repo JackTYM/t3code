@@ -9,6 +9,7 @@ import {
 import * as Effect from "effect/Effect";
 
 import * as BotMailService from "../../../bots/BotMailService.ts";
+import { BOT_RECIPES, isBotRecipeName } from "../../../bots/botRecipes.ts";
 import * as BotSecretGrantService from "../../../bots/BotSecretGrantService.ts";
 import * as BotService from "../../../bots/BotService.ts";
 import * as RepairService from "../../../bots/RepairService.ts";
@@ -232,6 +233,26 @@ export const layer = McpToolAccess.toLayer(BotToolkit, {
       return {
         grants: (yield* grants.list(threadId)).grants.map(({ name, hosts }) => ({ name, hosts })),
       };
+    }),
+  ),
+  t3_bot_recipe: McpToolAccess.readsAsCaller(({ name }) =>
+    Effect.gen(function* () {
+      yield* callerBot;
+      if (name === undefined) {
+        return {
+          recipes: Object.entries(BOT_RECIPES).map(([recipe, { description }]) => ({
+            name: recipe,
+            description,
+          })),
+        };
+      }
+      if (!isBotRecipeName(name)) {
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: `No recipe named ${name}. Recipes: ${Object.keys(BOT_RECIPES).join(", ")}.`,
+        });
+      }
+      return { name, text: BOT_RECIPES[name].text };
     }),
   ),
   t3_bot_watcher_list: McpToolAccess.readsAsCaller(() =>
