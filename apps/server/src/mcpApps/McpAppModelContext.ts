@@ -108,18 +108,28 @@ export const layer = Layer.effect(
               AND json_extract(b.payload_json, '$.restartContinuationOfRunId') IS NULL
             )
             -- Mirrors isScheduledFreshRun: the run's first prompt, else its userMessageId's row.
-            AND (
-              SELECT json_extract(ti.payload_json, '$.scheduledTaskId')
-              FROM orchestration_v2_projection_turn_items AS ti
-              WHERE ti.thread_id = b.thread_id
-                AND ti.type = 'user_message'
-                AND (
-                  ti.run_id = b.run_id
-                  OR json_extract(ti.payload_json, '$.messageId') = json_extract(b.payload_json, '$.userMessageId')
-                )
-              ORDER BY ti.run_id = b.run_id DESC, ti.ordinal
-              LIMIT 1
-            ) IS NULL
+            -- Two lookups because SQLite rejects an outer-query column in a subquery's ORDER BY.
+            AND COALESCE(
+              (
+                SELECT json_extract(ti.payload_json, '$.scheduledTaskId') IS NOT NULL
+                FROM orchestration_v2_projection_turn_items AS ti
+                WHERE ti.thread_id = b.thread_id
+                  AND ti.type = 'user_message'
+                  AND ti.run_id = b.run_id
+                ORDER BY ti.ordinal
+                LIMIT 1
+              ),
+              (
+                SELECT json_extract(ti.payload_json, '$.scheduledTaskId') IS NOT NULL
+                FROM orchestration_v2_projection_turn_items AS ti
+                WHERE ti.thread_id = b.thread_id
+                  AND ti.type = 'user_message'
+                  AND json_extract(ti.payload_json, '$.messageId') = json_extract(b.payload_json, '$.userMessageId')
+                ORDER BY ti.ordinal
+                LIMIT 1
+              ),
+              0
+            ) = 0
         )
         SELECT context.item_id AS "itemId", context.server, context.tool, context.text,
           context.updated_at AS "updatedAt"
