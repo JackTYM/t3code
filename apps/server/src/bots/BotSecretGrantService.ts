@@ -28,6 +28,7 @@ import * as PayloadSigner from "../auth/PayloadSigner.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as BotService from "./BotService.ts";
+import * as SignedStateFile from "./SignedStateFile.ts";
 
 // Grants live in `<stateDir>/bot-secret-grants.json`, signed with a key in the secret store. The
 // Bot can write its memory folder and its watchers' files, so a grant kept there it could give
@@ -60,13 +61,7 @@ const State = Schema.Struct({
 });
 type State = typeof State.Type;
 
-// `data` stays the exact text that was signed, so the signature is checked over what was read.
-const SignedFile = Schema.fromJsonString(
-  Schema.Struct({ data: Schema.String, signature: Schema.String }),
-);
 const StateJson = Schema.fromJsonString(State);
-const decodeSignedFile = Schema.decodeEffect(SignedFile);
-const encodeSignedFile = Schema.encodeEffect(SignedFile);
 const decodeState = Schema.decodeEffect(StateJson);
 const encodeState = Schema.encodeEffect(StateJson);
 
@@ -150,6 +145,12 @@ const make = Effect.gen(function* () {
   const resolver = yield* SecretResolver.SecretResolver;
   const signer = yield* PayloadSigner.make("bot-secret-grants-key");
   const statePath = path.join(config.stateDir, "bot-secret-grants.json");
+  const signedFile = SignedStateFile.make({
+    fileSystem,
+    signer,
+    stateDir: config.stateDir,
+    statePath,
+  });
   const locked = (yield* Semaphore.make(1)).withPermits(1);
 
   const rejectedAt = (at: number, copy: number) =>
@@ -161,23 +162,11 @@ const make = Effect.gen(function* () {
       onSome: (value) => Number.parseInt(decodeBytes(value), 10),
     });
     if (!Number.isSafeInteger(lastVersion) || lastVersion < 0) return yield* Effect.fail("version");
-    const text = yield* fileSystem.readFileString(statePath).pipe(
-      Effect.catchIf(
-        (cause) => cause._tag === "PlatformError" && cause.reason._tag === "NotFound",
-        () => Effect.undefined,
-      ),
-    );
     const rejected = (reason: string) => ({ state: empty(lastVersion), reason });
-    if (text === undefined) return { state: empty(lastVersion), reason: undefined };
-    // What was read but is not a signed state will not become one by waiting. A read, the secret
-    // store or the key that fail may pass, and are left to the caller.
-    const signed = yield* decodeSignedFile(text).pipe(
-      Effect.catchIf(Schema.isSchemaError, () => Effect.undefined),
-    );
-    if (signed === undefined) return rejected("is not a signed file");
-    if (!(yield* signer.verify(signed.data, signed.signature))) {
-      return rejected("failed its signature");
-    }
+    const signed = yield* signedFile.read;
+    if (signed._tag === "Missing") return { state: empty(lastVersion), reason: undefined };
+    if (signed._tag === "Unsigned") return rejected("is not a signed file");
+    if (signed._tag === "BadSignature") return rejected("failed its signature");
     const decoded = yield* decodeState(signed.data).pipe(
       Effect.catchIf(Schema.isSchemaError, () => Effect.undefined),
     );
@@ -271,13 +260,7 @@ const make = Effect.gen(function* () {
       );
       const next: State = { grants, version: current.version + 1 };
       if (yield* Ref.get(readable)) {
-        const data = yield* encodeState(next);
-        const text = yield* encodeSignedFile({ data, signature: yield* signer.sign(data) });
-        // Renamed into place, so a crash cannot leave a half-written file that reads as no grants.
-        const temporary = `${statePath}.tmp`;
-        yield* fileSystem.makeDirectory(config.stateDir, { recursive: true });
-        yield* fileSystem.writeFileString(temporary, text, { mode: 0o600 });
-        yield* fileSystem.rename(temporary, statePath);
+        yield* signedFile.write(yield* encodeState(next));
         // After the file, so a crash between them leaves the file newer than the count, never older.
         yield* Ref.set(trust, "ok");
         yield* secrets

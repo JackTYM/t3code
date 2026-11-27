@@ -28,6 +28,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as BotService from "./BotService.ts";
 import { repairBranchOf, signalOfRepairBranch } from "./repairBranch.ts";
+import * as SignedStateFile from "./SignedStateFile.ts";
 
 // A health wake holds fixed fields only and `BotHoldService` deliberately does not count it as
 // influenced: `bot-wake:health:` matches neither the mail nor the watcher prefix. Nothing a
@@ -337,17 +338,11 @@ interface State {
 }
 const isState = Schema.is(State);
 
-// `data` stays the exact text that was signed, so the signature is checked over what was read.
-const SignedFile = Schema.fromJsonString(
-  Schema.Struct({ data: Schema.String, signature: Schema.String }),
-);
 // The first version wrote the episodes alone, as a record.
 const StateJson = Schema.fromJsonString(
   Schema.Union([State, Schema.Record(Schema.String, Episode)]),
 );
 const EncodedStateJson = Schema.fromJsonString(State);
-const decodeSignedFile = Schema.decodeEffect(SignedFile);
-const encodeSignedFile = Schema.encodeEffect(SignedFile);
 const decodeState = Schema.decodeEffect(StateJson);
 const encodeState = Schema.encodeEffect(EncodedStateJson);
 
@@ -743,6 +738,12 @@ const make = Effect.gen(function* () {
   const signer = yield* PayloadSigner.make("repair-state-key");
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const statePath = path.join(config.stateDir, "repair-state.json");
+  const signedFile = SignedStateFile.make({
+    fileSystem,
+    signer,
+    stateDir: config.stateDir,
+    statePath,
+  });
   const lock = yield* Semaphore.make(1);
   const locked = lock.withPermits(1);
   const newId = random.uuidV4().pipe(
@@ -763,23 +764,12 @@ const make = Effect.gen(function* () {
       onSome: (value) => Number.parseInt(new TextDecoder().decode(value), 10),
     });
     if (!Number.isSafeInteger(lastVersion) || lastVersion < 0) return yield* Effect.fail("version");
-    const text = yield* fileSystem.readFileString(statePath).pipe(
-      Effect.catchIf(
-        (cause) => cause._tag === "PlatformError" && cause.reason._tag === "NotFound",
-        () => Effect.undefined,
-      ),
-    );
     const rejected = (reason: string) => ({ lastVersion, state: empty(lastVersion), reason });
-    if (text === undefined) return { lastVersion, state: empty(lastVersion), reason: undefined };
-    // What was read but is not a signed state will not become one by waiting. A read, the secret
-    // store or the key that fail may pass, and are left to the caller.
-    const signed = yield* decodeSignedFile(text).pipe(
-      Effect.catchIf(Schema.isSchemaError, () => Effect.undefined),
-    );
-    if (signed === undefined) return rejected("is not a signed state file");
-    if (!(yield* signer.verify(signed.data, signed.signature))) {
-      return rejected("failed its signature");
-    }
+    const signed = yield* signedFile.read;
+    if (signed._tag === "Missing")
+      return { lastVersion, state: empty(lastVersion), reason: undefined };
+    if (signed._tag === "Unsigned") return rejected("is not a signed state file");
+    if (signed._tag === "BadSignature") return rejected("failed its signature");
     const decoded = yield* decodeState(signed.data).pipe(
       Effect.catchIf(Schema.isSchemaError, () => Effect.undefined),
     );
@@ -861,13 +851,7 @@ const make = Effect.gen(function* () {
         return true;
       }
       const data = yield* encodeState(stamped);
-      const signature = yield* signer.sign(data);
-      const text = yield* encodeSignedFile({ data, signature });
-      // Renamed into place, so a crash cannot leave a half-written file that reads as no state.
-      const temporary = `${statePath}.tmp`;
-      yield* fileSystem.makeDirectory(config.stateDir, { recursive: true });
-      yield* fileSystem.writeFileString(temporary, text, { mode: 0o600 });
-      yield* fileSystem.rename(temporary, statePath);
+      yield* signedFile.write(data);
       yield* Ref.set(state, stamped);
       // After the file, so a crash between them leaves the file newer than the count, never older.
       yield* secrets
