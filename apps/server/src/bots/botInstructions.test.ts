@@ -14,6 +14,7 @@ describe("withBotInstructions", () => {
     expect(instructions).toContain("only its declared hosts, over HTTPS on port 443");
     expect(instructions).toContain("HTTPS_PROXY");
     expect(instructions).toContain("egress blocked:");
+    expect(instructions).toContain("only under $TMPDIR and $T3_WATCHER_STATE_DIR");
   });
 
   it("explains grants, tools and what a tool call does to the turn", () => {

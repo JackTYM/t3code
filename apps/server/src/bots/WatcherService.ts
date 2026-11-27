@@ -881,7 +881,7 @@ const make = Effect.gen(function* () {
     secrets: ReadonlyArray<InjectedSecret>,
     tool: boolean,
     toolOutputDir: string | undefined,
-    proxyPort: number | undefined,
+    proxyUrl: string | undefined,
   ): NodeJS.ProcessEnv => ({
     // First, so nothing the server sets below can be replaced by a secret of the same name.
     ...Object.fromEntries(secrets.map(({ name, value }) => [name, value])),
@@ -900,12 +900,12 @@ const make = Effect.gen(function* () {
     // Only a watcher that declares tools has a directory of their output.
     ...(toolOutputDir === undefined ? {} : { T3_TOOL_OUTPUT_DIR: toolOutputDir }),
     // Node 22.21+ reads the proxy from the environment only when told to.
-    ...(proxyPort === undefined
+    ...(proxyUrl === undefined
       ? {}
       : {
-          HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`,
-          https_proxy: `http://127.0.0.1:${proxyPort}`,
-          ALL_PROXY: `http://127.0.0.1:${proxyPort}`,
+          HTTPS_PROXY: proxyUrl,
+          https_proxy: proxyUrl,
+          ALL_PROXY: proxyUrl,
           NODE_USE_ENV_PROXY: "1",
         }),
   });
@@ -985,7 +985,7 @@ const make = Effect.gen(function* () {
             secrets,
             input.tool !== undefined,
             toolOutputDir,
-            proxy?.port,
+            proxy?.url,
           ),
           // Inside the desktop app the server's own binary is Electron, which runs a script as Node only when told to.
           ...(input.runtime === "node" && process.versions.electron !== undefined

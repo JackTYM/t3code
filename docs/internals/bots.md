@@ -683,23 +683,34 @@ them.
 - **Known limits.** Values that are split, reversed, hex-encoded or otherwise transformed are not
   found, nor are values past the scan's bounds, or written by a descendant that outlives the run,
   after the scan. The reviewer is meant to catch those, and it is a model.
-- **Hosts are enforced by the egress proxy, for a run that holds a secret.** A run that injects a
-  secret gets the network only through [`EgressProxy`](../../apps/server/src/bots/EgressProxy.ts),
-  one per run on an ephemeral loopback port. The sandbox profile denies every other network
-  operation (other addresses and ports, listening, UDP, unix sockets) and allows outbound only to
-  that port, so the script cannot go around it; `HTTPS_PROXY`, `ALL_PROXY` and `NODE_USE_ENV_PROXY`
-  (reserved names) point curl and Node's `fetch` at it. The proxy tunnels a `CONNECT` only to port
-  443 of a declared hostname (exact, case-insensitive, no wildcards), and only when every address
-  the name resolves to is public. It resolves and connects itself, so a name that changes its answer
-  afterwards cannot redirect the tunnel. Plain HTTP, other ports and redirects to another host fail.
-  A refused host is added to a short list that `runScript` writes as a first line of the run's
-  stderr (`egress blocked: ...`), after redaction, so the Bot can see why the script failed. A run
-  without a secret keeps the open network. Limits:
+- **A run that holds a secret is held to its hosts and to its own folders.** The network goes only
+  through [`EgressProxy`](../../apps/server/src/bots/EgressProxy.ts), one per run on an ephemeral
+  loopback port. The sandbox profile (`allow default`, then denials) closes every other network
+  operation (other addresses and ports, listening, UDP, unix sockets), so the script cannot go
+  around it; `HTTPS_PROXY`, `ALL_PROXY` and `NODE_USE_ENV_PROXY` (reserved names) point curl and
+  Node's `fetch` at it, with a per-run token as the proxy URL's password that each CONNECT must
+  carry. The proxy tunnels a `CONNECT` only to port 443 of a declared hostname (exact,
+  case-insensitive, no wildcards), only when every address the name resolves to is public, and only
+  when the TLS server name in the client's first record is that hostname, so a declared host on a
+  shared CDN does not open the CDN. It resolves and connects itself, so a later DNS change cannot
+  redirect the tunnel. Plain HTTP, other ports, a client without SNI (this includes Encrypted
+  Client Hello) and redirects to another host fail. A refused host is written as the first line of
+  the run's stderr (`egress blocked: ...`), after redaction, so the Bot can see why the script
+  failed. The same profile denies what would hand data to code outside the sandbox, which has the
+  network: file writes outside the script's own folders (a login item, shell startup file or git
+  hook would run later), LaunchServices (`open` of an app the script wrote) and Apple events, and
+  the preferences daemons and the pasteboard (they write a file or hold data for the next, proxy-less
+  run). A run without a secret keeps the open network and may write anywhere but the T3 home, as
+  tools such as `gh` keep their config in the user's home. Limits:
   - A secret can still be sent to a declared host; that is what the grant is, and the reviewer and
     the redaction above are the controls on what the script does with it there.
-  - The sandbox closes the network, not every channel to other processes. System services the
-    profile leaves open (it starts from `allow default`) are not enumerated here. Name lookups
-    through the system resolver fail inside it on the macOS tested, which closes DNS as a side
-    channel, but that rests on how the resolver reaches its daemon, not on a rule of ours.
+  - A script can read the environment of any other process of the same user (`sysctl
+    kern.procargs2`, `lsof`), the server's included; no sandbox rule stopped it. Do not start the
+    server with tokens in its environment. With the denials above, what it reads can leave only to a
+    declared host.
+  - The profile is a denylist on `allow default`: Mach services and system daemons other than the
+    ones named are not enumerated, and a new one may be another way to act outside. Name lookups
+    through the system resolver fail inside on the macOS tested, which closes DNS as a side channel,
+    but that rests on how the resolver reaches its daemon, not on a rule of ours.
   - Only macOS enforces it. Elsewhere a script that declares a secret waits, as above, so a secret
     is never injected without the proxy.

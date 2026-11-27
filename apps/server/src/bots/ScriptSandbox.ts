@@ -8,10 +8,9 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ProcessRunner from "../processRunner.ts";
 
 /**
- * Runs a Bot-written script under macOS `sandbox-exec` with the T3 home out of reach (the secret
- * grants, database and sessions under it); only the script's own folders are let back in. With a
- * `proxyPort` the network is closed too, except that loopback port (see `EgressProxy`). Elsewhere
- * a script that declares a secret does not run.
+ * Runs a Bot-written script under macOS `sandbox-exec` with the T3 home out of reach. A `proxyPort`
+ * means it holds a secret: network only to that port (see `EgressProxy`), writes only to its own
+ * folders, and no launcher or daemon that would act for it outside. A denylist on `allow default`.
  */
 const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 const PROBE_TIMEOUT = Duration.seconds(5);
@@ -51,12 +50,23 @@ const sandboxProfile = (hiddenCount: number, allowedCount: number, withProxy: bo
     ...(allowedCount === 0
       ? []
       : [`(allow file-read-data file-write* ${subpaths("A", allowedCount)})`]),
-    // `network*` also covers binding, listening, UDP and unix sockets. Name lookups through the
-    // system resolver fail inside, which is wanted: the proxy resolves the host, not the script.
     ...(withProxy
       ? [
+          // `network*` also covers binding, listening, UDP and unix sockets. Name lookups through
+          // the system resolver fail inside, which is wanted: the proxy resolves the host.
           "(deny network*)",
           '(allow network-outbound (remote ip (string-append "localhost:" (param "PROXY_PORT"))))',
+          // Each of these hands work to a process outside the sandbox, which has the network: an
+          // app the script wrote and `open`ed, or an Apple event to one.
+          "(deny lsopen)",
+          "(deny appleevent-send)",
+          // The preferences daemon writes a plist for the caller, and the pasteboard outlives the
+          // run: both would carry data to a later script that has no proxy.
+          '(deny mach-lookup (global-name "com.apple.cfprefsd.daemon") (global-name "com.apple.cfprefsd.agent") (global-name "com.apple.pasteboard.1"))',
+          // Anything else the script wrote, in the user's home or a temp folder, would be read
+          // or run later by something outside the sandbox. Only its own folders stay writable.
+          "(deny file-write*)",
+          `(allow file-write* ${subpaths("A", allowedCount)} (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper") (regex #"^/dev/fd/"))`,
         ]
       : []),
   ].join("\n");

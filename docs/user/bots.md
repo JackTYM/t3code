@@ -61,9 +61,11 @@ through a script that uses a secret you gave it. You decide which secrets it get
   them to look; the Bot is told not to, and nothing enforces that. A script gets a secret only if
   it names it, and only when it runs on this machine. Anything the script prints has the value
   replaced by `[secret NAME]`.
-- A script that uses a secret can reach only the hosts you listed, over HTTPS on port 443; any other
-  request fails and the Bot is told which host was refused. It can still send the secret to a listed
-  host, and a model alone judges every new version of a script that uses one.
+- A script that uses a secret can reach only the hosts you listed, over HTTPS on port 443, and can
+  write only to its own folders; any other request fails and the Bot is told which host was
+  refused. It can still send the secret to a listed host, and a model alone judges every new
+  version of a script that uses one. A script can also read the environment of your other
+  processes, so do not start the server with tokens in its environment.
 - **Do not grant a credential whose misuse you could not accept.** Until the Bot and its crews are kept
   from that folder, give only tokens limited to read access, and rotate one you doubt.
 - Remove a grant to take the secret back. A row in the **Watchers and tools** tab marks a secret

@@ -3635,7 +3635,7 @@ it.effect("gives a script the secrets it declares as environment variables, and 
         );
       }
     // Only the run that holds a secret is held to its hosts: it gets a proxy on the loopback.
-    assert.match(secretEnv?.HTTPS_PROXY ?? "", /^http:\/\/127\.0\.0\.1:\d+$/u);
+    assert.match(secretEnv?.HTTPS_PROXY ?? "", /^http:\/\/run:[0-9a-f]{32}@127\.0\.0\.1:\d+$/u);
     assert.strictEqual(secretEnv?.ALL_PROXY, secretEnv?.HTTPS_PROXY);
     assert.strictEqual(secretEnv?.NODE_USE_ENV_PROXY, "1");
     for (const env of envs.filter((env) => env.GITHUB_TOKEN === undefined)) {
@@ -4609,7 +4609,7 @@ it.effect(
         ...declaresGithub,
         run: [
           "#!/bin/sh",
-          'echo "proxy=$HTTPS_PROXY use=$NODE_USE_ENV_PROXY" >&2',
+          'echo "proxy=${HTTPS_PROXY#*@} use=$NODE_USE_ENV_PROXY" >&2',
           `curl -sS -m 5 --noproxy '*' http://127.0.0.1:${(listener.address() as NodeNet.AddressInfo).port}/ >/dev/null 2>&1 && echo direct-ok >&2`,
           "curl -sS -m 5 https://Evil.Example.NET/ >/dev/null 2>&1 && echo proxied-ok >&2",
           "curl -sS -m 5 https://api.github.com:8443/ >/dev/null 2>&1 && echo port-ok >&2",
@@ -4621,7 +4621,7 @@ it.effect(
       assert.strictEqual(result.exit, "1");
       const body = framedBody(result.output) ?? "";
       assert.match(body, /^egress blocked: evil\.example\.net, api\.github\.com\n/u);
-      assert.match(body, /proxy=http:\/\/127\.0\.0\.1:\d+ use=1/u);
+      assert.match(body, /proxy=127\.0\.0\.1:\d+ use=1/u);
       for (const reached of ["direct-ok", "proxied-ok", "port-ok"])
         assert.notInclude(body, reached);
     }).pipe(
