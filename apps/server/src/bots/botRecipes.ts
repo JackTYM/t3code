@@ -415,13 +415,14 @@ function credentials() {
   const raw = process.env.SLACK_COOKIE || "";
   const cookie = raw.includes("%") ? raw : encodeURIComponent(raw);
   if (!/^xoxc-[A-Za-z0-9-]{20,}$/.test(token) || !/^[A-Za-z0-9%._~-]{20,}$/.test(cookie)) throw new SlackStop("auth");
-  return 'header = "Authorization: Bearer ' + token + '"\nheader = "Cookie: d=' + cookie + '"\ndata-urlencode = "token=' + token + '"\n';
+  return 'header = "Authorization: Bearer ' + token + '"\nheader = "Cookie: d=' + cookie + '"\n';
 }
 
 // Slack answers 200 with ok:false for most errors; a stop is thrown for the two every command treats alike.
 function request(method, params) {
   if (!METHODS.has(method)) throw new Error("slack-method-not-allowed");
-  const args = ["-sS", "--max-time", "20", "--suppress-connect-headers", "-D", "-", "-o", body, "--config", "-"];
+  // -G sends the parameters as a query string, so every request is a GET: nothing here can post.
+  const args = ["-sS", "-G", "--max-time", "20", "--suppress-connect-headers", "-D", "-", "-o", body, "--config", "-"];
   for (const [key, value] of Object.entries(params || {})) args.push("--data-urlencode", key + "=" + value);
   args.push("https://" + HOST + "/api/" + method);
   fs.rmSync(body, { force: true });

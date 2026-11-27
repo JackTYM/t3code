@@ -740,7 +740,9 @@ if [ -f "$FAKE_DIR/$key.body" ]; then cp "$FAKE_DIR/$key.body" "$out"; else echo
     }
     expect(fake.stdin()).toContain(`Authorization: Bearer ${token}`);
     expect(fake.stdin()).toContain(`Cookie: d=${cookie}`);
-    expect(fake.stdin()).toContain(`token=${token}`);
+    expect(fake.stdin()).not.toContain(`token=`);
+    // Every request is a GET (-G turns --data-urlencode into a query string), so no verb can write.
+    for (const call of fake.calls()) expect(call).toContain("-G ");
   });
 
   it("a cookie pasted decoded is sent URL-encoded", () => {
